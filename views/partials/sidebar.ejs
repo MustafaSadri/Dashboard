@@ -1,0 +1,98 @@
+<aside class="sidebar" id="appSidebar">
+  <div class="sidebar-logo">
+    <div class="logo-icon">W</div>
+    <div>
+      <div class="logo-text">WareSmart</div>
+      <div class="logo-sub">Warehouse Intelligence</div>
+    </div>
+    <button class="sidebar-close" onclick="toggleSidebar()" aria-label="Close menu">
+      <i class="fas fa-xmark"></i>
+    </button>
+  </div>
+
+  <nav class="sidebar-nav">
+    <div class="nav-section">
+      <div class="nav-label">Main</div>
+      <a href="/" class="nav-item <%- active==='dashboard'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-chart-pie"></i> Dashboard
+      </a>
+      <a href="/tally" class="nav-item <%- active==='tally'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-building-columns"></i> Financial Dashboard
+      </a>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Sales</div>
+      <a href="/orders-status" class="nav-item <%- active==='orders-status'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-list-check"></i> Orders Status
+      </a>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Inventory</div>
+      <a href="/inventory" class="nav-item <%- active==='inventory'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-boxes-stacked"></i> Inventory
+      </a>
+      <a href="/stock-alerts" class="nav-item <%- active==='stock-alerts'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-triangle-exclamation"></i> Stock Alerts
+      </a>
+      <a href="/purchases" class="nav-item <%- active==='purchases'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-cart-flatbed"></i> Purchases
+      </a>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Contacts</div>
+      <a href="/customers" class="nav-item <%- active==='customers'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-users"></i> Customers
+      </a>
+      <a href="/suppliers" class="nav-item <%- active==='suppliers'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-industry"></i> Suppliers
+      </a>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Analytics</div>
+      <a href="/reports" class="nav-item <%- active==='reports'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-chart-bar"></i> Reports
+      </a>
+      <a href="/alerts" class="nav-item <%- active==='alerts'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-bell"></i> Alerts
+      </a>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">System</div>
+      <a href="/settings" class="nav-item <%- active==='settings'?'active':'' %>" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-gear"></i> Settings
+      </a>
+    </div>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="avatar"><%- empLetter %></div>
+    <div class="avatar-info">
+      <div class="name"><%- empName %></div>
+      <div class="role"><%- empRole %></div>
+    </div>
+  </div>
+</aside>
+
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+<script>
+function toggleSidebar() {
+  const sidebar = document.getElementById('appSidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  const open = sidebar.classList.toggle('open');
+  overlay.classList.toggle('active', open);
+  document.body.style.overflow = open ? 'hidden' : '';
+}
+
+function closeSidebarOnMobile() {
+  if (window.innerWidth <= 768) {
+    const sidebar = document.getElementById('appSidebar');
+    if (sidebar.classList.contains('open')) toggleSidebar();
+  }
+}
+</script>

@@ -1,0 +1,312 @@
+<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Orders Status'}) %>
+  <div class="page">
+
+<style>
+.os-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:24px; }
+@media(max-width:900px){ .os-grid{ grid-template-columns:repeat(2,1fr); } }
+@media(max-width:480px){ .os-grid{ grid-template-columns:1fr 1fr; } }
+
+.os-card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius);
+           padding:20px; box-shadow:var(--card-shadow); position:relative; overflow:hidden;
+           cursor:pointer; transition:transform .18s,box-shadow .18s,border-color .18s; }
+.os-card::after { content:''; position:absolute; top:0; left:0; right:0; height:2px;
+                  background:var(--accent); border-radius:var(--radius) var(--radius) 0 0; }
+.os-card.c-success::after { background:var(--accent2); }
+.os-card.c-warn::after    { background:var(--warn); }
+.os-card.c-danger::after  { background:var(--danger); }
+.os-card.c-muted::after   { background:var(--text2); }
+.os-card:hover { transform:translateY(-4px) scale(1.012);
+                 box-shadow:0 12px 40px rgba(108,99,255,.22); border-color:rgba(108,99,255,.45); }
+.os-card.c-success:hover { box-shadow:0 12px 40px rgba(0,212,170,.2); border-color:rgba(0,212,170,.5); }
+.os-card.c-warn:hover    { box-shadow:0 12px 40px rgba(255,169,77,.2); border-color:rgba(255,169,77,.5); }
+.os-card.c-danger:hover  { box-shadow:0 12px 40px rgba(255,77,109,.2); border-color:rgba(255,77,109,.5); }
+.os-card.no-click { cursor:default; }
+.os-card.no-click:hover { transform:none; box-shadow:var(--card-shadow); border-color:var(--border); }
+.os-lbl { font-size:11px; color:var(--text2); text-transform:uppercase; letter-spacing:.8px; margin-bottom:6px; }
+.os-val { font-size:28px; font-weight:700; line-height:1.1; margin-bottom:4px; }
+.os-sub { font-size:12px; color:var(--text2); }
+.os-ico { position:absolute; right:16px; top:50%; transform:translateY(-50%);
+          font-size:30px; opacity:.1; }
+
+.prog-bar  { height:6px; background:var(--bg); border-radius:3px; overflow:hidden; margin-top:6px; }
+.prog-fill { height:100%; border-radius:3px; transition:width .3s; }
+.comp-s .prog-fill { background: var(--accent2); }
+.comp-w .prog-fill { background: var(--warn); }
+.comp-d .prog-fill { background: var(--danger); }
+.comp-s .comp-pct  { color: var(--accent2); }
+.comp-w .comp-pct  { color: var(--warn); }
+.comp-d .comp-pct  { color: var(--danger); }
+
+/* ── Modal ── */
+#cardModal { display:none; position:fixed; inset:0; z-index:500;
+             align-items:center; justify-content:center; padding:20px; }
+.modal-backdrop { position:absolute; inset:0; background:rgba(0,0,0,.6);
+                  backdrop-filter:blur(3px); }
+.modal-box { position:relative; background:var(--bg2); border:1px solid var(--border);
+             border-radius:14px; width:100%; max-width:760px;
+             max-height:82vh; display:flex; flex-direction:column;
+             box-shadow:0 24px 80px rgba(0,0,0,.6); }
+.modal-hdr { padding:18px 22px 14px; border-bottom:1px solid var(--border);
+             display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+.modal-hdr-left { display:flex; align-items:center; gap:10px; }
+.modal-icon { width:34px; height:34px; border-radius:9px; display:flex;
+              align-items:center; justify-content:center; font-size:14px; flex-shrink:0; }
+.modal-title { font-size:15px; font-weight:700; }
+.modal-cnt   { font-size:12px; color:var(--text2); margin-top:1px; }
+.modal-close { width:30px; height:30px; border-radius:7px; background:var(--bg3);
+               border:1px solid var(--border); color:var(--text2); cursor:pointer;
+               font-size:16px; display:flex; align-items:center; justify-content:center;
+               transition:all .15s; }
+.modal-close:hover { color:var(--text); border-color:var(--accent); }
+.modal-search { padding:12px 18px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.modal-search input { width:100%; background:var(--bg3); border:1px solid var(--border);
+                      color:var(--text); padding:8px 12px 8px 32px; border-radius:7px;
+                      font-size:13px; outline:none; }
+.modal-search input:focus { border-color:var(--accent); }
+.modal-search-wrap { position:relative; }
+.modal-search-wrap i { position:absolute; left:10px; top:50%; transform:translateY(-50%);
+                       color:var(--text2); font-size:12px; }
+.modal-body { overflow-y:auto; flex:1; }
+.modal-body table { width:100%; border-collapse:collapse; font-size:13px; }
+.modal-body thead th { background:var(--bg3); padding:9px 14px; text-align:left;
+                       font-size:11px; font-weight:600; color:var(--text2);
+                       text-transform:uppercase; letter-spacing:.7px;
+                       border-bottom:1px solid var(--border); position:sticky; top:0; }
+.modal-body tbody tr { border-bottom:1px solid rgba(108,99,255,.06); transition:background .1s; }
+.modal-body tbody tr:hover { background:rgba(108,99,255,.06); }
+.modal-body tbody td { padding:10px 14px; }
+.modal-empty { text-align:center; padding:48px 20px; color:var(--text2); }
+.modal-empty i { font-size:32px; opacity:.35; display:block; margin-bottom:10px; }
+</style>
+
+<!-- ── 8 Summary Cards ── -->
+<div class="os-grid">
+
+  <div class="os-card" onclick="openModal('all','All Orders','fa-list-check','var(--accent)')">
+    <div class="os-lbl">Total Orders</div>
+    <div class="os-val"><%- total %></div>
+    <div class="os-sub">Last 6 months</div>
+    <i class="fas fa-list-check os-ico" style="color:var(--accent)"></i>
+  </div>
+
+  <div class="os-card" onclick="openModal('new','New Orders','fa-sparkles','#9f97ff')">
+    <div class="os-lbl">New</div>
+    <div class="os-val" style="color:#9f97ff"><%- newCount %></div>
+    <div class="os-sub">Awaiting action</div>
+    <i class="fas fa-sparkles os-ico" style="color:#9f97ff"></i>
+  </div>
+
+  <div class="os-card c-success" onclick="openModal('accepted','Accepted Orders','fa-circle-check','var(--accent2)')">
+    <div class="os-lbl">Accepted</div>
+    <div class="os-val" style="color:var(--accent2)"><%- accCount %></div>
+    <div class="os-sub">Confirmed orders</div>
+    <i class="fas fa-circle-check os-ico" style="color:var(--accent2)"></i>
+  </div>
+
+  <div class="os-card c-warn" onclick="openModal('ready','Ready to Dispatch','fa-boxes-stacked','var(--warn)')">
+    <div class="os-lbl">Ready to Dispatch</div>
+    <div class="os-val" style="color:var(--warn)"><%- readyCount %></div>
+    <div class="os-sub">Packed &amp; waiting</div>
+    <i class="fas fa-boxes-stacked os-ico" style="color:var(--warn)"></i>
+  </div>
+
+  <div class="os-card c-success" onclick="openModal('dispatched','Dispatched Orders','fa-truck','#7dde90')">
+    <div class="os-lbl">Dispatched</div>
+    <div class="os-val" style="color:#7dde90"><%- dispCount %></div>
+    <div class="os-sub">Shipment created</div>
+    <i class="fas fa-truck os-ico" style="color:#7dde90"></i>
+  </div>
+
+  <div class="os-card c-muted" onclick="openModal('draft','Draft Orders','fa-file-pen','var(--text2)')">
+    <div class="os-lbl">Draft</div>
+    <div class="os-val" style="color:var(--text2)"><%- draftCount %></div>
+    <div class="os-sub">Not confirmed</div>
+    <i class="fas fa-file-pen os-ico" style="color:var(--text2)"></i>
+  </div>
+
+  <div class="os-card c-danger" onclick="openModal('delayed','Delayed Orders','fa-clock','var(--danger)')">
+    <div class="os-lbl">Delayed</div>
+    <div class="os-val" style="color:var(--danger)"><%- delayCount %></div>
+    <div class="os-sub">Past expected date</div>
+    <i class="fas fa-clock os-ico" style="color:var(--danger)"></i>
+  </div>
+
+  <div class="os-card no-click">
+    <div class="os-lbl">Avg Dispatch Time</div>
+    <div class="os-val" style="font-size:22px"><%- avgDispatch %> <span style="font-size:13px;font-weight:400;color:var(--text2)">days</span></div>
+    <div class="os-sub">Order → shipment</div>
+    <i class="fas fa-gauge-high os-ico" style="color:var(--accent)"></i>
+  </div>
+
+</div>
+
+<!-- ── Salesman Performance (coming soon) ── -->
+<div class="card" style="text-align:center;padding:36px 24px">
+  <div style="width:52px;height:52px;border-radius:14px;background:rgba(108,99,255,.12);
+              display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:22px">
+    <i class="fas fa-user-tie" style="color:var(--accent);opacity:.5"></i>
+  </div>
+  <div style="font-size:15px;font-weight:700;margin-bottom:6px">Salesman Performance</div>
+  <div style="font-size:13px;color:var(--text2);line-height:1.7">
+    Detailed salesman analytics &amp; leaderboard coming soon.
+  </div>
+</div>
+
+  </div><!-- .page -->
+</div><!-- .main -->
+
+<!-- ── Orders Modal ── -->
+<div id="cardModal">
+  <div class="modal-backdrop" onclick="closeModal()"></div>
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <div class="modal-hdr-left">
+        <div class="modal-icon" id="modalIcon"></div>
+        <div>
+          <div class="modal-title" id="modalTitle">Orders</div>
+          <div class="modal-cnt"  id="modalCnt"></div>
+        </div>
+      </div>
+      <button class="modal-close" onclick="closeModal()"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div class="modal-search">
+      <div class="modal-search-wrap">
+        <i class="fas fa-magnifying-glass"></i>
+        <input type="text" id="modalSearch" placeholder="Search orders…" oninput="filterModal(this.value)">
+      </div>
+    </div>
+    <div class="modal-body">
+      <table>
+        <thead id="modalHead"></thead>
+        <tbody id="modalBody"></tbody>
+      </table>
+      <div id="modalEmpty" class="modal-empty" style="display:none">
+        <i class="fas fa-inbox"></i>No matching orders
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const ORDERS = <%- ordersJSON %>;
+let _modalRows = [];
+
+function fmtAmt(n) {
+  var a = Math.abs(n);
+  if (a >= 1e7) return '₹' + (n/1e7).toFixed(2) + ' Cr';
+  if (a >= 1e5) return '₹' + (n/1e5).toFixed(1) + ' L';
+  if (a >= 1e3) return '₹' + (n/1e3).toFixed(0) + 'K';
+  return '₹' + Math.round(n);
+}
+
+function badgeHtml(state) {
+  var s = (state||'').toLowerCase();
+  var cls = 'badge-default';
+  if (/new|нов/.test(s))              cls = 'badge-new';
+  else if (/accept|принят|подтверж/.test(s)) cls = 'badge-accepted';
+  else if (/ready|готов/.test(s))     cls = 'badge-partial';
+  else if (/dispatch|ship|отгруз/.test(s)) cls = 'badge-dispatched';
+  else if (/cancel|отмен/.test(s))    cls = 'badge-unpaid';
+  return '<span class="badge ' + cls + '">' + (state||'Draft') + '</span>';
+}
+
+function openModal(filter, title, icon, color) {
+  _modalRows = ORDERS.filter(function(o) {
+    if (filter === 'all')       return true;
+    if (filter === 'new')       return /new|нов/i.test(o.stateL);
+    if (filter === 'accepted')  return /accept|принят|подтверж/i.test(o.stateL);
+    if (filter === 'ready')     return /ready|готов/i.test(o.stateL);
+    if (filter === 'dispatched')return o.dispatched || /dispatch|отгруз/i.test(o.stateL);
+    if (filter === 'draft')     return !o.stateL || /draft|черновик/i.test(o.stateL);
+    if (filter === 'delayed')   return o.delayDays > 0;
+    return false;
+  });
+
+  var isDelayed = filter === 'delayed';
+  var isDisp    = filter === 'dispatched' || filter === 'all';
+
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalIcon').innerHTML =
+    '<i class="fas ' + icon + '" style="color:' + color + '"></i>';
+  document.getElementById('modalIcon').style.background =
+    color.replace('var(--accent2)','rgba(0,212,170,.15)')
+         .replace('var(--accent)','rgba(108,99,255,.15)')
+         .replace('var(--warn)','rgba(255,169,77,.12)')
+         .replace('var(--danger)','rgba(255,77,109,.12)')
+         .replace('var(--text2)','rgba(136,145,181,.12)')
+         .replace('#9f97ff','rgba(159,151,255,.15)')
+         .replace('#7dde90','rgba(125,222,144,.12)');
+
+  document.getElementById('modalHead').innerHTML =
+    '<tr>' +
+    '<th>Order No</th><th>Customer</th><th>Salesman</th><th>Status</th>' +
+    (isDisp ? '<th>Shipment</th>' : '') +
+    '<th style="text-align:right">Amount</th><th>Created</th>' +
+    (isDelayed ? '<th style="text-align:center">Delay</th>' : '') +
+    '</tr>';
+
+  document.getElementById('modalSearch').value = '';
+  renderModalRows(_modalRows, isDelayed, isDisp);
+  document.getElementById('cardModal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  setTimeout(function(){ document.getElementById('modalSearch').focus(); }, 80);
+}
+
+function renderModalRows(rows, isDelayed, isDisp) {
+  document.getElementById('modalCnt').textContent = rows.length + ' order' + (rows.length !== 1 ? 's' : '');
+
+  if (rows.length === 0) {
+    document.getElementById('modalBody').innerHTML = '';
+    document.getElementById('modalEmpty').style.display = 'block';
+    return;
+  }
+  document.getElementById('modalEmpty').style.display = 'none';
+
+  var html = rows.map(function(o) {
+    var shipCell = isDisp
+      ? '<td>' + (o.dispatched
+          ? '<span class="badge badge-dispatched"><i class="fas fa-truck" style="font-size:9px"></i> ' + (o.demandName || 'Done') + '</span>'
+          : '<span class="badge badge-partial">Pending</span>') + '</td>'
+      : '';
+    var delayCell = isDelayed
+      ? '<td style="text-align:center;color:var(--danger);font-weight:700">+' + o.delayDays + 'd</td>'
+      : '';
+    return '<tr>' +
+      '<td><span style="font-weight:600;color:var(--accent)">' + o.name + '</span></td>' +
+      '<td>' + o.customer + '</td>' +
+      '<td style="color:var(--text2)">' + o.salesman + '</td>' +
+      '<td>' + badgeHtml(o.state) + '</td>' +
+      shipCell +
+      '<td style="text-align:right;font-weight:600">' + fmtAmt(o.sum) + '</td>' +
+      '<td style="color:var(--text2);font-size:12px">' + (o.createdDate || '—') + '</td>' +
+      delayCell +
+      '</tr>';
+  }).join('');
+
+  document.getElementById('modalBody').innerHTML = html;
+}
+
+function filterModal(q) {
+  var ql = q.toLowerCase();
+  var isDelayed = document.getElementById('modalHead').innerHTML.includes('Delay');
+  var isDisp    = document.getElementById('modalHead').innerHTML.includes('Shipment');
+  var filtered  = !ql ? _modalRows : _modalRows.filter(function(o) {
+    return (o.name + o.customer + o.salesman + o.state).toLowerCase().includes(ql);
+  });
+  renderModalRows(filtered, isDelayed, isDisp);
+}
+
+function closeModal() {
+  document.getElementById('cardModal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeModal();
+});
+</script>
+
+<%- include('partials/foot') %>

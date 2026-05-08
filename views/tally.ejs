@@ -1,0 +1,284 @@
+<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Financial Dashboard'}) %>
+  <div class="page">
+
+    <!-- CONNECTION STATUS -->
+    <% if(!connected){ %>
+    <div class="card" style="margin-bottom:20px;border-color:var(--danger)">
+      <div style="display:flex;align-items:center;gap:14px;padding:4px 0">
+        <div class="alert-icon r"><i class="fas fa-plug-circle-xmark"></i></div>
+        <div>
+          <div style="font-weight:700;color:var(--danger);margin-bottom:4px">TallyPrime Not Connected</div>
+          <div style="color:var(--text2);font-size:13px"><%- error || 'Could not connect to Tally at ' + tallyUrl %></div>
+          <div style="color:var(--text2);font-size:12px;margin-top:5px">
+            Connecting to: <strong><%- tallyUrl %></strong> &nbsp;·&nbsp;
+            Open TallyPrime → <strong>F12 → Advanced Config → Enable HTTP Server</strong>, port <strong>9000</strong>
+          </div>
+        </div>
+        <a href="/tally" style="margin-left:auto" class="topbar-refresh" title="Retry"><i class="fas fa-rotate-right"></i></a>
+      </div>
+    </div>
+    <% } else { %>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;font-size:13px;color:var(--accent2)">
+      <i class="fas fa-circle-check"></i>
+      <span>Connected to TallyPrime<% if(company){ %> · <strong style="color:var(--text)"><%- company %></strong><% } %></span>
+      <a href="/tally" class="topbar-refresh" title="Refresh" style="margin-left:auto"><i class="fas fa-rotate-right"></i></a>
+    </div>
+    <% } %>
+
+    <!-- STAT CARDS (5 key metrics) -->
+    <div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:24px">
+      <div class="stat-card success">
+        <div class="stat-label">Total Sales</div>
+        <div class="stat-value"><%- fmtShort(totalSales) %></div>
+        <div class="stat-sub">Sales ledger balance</div>
+        <i class="fas fa-arrow-trend-up stat-icon"></i>
+      </div>
+      <div class="stat-card warn">
+        <div class="stat-label">Total Purchases</div>
+        <div class="stat-value"><%- fmtShort(totalPurchases) %></div>
+        <div class="stat-sub">Purchase ledger balance</div>
+        <i class="fas fa-cart-flatbed stat-icon"></i>
+      </div>
+      <div class="stat-card danger">
+        <div class="stat-label">Total Expenses</div>
+        <div class="stat-value"><%- fmtShort(totalExpenses) %></div>
+        <div class="stat-sub">Indirect expenses</div>
+        <i class="fas fa-receipt stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Outstanding (Receivable)</div>
+        <div class="stat-value"><%- fmtShort(totalOutstanding) %></div>
+        <div class="stat-sub">Sundry debtors total</div>
+        <i class="fas fa-clock stat-icon"></i>
+      </div>
+      <div class="stat-card danger">
+        <div class="stat-label">Supplier Dues</div>
+        <div class="stat-value"><%- fmtShort(supplierDues) %></div>
+        <div class="stat-sub">Sundry creditors total</div>
+        <i class="fas fa-industry stat-icon"></i>
+      </div>
+    </div>
+
+    <!-- P&L SUMMARY BAR -->
+    <% var grossProfit = totalSales - totalPurchases - totalExpenses; %>
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 20px;margin-bottom:24px;display:flex;align-items:center;gap:28px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+        <i class="fas fa-chart-pie" style="color:var(--accent);font-size:12px"></i>
+        <span style="color:var(--text2);font-size:11px;text-transform:uppercase;letter-spacing:.8px;font-weight:600">P&L Summary</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;font-size:13px">
+        <span style="color:var(--text2)">Sales</span>
+        <strong style="color:var(--accent2)"><%- fmtShort(totalSales) %></strong>
+      </div>
+      <span style="color:var(--border);font-size:16px">−</span>
+      <div style="display:flex;align-items:center;gap:6px;font-size:13px">
+        <span style="color:var(--text2)">Purchases</span>
+        <strong style="color:var(--warn)"><%- fmtShort(totalPurchases) %></strong>
+      </div>
+      <span style="color:var(--border);font-size:16px">−</span>
+      <div style="display:flex;align-items:center;gap:6px;font-size:13px">
+        <span style="color:var(--text2)">Expenses</span>
+        <strong style="color:var(--danger)"><%- fmtShort(totalExpenses) %></strong>
+      </div>
+      <span style="color:var(--border);font-size:16px">=</span>
+      <div style="display:flex;align-items:center;gap:6px;font-size:13px;margin-left:auto">
+        <span style="color:var(--text2)">Net Profit</span>
+        <strong style="font-size:16px;color:<%- grossProfit>=0?'var(--accent2)':'var(--danger)' %>"><%- fmtShort(Math.abs(grossProfit)) %></strong>
+        <span style="font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;
+          background:<%- grossProfit>=0?'rgba(0,212,170,.12)':'rgba(255,77,109,.12)' %>;
+          color:<%- grossProfit>=0?'var(--accent2)':'var(--danger)' %>">
+          <%- grossProfit>=0?'Profit':'Loss' %>
+        </span>
+      </div>
+    </div>
+
+    <!-- DEBTORS (2/3) + CREDITORS COMPACT (1/3) -->
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-bottom:24px">
+
+      <!-- CUSTOMER OUTSTANDING -->
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+          <i class="fas fa-users" style="color:var(--accent2);font-size:13px"></i>
+          <span style="font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.8px">Customer Outstanding</span>
+          <% if(debtors.length>0){ %>
+          <span style="margin-left:auto;font-size:12px;color:var(--danger);font-weight:600"><%- fmt(totalOutstanding) %></span>
+          <% } %>
+        </div>
+        <% if(debtors.length===0){ %>
+          <div class="empty" style="padding:32px">
+            <i class="fas fa-check-circle" style="color:var(--accent2)"></i><br>
+            No outstanding receivables<% if(!connected){ %> (Tally not connected)<% } %>
+          </div>
+        <% } else { %>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:36px">#</th>
+                <th>Ledger / Customer</th>
+                <th style="text-align:right">Balance Due</th>
+              </tr>
+            </thead>
+            <tbody>
+            <% debtors.forEach(function(d,i){ %>
+              <tr>
+                <td class="muted" style="font-size:12px"><%- i+1 %></td>
+                <td style="font-weight:500"><%- d.name %></td>
+                <td style="text-align:right;color:var(--danger);font-weight:700"><%- fmt(d.balance) %></td>
+              </tr>
+            <% }) %>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:10px 20px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:12px;color:var(--text2)">
+          <span><%- debtors.length %> customer<%- debtors.length!==1?'s':'' %></span>
+          <strong style="color:var(--text)">Total: <%- fmt(totalOutstanding) %></strong>
+        </div>
+        <% } %>
+      </div>
+
+      <!-- SUPPLIER DUES (compact) -->
+      <div class="card" style="display:flex;flex-direction:column;gap:0">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+          <i class="fas fa-industry" style="color:var(--warn);font-size:13px"></i>
+          <span style="font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.8px">Supplier Dues</span>
+        </div>
+
+        <!-- Total highlight -->
+        <div style="background:<%- supplierDues>0?'rgba(255,169,77,.08)':'rgba(0,212,170,.07)' %>;border:1px solid <%- supplierDues>0?'rgba(255,169,77,.25)':'rgba(0,212,170,.2)' %>;border-radius:10px;padding:14px 16px;margin-bottom:16px;text-align:center">
+          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px">Total Payable</div>
+          <div style="font-size:22px;font-weight:700;color:<%- supplierDues>0?'var(--warn)':'var(--accent2)' %>"><%- fmt(supplierDues) %></div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px"><%- creditors.length %> supplier<%- creditors.length!==1?'s':'' %></div>
+        </div>
+
+        <% if(creditors.length===0){ %>
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px 0;color:var(--accent2)">
+          <i class="fas fa-circle-check" style="font-size:22px"></i>
+          <span style="font-size:13px;color:var(--text2)">No outstanding dues</span>
+        </div>
+        <% } else { %>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <% creditors.slice(0,8).forEach(function(cr,i){ %>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg3);border-radius:8px;border:1px solid var(--border)">
+            <span style="width:20px;height:20px;background:rgba(255,169,77,.2);color:var(--warn);font-size:10px;font-weight:700;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0"><%- i+1 %></span>
+            <span style="flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="<%- cr.name %>"><%- cr.name %></span>
+            <span style="font-size:12px;font-weight:700;color:var(--warn);white-space:nowrap"><%- fmt(cr.balance) %></span>
+          </div>
+          <% }) %>
+          <% if(creditors.length>8){ %>
+          <div style="text-align:center;font-size:12px;color:var(--text2);padding:4px">+<%- creditors.length-8 %> more</div>
+          <% } %>
+        </div>
+        <% } %>
+      </div>
+    </div>
+
+    <!-- RECENT VOUCHERS -->
+    <div class="card" style="margin-bottom:24px;padding:0;overflow:hidden">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+        <i class="fas fa-scroll" style="color:var(--accent);font-size:13px"></i>
+        <span style="font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.8px">Recent Vouchers — This Month</span>
+        <% if(recentVouchers.length>0){ %>
+        <span style="margin-left:auto;font-size:12px;color:var(--text2)"><%- recentVouchers.length %> entries</span>
+        <% } %>
+      </div>
+      <% if(recentVouchers.length===0){ %>
+        <div class="empty" style="padding:32px">
+          <i class="fas fa-scroll"></i><br>No recent transactions<% if(!connected){ %> (Tally not connected)<% } %>
+        </div>
+      <% } else { %>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Type</th>
+              <th>Voucher #</th>
+              <th>Party</th>
+              <th style="text-align:right">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+          <% recentVouchers.forEach(function(v){ %>
+            <tr>
+              <td class="muted"><%- v.date %></td>
+              <td>
+                <% var vc=v.type.toLowerCase();
+                   var cls=vc.includes('sales')?'badge-accepted':vc.includes('purchase')?'badge-partial':vc.includes('receipt')||vc.includes('payment')?'badge-paid':'badge-default'; %>
+                <span class="badge <%- cls %>"><%- v.type %></span>
+              </td>
+              <td class="muted"><%- v.num||'—' %></td>
+              <td style="font-weight:500"><%- v.party||'—' %></td>
+              <td style="text-align:right;color:var(--accent2);font-weight:700"><%- fmt(v.amt) %></td>
+            </tr>
+          <% }) %>
+          </tbody>
+        </table>
+      </div>
+      <% } %>
+    </div>
+
+    <!-- CHARTS: Top Receivables + Top Payables -->
+    <% if(connected && (debtors.length>0 || creditors.length>0)){ %>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-chart-bar" style="color:var(--danger)"></i> Top Receivables</div>
+        <div class="chart-box-sm"><canvas id="debtChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><i class="fas fa-chart-bar" style="color:var(--warn)"></i> Top Payables</div>
+        <% if(creditors.length===0){ %>
+          <div class="empty" style="height:180px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0;gap:8px">
+            <i class="fas fa-circle-check" style="font-size:28px;color:var(--accent2);opacity:.5"></i>
+            <span style="font-size:13px">No payables</span>
+          </div>
+        <% } else { %>
+          <div class="chart-box-sm"><canvas id="credChart"></canvas></div>
+        <% } %>
+      </div>
+    </div>
+    <% } %>
+
+  </div>
+</div>
+<%- include('partials/foot') %>
+
+<% if(connected && (debtors.length>0 || creditors.length>0)){ %>
+<script>
+Chart.defaults.color = '#8891b5';
+Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+
+const dLabels = <%- JSON.stringify(debtors.slice(0,8).map(function(d){ return d.name.split(' ').slice(0,2).join(' '); })) %>;
+const dData   = <%- JSON.stringify(debtors.slice(0,8).map(function(d){ return Math.round(d.balance); })) %>;
+const cLabels = <%- JSON.stringify(creditors.slice(0,8).map(function(c){ return c.name.split(' ').slice(0,2).join(' '); })) %>;
+const cData   = <%- JSON.stringify(creditors.slice(0,8).map(function(c){ return Math.round(c.balance); })) %>;
+
+if (document.getElementById('debtChart') && dData.length) {
+  new Chart(document.getElementById('debtChart'), {
+    type: 'bar',
+    data: { labels: dLabels, datasets: [{ label: 'Receivable', data: dData,
+      backgroundColor: 'rgba(255,77,109,.55)', borderColor: '#ff4d6d',
+      borderWidth: 1, borderRadius: 5 }] },
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, ticks: { callback: v => '₹' + Math.round(v/1000) + 'K' } },
+                x: { grid: { display: false } } } }
+  });
+}
+if (document.getElementById('credChart') && cData.length) {
+  new Chart(document.getElementById('credChart'), {
+    type: 'bar',
+    data: { labels: cLabels, datasets: [{ label: 'Payable', data: cData,
+      backgroundColor: 'rgba(255,169,77,.55)', borderColor: '#ffa94d',
+      borderWidth: 1, borderRadius: 5 }] },
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, ticks: { callback: v => '₹' + Math.round(v/1000) + 'K' } },
+                x: { grid: { display: false } } } }
+  });
+}
+</script>
+<% } %>

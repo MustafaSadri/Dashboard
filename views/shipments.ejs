@@ -1,0 +1,205 @@
+﻿<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Shipments – Day Wise'}) %>
+  <div class="page">
+
+    <!-- FILTER BAR -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      <label style="font-size:13px;color:var(--text2)"><i class="fas fa-filter"></i> Filter by Month:</label>
+      <select id="monthFilter" onchange="applyFilter()"
+        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);
+               padding:8px 16px;border-radius:8px;font-size:13px;outline:none;cursor:pointer">
+        <option value="">All Records</option>
+        <% months.forEach(function(m){ %>
+          <option value="<%- m.key %>"><%- m.label %></option>
+        <% }) %>
+      </select>
+      <span id="filterNote" style="font-size:12px;color:var(--text2)">
+        Showing all <%- totalCount %> shipments from MoySklad
+        <% if(msTotal > totalCount){ %> (<%- msTotal %> total in MoySklad)<% } %>
+      </span>
+    </div>
+
+    <!-- STAT CARDS -->
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
+      <div class="stat-card success">
+        <div class="stat-label">Total Shipments</div>
+        <div class="stat-value" id="statCount"><%- totalCount %></div>
+        <div class="stat-sub" id="statCountSub">All records</div>
+        <i class="fas fa-truck stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Value</div>
+        <div class="stat-value" id="statValue"><%- fmtShort(grandTotal) %></div>
+        <div class="stat-sub" id="statAvg">Avg: <%- totalCount>0 ? fmtShort(grandTotal/totalCount) : '—' %> per shipment</div>
+        <i class="fas fa-indian-rupee-sign stat-icon"></i>
+      </div>
+      <div class="stat-card" id="growthCard">
+        <div class="stat-label">Monthly Growth</div>
+        <div class="stat-value" id="statGrowth">—</div>
+        <div class="stat-sub" id="statGrowthSub">vs previous month</div>
+        <i class="fas fa-chart-line stat-icon"></i>
+      </div>
+    </div>
+
+    <!-- TABLE -->
+    <div class="card">
+      <div class="card-title">
+        <i class="fas fa-table"></i>
+        <span id="tableTitle">Day-wise Shipments — All Records</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Day</th>
+              <th style="text-align:right">Shipments</th>
+              <th style="text-align:right">Total Value</th>
+              <th style="text-align:right">Avg per Shipment</th>
+            </tr>
+          </thead>
+          <tbody id="shipmentsBody"></tbody>
+          <tfoot>
+            <tr id="tableFooter" style="border-top:2px solid var(--border)">
+              <td colspan="2"><strong>Total</strong></td>
+              <td style="text-align:right;font-weight:700" id="footCount"><%- totalCount %></td>
+              <td style="text-align:right;font-weight:700;color:var(--accent2)" id="footVal"></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <div style="text-align:center;margin-top:16px">
+      <a href="/" style="color:var(--text2);font-size:13px;text-decoration:none">
+        <i class="fas fa-arrow-left"></i> Back to Dashboard
+      </a>
+    </div>
+
+  </div>
+</div>
+<%- include('partials/foot') %>
+
+<script>
+// All day data from server (already newest-first)
+const ALL_DAYS = <%- JSON.stringify(days) %>;
+const TODAY    = new Date().toISOString().slice(0, 10);
+
+// Month metadata for label lookup
+const MONTH_META = {};
+<% months.forEach(function(m){ %>
+  MONTH_META['<%- m.key %>'] = '<%- m.label %>';
+<% }); %>
+
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function fmtShort(n) {
+  if (n == null || isNaN(n)) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e7) return '₹' + (n/1e7).toFixed(2) + ' Cr';
+  if (a >= 1e5) return '₹' + (n/1e5).toFixed(1) + ' L';
+  if (a >= 1e3) return '₹' + Math.round(n/1e3) + 'K';
+  return '₹' + Math.round(n);
+}
+function fmtFull(n) {
+  return '₹' + Math.round(n).toLocaleString('en-IN');
+}
+function dayName(dateStr) {
+  return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-IN', { weekday: 'long' });
+}
+
+function applyFilter() {
+  const month = document.getElementById('monthFilter').value;
+  const filtered = month ? ALL_DAYS.filter(d => d.date.startsWith(month)) : ALL_DAYS;
+
+  const totalCount = filtered.reduce((a, d) => a + d.count, 0);
+  const totalVal   = filtered.reduce((a, d) => a + d.total, 0) / 100;
+
+  // Update stat cards
+  document.getElementById('statCount').textContent = totalCount;
+  document.getElementById('statCountSub').textContent = month
+    ? (MONTH_META[month] || month)
+    : 'All records';
+  document.getElementById('statValue').textContent = fmtShort(totalVal);
+  document.getElementById('statAvg').textContent = totalCount > 0
+    ? 'Avg: ' + fmtShort(totalVal / totalCount) + ' per shipment'
+    : 'No shipments';
+
+  // Monthly growth calculation
+  const now = new Date();
+  const currentMonthKey = month ||
+    now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+  const [cy, cm] = currentMonthKey.split('-').map(Number);
+  const prevMonthKey = cm === 1
+    ? (cy - 1) + '-12'
+    : cy + '-' + String(cm - 1).padStart(2, '0');
+
+  function monthTotal(key) {
+    return ALL_DAYS.filter(d => d.date.startsWith(key))
+      .reduce((a, d) => a + d.total, 0) / 100;
+  }
+
+  const currVal = monthTotal(currentMonthKey);
+  const prevVal = monthTotal(prevMonthKey);
+  const prevLabel = MONTH_META[prevMonthKey] || prevMonthKey;
+
+  const growthCard = document.getElementById('growthCard');
+  const growthEl   = document.getElementById('statGrowth');
+  const growthSub  = document.getElementById('statGrowthSub');
+
+  if (prevVal === 0) {
+    growthEl.textContent  = currVal > 0 ? 'New' : '—';
+    growthSub.textContent = 'No data for ' + prevLabel;
+    growthCard.className  = 'stat-card';
+  } else {
+    const pct = ((currVal - prevVal) / prevVal) * 100;
+    growthEl.textContent  = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+    growthSub.textContent = 'vs ' + prevLabel;
+    growthCard.className  = 'stat-card ' + (pct >= 0 ? 'success' : 'danger');
+  }
+
+  // Update table title
+  document.getElementById('tableTitle').textContent = month
+    ? 'Day-wise Shipments — ' + (MONTH_META[month] || month)
+    : 'Day-wise Shipments — All Records';
+
+  // Update filter note
+  document.getElementById('filterNote').textContent = month
+    ? filtered.length + ' day(s) in ' + (MONTH_META[month] || month)
+    : 'Showing all ' + ALL_DAYS.reduce((a,d)=>a+d.count,0) + ' shipments';
+
+  // Rebuild table body
+  const tbody = document.getElementById('shipmentsBody');
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text2)">No shipments for this period</td></tr>';
+    document.getElementById('footCount').textContent = 0;
+    document.getElementById('footVal').textContent = '—';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(row => {
+    const isToday = row.date === TODAY;
+    const avg = row.count > 0 ? row.total / 100 / row.count : 0;
+    const todayBadge = isToday
+      ? ' <span class="badge badge-accepted" style="font-size:9px;padding:2px 6px">Today</span>'
+      : '';
+    return `<tr style="${isToday ? 'background:rgba(108,99,255,.07)' : ''}">
+      <td><strong>${row.date}</strong>${todayBadge}</td>
+      <td class="muted">${dayName(row.date)}</td>
+      <td style="text-align:right;font-weight:700;font-size:15px">${row.count}</td>
+      <td style="text-align:right;color:var(--accent2);font-weight:600">${fmtFull(row.total/100)}</td>
+      <td style="text-align:right" class="muted">${avg > 0 ? fmtFull(avg) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // Update footer
+  document.getElementById('footCount').textContent = totalCount;
+  document.getElementById('footVal').textContent = fmtFull(totalVal);
+}
+
+// Initial render
+applyFilter();
+</script>

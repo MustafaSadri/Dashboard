@@ -1,0 +1,68 @@
+﻿<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Inventory'}) %>
+  <div class="page">
+
+    <div class="stats-grid">
+      <div class="stat-card success"><div class="stat-label">Total SKUs</div><div class="stat-value"><%- totalSKU %></div><i class="fas fa-boxes-stacked stat-icon"></i></div>
+      <div class="stat-card warn"><div class="stat-label">Low Stock</div><div class="stat-value"><%- low %></div><div class="stat-sub">qty ≤ 5</div><i class="fas fa-exclamation-triangle stat-icon"></i></div>
+      <div class="stat-card danger"><div class="stat-label">Out of Stock</div><div class="stat-value"><%- outStk %></div><i class="fas fa-box-open stat-icon"></i></div>
+      <div class="stat-card"><div class="stat-label">Stock Value</div><div class="stat-value"><%- fmtShort(totalVal) %></div><div class="stat-sub"><%- totalQty %> total qty</div><i class="fas fa-coins stat-icon"></i></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fas fa-filter"></i> Filter</div>
+      <form class="filter-bar" method="get">
+        <label>Category:</label>
+        <select name="folder" onchange="this.form.submit()">
+          <option value="">All Categories</option>
+          <% folders.forEach(function(f){ %>
+            <option value="<%- f %>" <%- filterFolder===f?'selected':'' %>><%- f %></option>
+          <% }) %>
+        </select>
+        <% if(filterFolder){ %>
+          <a href="/inventory" style="color:var(--text2);font-size:12px;margin-left:4px">Clear</a>
+        <% } %>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fas fa-table"></i> Stock Items (<%- items.length %>)</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Item Name</th><th>Code</th><th>Category</th>
+            <th style="text-align:right">Qty</th>
+            <th style="text-align:right">Price</th>
+            <th style="text-align:right">Value</th>
+            <th style="text-align:right">Days</th>
+            <th>Status</th>
+          </tr></thead>
+          <tbody>
+          <% if(items.length===0){ %>
+            <tr><td colspan="8"><div class="empty">No items found</div></td></tr>
+          <% } %>
+          <% items.forEach(function(item){ %>
+            <tr>
+              <td><strong><%- item.name %></strong></td>
+              <td class="muted"><%- item.code %></td>
+              <td class="muted"><%- item.folder %></td>
+              <td style="text-align:right; font-weight:600"><%- item.qty %></td>
+              <td style="text-align:right"><%- fmt(item.price) %></td>
+              <td style="text-align:right; color:var(--accent2)"><%- fmt(item.val) %></td>
+              <td style="text-align:right" class="muted"><%- item.stockDays %>d</td>
+              <td>
+                <% var sc = item.status==='In Stock'?'badge-instock':item.status==='Low Stock'?'badge-low':'badge-out'; %>
+                <span class="badge <%- sc %>"><%- item.status %></span>
+              </td>
+            </tr>
+          <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+<%- include('partials/foot') %>

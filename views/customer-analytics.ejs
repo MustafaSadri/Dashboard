@@ -1,0 +1,244 @@
+<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Customer Analytics'}) %>
+  <div class="page">
+
+    <!-- CUSTOMER HEADER -->
+    <div class="card" style="margin-bottom:20px;padding:18px 20px">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+                    display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;flex-shrink:0">
+          <%- cp.name.charAt(0).toUpperCase() %>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:20px;font-weight:700"><%- cp.name %></div>
+          <div style="font-size:13px;color:var(--text2);margin-top:3px;display:flex;gap:16px;flex-wrap:wrap">
+            <% if(cp.phone!=='—'){ %><span><i class="fas fa-phone" style="margin-right:5px;opacity:.6"></i><%- cp.phone %></span><% } %>
+            <% if(cp.email!=='—'){ %><span><i class="fas fa-envelope" style="margin-right:5px;opacity:.6"></i><%- cp.email %></span><% } %>
+          </div>
+        </div>
+        <a href="/" style="color:var(--text2);font-size:13px;text-decoration:none;flex-shrink:0">
+          <i class="fas fa-arrow-left"></i> Dashboard
+        </a>
+      </div>
+    </div>
+
+    <!-- STAT CARDS -->
+    <div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:20px">
+      <div class="stat-card success">
+        <div class="stat-label">Total Orders</div>
+        <div class="stat-value" id="cStatOrders"><%- totalOrders %></div>
+        <div class="stat-sub" id="cStatOrdersSub">All time</div>
+        <i class="fas fa-shopping-cart stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Revenue</div>
+        <div class="stat-value" id="cStatRevenue"><%- fmtShort(totalRevenue) %></div>
+        <div class="stat-sub" id="cStatRevenueSub">All orders</div>
+        <i class="fas fa-indian-rupee-sign stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Order Value</div>
+        <div class="stat-value" id="cStatAvg"><%- fmtShort(avgOrderValue) %></div>
+        <div class="stat-sub">Per order</div>
+        <i class="fas fa-chart-line stat-icon"></i>
+      </div>
+      <div class="stat-card warn">
+        <div class="stat-label">Pending Orders</div>
+        <div class="stat-value" id="cStatPending"><%- pending %></div>
+        <div class="stat-sub" id="cStatPendingSub">Awaiting dispatch</div>
+        <i class="fas fa-clock stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Orders</div>
+        <div class="stat-value"><%- totalOrders %></div>
+        <div class="stat-sub">Lifetime</div>
+        <i class="fas fa-boxes-stacked stat-icon"></i>
+      </div>
+    </div>
+
+    <!-- FILTER BAR -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px">
+      <i class="fas fa-filter" style="color:var(--text2);font-size:13px"></i>
+      <label style="font-size:13px;color:var(--text2)">Month:</label>
+      <select id="monthFilter" onchange="applyFilter()"
+        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:8px;font-size:13px;outline:none;cursor:pointer">
+        <option value="">All Time</option>
+        <% [...monthlyTrend].reverse().forEach(function(m){ %>
+          <option value="<%- m.key %>"><%- m.label %></option>
+        <% }) %>
+      </select>
+      <label style="font-size:13px;color:var(--text2);margin-left:8px">From:</label>
+      <input type="date" id="fromDate" onchange="applyFilter()"
+        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:8px;font-size:13px;outline:none">
+      <label style="font-size:13px;color:var(--text2)">To:</label>
+      <input type="date" id="toDate" onchange="applyFilter()"
+        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:8px;font-size:13px;outline:none">
+      <button onclick="clearFilter()" style="background:none;border:1px solid var(--border);color:var(--text2);padding:6px 14px;border-radius:8px;font-size:12px;cursor:pointer">
+        <i class="fas fa-xmark"></i> Clear
+      </button>
+      <span id="filterNote" style="margin-left:auto;font-size:12px;color:var(--text2)"></span>
+    </div>
+
+    <!-- CHART + TOP PRODUCTS -->
+    <div class="grid-2" style="margin-bottom:20px">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-chart-column"></i> Purchase Trend</div>
+        <div class="chart-box"><canvas id="trendChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><i class="fas fa-trophy"></i> Most Bought Products</div>
+        <% if(topProducts.length===0){ %>
+          <div class="empty"><i class="fas fa-box-open"></i>No product data</div>
+        <% } else { %>
+        <ul class="top-list">
+          <% topProducts.forEach(function(p,i){ %>
+          <li style="position:relative;transition:background .15s;border-radius:6px"
+              onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+            <% if(p.id){ %><a href="/product-analytics?id=<%- p.id %>&type=<%- p.type %>&name=<%- encodeURIComponent(p.name) %>" style="position:absolute;inset:0;z-index:1" title="View product analytics"></a><% } %>
+            <span class="top-rank <%- i===0?'gold':'' %>"><%- i+1 %></span>
+            <span class="name"><%- p.name %></span>
+            <span class="sub">×<%- p.qty %></span>
+            <span class="val"><%- fmtShort(p.val) %></span>
+          </li>
+          <% }) %>
+        </ul>
+        <% } %>
+      </div>
+    </div>
+
+    <!-- ORDER HISTORY TABLE -->
+    <div class="card">
+      <div class="card-title">
+        <i class="fas fa-scroll"></i> Order History
+        <span id="orderCount" style="margin-left:8px;font-size:12px;color:var(--text2);font-weight:400"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Order No.</th>
+              <th>Date</th>
+              <th>Status</th>
+              <th style="text-align:right">Order Value</th>
+              <th style="text-align:right">Paid</th>
+              <th style="text-align:right">Outstanding</th>
+            </tr>
+          </thead>
+          <tbody id="orderBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+<%- include('partials/foot') %>
+
+<script>
+const ALL_ORDERS   = <%- ordersJSON %>;
+const TREND_DATA   = <%- trendJSON %>;
+const COLORS = { accent:'#6c63ff', accent2:'#00d4aa', warn:'#ffa94d', text2:'#8891b5', bg3:'#252840' };
+
+function fmtShort(n) {
+  if(!n||isNaN(n)) return '—';
+  const a=Math.abs(n);
+  if(a>=1e7) return '₹'+(n/1e7).toFixed(2)+' Cr';
+  if(a>=1e5) return '₹'+(n/1e5).toFixed(1)+' L';
+  if(a>=1e3) return '₹'+Math.round(n/1e3)+'K';
+  return '₹'+Math.round(n);
+}
+function fmtFull(n){ return '₹'+Math.round(n||0).toLocaleString('en-IN'); }
+
+// Trend chart
+Chart.defaults.color = COLORS.text2;
+Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+const trendChart = new Chart(document.getElementById('trendChart'), {
+  type: 'bar',
+  data: {
+    labels:   TREND_DATA.map(m => m.label),
+    datasets: [
+      { label:'Revenue', data: TREND_DATA.map(m=>Math.round(m.revenue)),
+        backgroundColor:'rgba(108,99,255,.65)', borderColor:COLORS.accent, borderWidth:1, borderRadius:5, yAxisID:'y' },
+      { label:'Orders', data: TREND_DATA.map(m=>m.count),
+        type:'line', borderColor:COLORS.accent2, backgroundColor:'rgba(0,212,170,.15)',
+        borderWidth:2, pointRadius:4, tension:.35, fill:true, yAxisID:'y1' }
+    ]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{ display:true, labels:{ color:COLORS.text2, boxWidth:12 } } },
+    scales:{
+      y:  { beginAtZero:true, ticks:{ callback: v=>fmtShort(v) }, grid:{ color:'rgba(108,99,255,.07)' } },
+      y1: { position:'right', beginAtZero:true, ticks:{ precision:0 }, grid:{ display:false } },
+      x:  { grid:{ display:false } }
+    }
+  }
+});
+
+function statusClass(s) {
+  const l=s.toLowerCase();
+  if(l.includes('dispatch')) return 'badge-paid';
+  if(l.includes('accept'))   return 'badge-accepted';
+  if(l.includes('new'))      return 'badge-default';
+  return 'badge-partial';
+}
+
+function applyFilter() {
+  const month  = document.getElementById('monthFilter').value;
+  const from   = document.getElementById('fromDate').value;
+  const to     = document.getElementById('toDate').value;
+
+  // Sync month picker with date range picker (reset one if other is used)
+  let filtered = ALL_ORDERS;
+  if (month) {
+    filtered = filtered.filter(o => o.month === month);
+    document.getElementById('fromDate').value = '';
+    document.getElementById('toDate').value   = '';
+  } else {
+    if (from) filtered = filtered.filter(o => o.date >= from);
+    if (to)   filtered = filtered.filter(o => o.date <= to);
+  }
+
+  // Update stats
+  const count   = filtered.length;
+  const revenue = filtered.reduce((a,o)=>a+o.sum,0);
+  const avg     = count>0 ? revenue/count : 0;
+  const pend    = filtered.filter(o=>o.state.toLowerCase()!=='dispatched'&&o.state!=='—').length;
+
+  document.getElementById('cStatOrders').textContent    = count;
+  document.getElementById('cStatOrdersSub').textContent = month || (from||to ? 'Selected range' : 'All time');
+  document.getElementById('cStatRevenue').textContent   = fmtShort(revenue);
+  document.getElementById('cStatAvg').textContent       = fmtShort(avg);
+  document.getElementById('cStatPending').textContent   = pend;
+  document.getElementById('orderCount').textContent     = count + ' order' + (count!==1?'s':'');
+  document.getElementById('filterNote').textContent     = count + ' of ' + ALL_ORDERS.length + ' orders';
+
+  // Rebuild table
+  const tbody = document.getElementById('orderBody');
+  if(filtered.length===0){
+    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text2)">No orders in this period</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(o => {
+    const out = o.sum - o.paid;
+    return `<tr>
+      <td><strong>${o.name}</strong></td>
+      <td class="muted">${o.date}</td>
+      <td><span class="badge ${statusClass(o.state)}">${o.state}</span></td>
+      <td style="text-align:right;font-weight:600">${fmtFull(o.sum)}</td>
+      <td style="text-align:right;color:var(--accent2)">${fmtFull(o.paid)}</td>
+      <td style="text-align:right;color:${out>0?'var(--danger)':'var(--accent2)'}">${out>0?fmtFull(out):'—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function clearFilter() {
+  document.getElementById('monthFilter').value = '';
+  document.getElementById('fromDate').value    = '';
+  document.getElementById('toDate').value      = '';
+  applyFilter();
+}
+
+applyFilter();
+</script>

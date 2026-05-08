@@ -1,0 +1,14 @@
+﻿<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Error'}) %>
+  <div class="page">
+    <div class="card" style="text-align:center;padding:48px">
+      <i class="fas fa-triangle-exclamation" style="font-size:48px;color:var(--danger);margin-bottom:20px;display:block"></i>
+      <h2 style="margin-bottom:10px;color:var(--danger)">Something went wrong</h2>
+      <p style="color:var(--text2);margin-bottom:24px"><%- message %></p>
+      <a href="/" style="color:var(--accent);text-decoration:none"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
+    </div>
+  </div>
+</div>
+<%- include('partials/foot') %>

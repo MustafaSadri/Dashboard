@@ -1,0 +1,155 @@
+﻿<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Dashboard'}) %>
+  <div class="page">
+
+    <!-- STAT CARDS -->
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
+      <a href="/shipments" style="text-decoration:none">
+      <div class="stat-card success" style="cursor:pointer" title="Click to see day-wise shipments">
+        <div class="stat-label">Sales Today <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
+        <div class="stat-value"><%- fmtShort(salesToday) %></div>
+        <div class="stat-sub"><%- shipmentsToday %> shipment(s) today</div>
+        <i class="fas fa-truck stat-icon"></i>
+      </div>
+      </a>
+      <a href="/pending" style="text-decoration:none">
+      <div class="stat-card" style="cursor:pointer" title="Click to see pending orders">
+        <div class="stat-label">Pending Orders <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
+        <div class="stat-value"><%- pending %></div>
+        <div class="stat-sub">
+          <% if(pendingStates.length===0){ %>No pending orders
+          <% } else { pendingStates.forEach(function(s,i){ %><%- s.name %>: <%- s.count %><%- i<pendingStates.length-1?' · ':'' %>
+          <% }) } %>
+        </div>
+        <i class="fas fa-shopping-cart stat-icon"></i>
+      </div>
+      </a>
+      <a href="/stock-alerts" style="text-decoration:none">
+      <div class="stat-card warn" title="Click to see stock alerts">
+        <div class="stat-label">Stock Alerts <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
+        <div class="stat-value"><%- lowStock + outStock %></div>
+        <div class="stat-sub"><%- outStock %> out · <%- lowStock %> low · <%- totalSKU %> total SKUs</div>
+        <i class="fas fa-boxes-stacked stat-icon"></i>
+      </div>
+      </a>
+    </div>
+
+    <!-- ORDERS CHART – full width -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">
+        <i class="fas fa-chart-column"></i> Orders – Last 8 Days
+        <span id="chartRangeLabel" style="margin-left:auto;font-size:11px;color:var(--text2);font-weight:400"></span>
+      </div>
+      <div class="chart-box"><canvas id="weeklyChart"></canvas></div>
+      <div style="text-align:center;margin-top:14px">
+        <button id="seeMoreBtn" onclick="loadMoreDays()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:7px 22px;border-radius:7px;font-size:12px;cursor:pointer;transition:all .15s" onmouseover="this.style.color='var(--accent)';this.style.borderColor='var(--accent)'" onmouseout="this.style.color='var(--text2)';this.style.borderColor='var(--border)'">
+          <i class="fas fa-chevron-down"></i> See More
+        </button>
+      </div>
+    </div>
+
+    <!-- TABLES ROW -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-trophy"></i> Top Products This Month</div>
+        <% if(products.length===0){ %>
+          <div class="empty"><i class="fas fa-box-open"></i>No sales data yet</div>
+        <% } else { %>
+        <ul class="top-list">
+          <% products.forEach(function(p,i){ %>
+          <li style="position:relative;transition:background .15s;border-radius:6px" onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+            <% if(p.id){ %><a href="/product-analytics?id=<%- p.id %>&type=<%- p.type %>&name=<%- encodeURIComponent(p.name) %>" style="position:absolute;inset:0;z-index:1" title="View analytics for <%- p.name %>"></a><% } %>
+            <span class="top-rank <%- i===0?'gold':'' %>"><%- i+1 %></span>
+            <span class="name"><%- p.name %></span>
+            <span class="sub">×<%- p.qty %></span>
+            <span class="val"><%- fmtShort(p.val) %></span>
+          </li>
+          <% }) %>
+        </ul>
+        <% } %>
+      </div>
+      <div class="card">
+        <div class="card-title"><i class="fas fa-star"></i> Top Customers This Month</div>
+        <% if(customers.length===0){ %>
+          <div class="empty"><i class="fas fa-users"></i>No customer data yet</div>
+        <% } else { %>
+        <ul class="top-list">
+          <% customers.forEach(function(c,i){ %>
+          <li style="position:relative;transition:background .15s;border-radius:6px" onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+            <% if(c.id){ %><a href="/customer-analytics?id=<%- c.id %>&name=<%- encodeURIComponent(c.name) %>" style="position:absolute;inset:0;z-index:1" title="View analytics for <%- c.name %>"></a><% } %>
+            <span class="top-rank <%- i===0?'gold':'' %>"><%- i+1 %></span>
+            <span class="name"><%- c.name %></span>
+            <span class="sub"><%- c.orders %> orders</span>
+            <span class="val"><%- fmtShort(c.val) %></span>
+          </li>
+          <% }) %>
+        </ul>
+        <% } %>
+      </div>
+    </div>
+
+
+  </div>
+</div>
+<%- include('partials/foot') %>
+
+<script>
+const COLORS = { accent:'#6c63ff', accent2:'#00d4aa', danger:'#ff4d6d', warn:'#ffa94d', text2:'#8891b5', bg3:'#252840' };
+Chart.defaults.color = COLORS.text2;
+Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+
+// weekly[0]=today, weekly[1]=yesterday — newest LEFT, oldest RIGHT
+const weekly = <%- weeklyData %>;
+let chartOffset = weekly.length;
+
+function makeLabel(daysAgo) {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function updateRangeLabel() {
+  const lbls = weeklyChart.data.labels;
+  if (lbls.length)
+    document.getElementById('chartRangeLabel').textContent = lbls[lbls.length-1] + ' → ' + lbls[0];
+}
+
+const weeklyChart = new Chart(document.getElementById('weeklyChart'), {
+  type: 'bar',
+  data: {
+    labels: weekly.map((_, i) => makeLabel(i)),
+    datasets: [{ label:'Orders', data: weekly,
+      backgroundColor:'rgba(108,99,255,.65)', borderColor:COLORS.accent,
+      borderWidth:1, borderRadius:5 }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend:{ display:false },
+      tooltip:{ callbacks:{ title: i=>i[0].label, label: c=>`${c.raw} orders` }}},
+    scales: { y:{ beginAtZero:true, ticks:{ precision:0 }}, x:{ grid:{ display:false }}}
+  }
+});
+updateRangeLabel();
+
+async function loadMoreDays() {
+  const btn = document.getElementById('seeMoreBtn');
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+  btn.disabled = true;
+  try {
+    const resp = await fetch(`/api/orders/daily?offset=${chartOffset}`);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    data.forEach((item, i) => {
+      weeklyChart.data.labels.push(makeLabel(chartOffset + i));
+      weeklyChart.data.datasets[0].data.push(item.count);
+    });
+    weeklyChart.update();
+    chartOffset += data.length;
+    updateRangeLabel();
+  } catch(e) { console.error('See More failed:', e.message); }
+  btn.innerHTML = '<i class="fas fa-chevron-down"></i> See More';
+  btn.disabled = false;
+}
+</script>

@@ -1,0 +1,93 @@
+﻿<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Reports'}) %>
+  <div class="page">
+
+    <div class="stats-grid">
+      <div class="stat-card success"><div class="stat-label">Total Sales</div><div class="stat-value"><%- fmtShort(totalSell) %></div><i class="fas fa-indian-rupee-sign stat-icon"></i></div>
+      <div class="stat-card"><div class="stat-label">Total Profit</div><div class="stat-value"><%- fmtShort(totalProfit) %></div><i class="fas fa-chart-line stat-icon"></i></div>
+      <div class="stat-card"><div class="stat-label">Products Sold</div><div class="stat-value"><%- products.length %></div><i class="fas fa-box stat-icon"></i></div>
+      <div class="stat-card"><div class="stat-label">Active Customers</div><div class="stat-value"><%- customers.length %></div><i class="fas fa-users stat-icon"></i></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-chart-bar"></i> Top Products by Sales</div>
+        <div class="chart-box"><canvas id="prodChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><i class="fas fa-chart-pie"></i> Top Customers by Sales</div>
+        <div class="chart-box"><canvas id="custChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-box"></i> Products – This Month</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Product</th><th style="text-align:right">Qty</th><th style="text-align:right">Sales</th><th style="text-align:right">Cost</th><th style="text-align:right">Profit</th><th style="text-align:right">Margin</th></tr></thead>
+            <tbody>
+            <% products.forEach(function(p,i){ %>
+              <tr>
+                <td class="muted"><%- i+1 %></td>
+                <td><%- p.name %></td>
+                <td style="text-align:right"><%- p.qty %></td>
+                <td style="text-align:right;color:var(--accent2)"><%- fmt(p.sell) %></td>
+                <td style="text-align:right" class="muted"><%- fmt(p.cost) %></td>
+                <td style="text-align:right;color:<%- p.profit>=0?'var(--accent2)':'var(--danger)' %>"><%- fmt(p.profit) %></td>
+                <td style="text-align:right" class="muted"><%- p.margin %></td>
+              </tr>
+            <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><i class="fas fa-users"></i> Customers – This Month</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Customer</th><th style="text-align:right">Orders</th><th style="text-align:right">Sales</th><th style="text-align:right">Profit</th></tr></thead>
+            <tbody>
+            <% customers.forEach(function(c,i){ %>
+              <tr>
+                <td class="muted"><%- i+1 %></td>
+                <td><%- c.name %></td>
+                <td style="text-align:right"><%- c.orders %></td>
+                <td style="text-align:right;color:var(--accent2)"><%- fmt(c.val) %></td>
+                <td style="text-align:right;color:<%- c.profit>=0?'var(--accent2)':'var(--danger)' %>"><%- fmt(c.profit) %></td>
+              </tr>
+            <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+<%- include('partials/foot') %>
+
+<script>
+Chart.defaults.color = '#8891b5';
+Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+const pLabels = <%- prodChartLabels %>;
+const pData   = <%- prodChartData %>;
+const cLabels = <%- custChartLabels %>;
+const cData   = <%- custChartData %>;
+
+new Chart(document.getElementById('prodChart'),{
+  type:'bar',
+  data:{labels:pLabels,datasets:[{label:'Sales (₹)',data:pData,backgroundColor:'rgba(108,99,255,.65)',borderColor:'#6c63ff',borderWidth:1,borderRadius:5}]},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+});
+
+const palette=['rgba(108,99,255,.75)','rgba(0,212,170,.75)','rgba(255,169,77,.75)','rgba(255,77,109,.75)','rgba(100,180,255,.75)','rgba(200,100,255,.75)','rgba(255,200,50,.75)','rgba(50,200,150,.75)'];
+new Chart(document.getElementById('custChart'),{
+  type:'doughnut',
+  data:{labels:cLabels,datasets:[{data:cData,backgroundColor:palette.slice(0,cData.length),borderWidth:2,borderColor:'#1a1d2e'}]},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{boxWidth:12,padding:12}}}}
+});
+</script>

@@ -1,0 +1,51 @@
+﻿<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Purchases'}) %>
+  <div class="page">
+
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-label">Total POs</div><div class="stat-value"><%- total %></div><i class="fas fa-cart-flatbed stat-icon"></i></div>
+      <div class="stat-card"><div class="stat-label">This Page</div><div class="stat-value"><%- purchases.length %></div><i class="fas fa-list stat-icon"></i></div>
+      <div class="stat-card"><div class="stat-label">Page</div><div class="stat-value"><%- page %> / <%- pages||1 %></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fas fa-cart-flatbed"></i> Purchase Orders</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>PO #</th><th>Supplier</th><th>Date</th>
+            <th style="text-align:right">Amount</th><th>Status</th>
+          </tr></thead>
+          <tbody>
+          <% if(purchases.length===0){ %>
+            <tr><td colspan="5"><div class="empty">No purchase orders found</div></td></tr>
+          <% } %>
+          <% purchases.forEach(function(p){ %>
+            <tr>
+              <td><strong><%- p.name %></strong></td>
+              <td><%- p.supplier %></td>
+              <td><%- p.date %></td>
+              <td style="text-align:right"><%- fmt(p.sum) %></td>
+              <td><span class="badge badge-default"><%- p.state %></span></td>
+            </tr>
+          <% }) %>
+          </tbody>
+        </table>
+      </div>
+      <% if(pages>1){ %>
+      <div class="pagination">
+        <span class="page-info"><%- total %> total</span>
+        <% if(page>1){ %><a href="/purchases?page=<%- page-1 %>" class="page-btn"><i class="fas fa-chevron-left"></i></a><% } %>
+        <% for(var p=Math.max(1,page-2); p<=Math.min(pages,page+2); p++){ %>
+          <a href="/purchases?page=<%- p %>" class="page-btn <%- p===page?'active':'' %>"><%- p %></a>
+        <% } %>
+        <% if(page<pages){ %><a href="/purchases?page=<%- page+1 %>" class="page-btn"><i class="fas fa-chevron-right"></i></a><% } %>
+      </div>
+      <% } %>
+    </div>
+
+  </div>
+</div>
+<%- include('partials/foot') %>

@@ -1,0 +1,165 @@
+<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Stock Alerts'}) %>
+  <div class="page">
+
+    <!-- SUMMARY CARDS -->
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
+      <div class="stat-card danger">
+        <div class="stat-label">Out of Stock</div>
+        <div class="stat-value"><%- outTotal %></div>
+        <div class="stat-sub">Zero quantity — needs restock</div>
+        <i class="fas fa-box-open stat-icon"></i>
+      </div>
+      <div class="stat-card warn">
+        <div class="stat-label">Low Stock</div>
+        <div class="stat-value"><%- lowTotal %></div>
+        <div class="stat-sub">≤ <%- threshold %> units remaining</div>
+        <i class="fas fa-triangle-exclamation stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total SKUs</div>
+        <div class="stat-value"><%- totalSKU %></div>
+        <div class="stat-sub"><%- categories.length %> categories affected</div>
+        <i class="fas fa-boxes-stacked stat-icon"></i>
+      </div>
+    </div>
+
+    <% if(categories.length === 0){ %>
+    <div class="card">
+      <div class="empty"><i class="fas fa-check-circle" style="color:var(--accent2)"></i><br>No stock alerts — everything is well stocked!</div>
+    </div>
+    <% } else { %>
+
+    <!-- CATEGORY ACCORDION -->
+    <% categories.forEach(function(cat, ci){ %>
+    <div class="card" style="margin-bottom:14px;padding:0;overflow:hidden">
+
+      <!-- Category Header (click to expand) -->
+      <div class="cat-header" onclick="toggleCat(<%- ci %>)"
+        style="display:flex;align-items:center;gap:14px;padding:16px 20px;cursor:pointer;
+               border-bottom:1px solid var(--border);user-select:none;transition:background .15s"
+        onmouseover="this.style.background='rgba(108,99,255,.06)'"
+        onmouseout="this.style.background=''"
+      >
+        <div style="width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+                    background:<%- cat.out.length>0?'rgba(255,77,109,.15)':'rgba(255,169,77,.15)' %>">
+          <i class="fas <%- cat.out.length>0?'fa-box-open':'fa-triangle-exclamation' %>"
+             style="color:<%- cat.out.length>0?'var(--danger)':'var(--warn)' %>;font-size:15px"></i>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:14px"><%- cat.name %></div>
+          <div style="font-size:12px;color:var(--text2);margin-top:2px">
+            <% if(cat.out.length>0){ %><span style="color:var(--danger)"><%- cat.out.length %> out of stock</span><% } %>
+            <% if(cat.out.length>0&&cat.low.length>0){ %> · <% } %>
+            <% if(cat.low.length>0){ %><span style="color:var(--warn)"><%- cat.low.length %> low stock</span><% } %>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <% if(cat.out.length>0){ %>
+          <span class="badge badge-default" style="background:rgba(255,77,109,.15);color:var(--danger);border:1px solid rgba(255,77,109,.3)">
+            <%- cat.out.length %> out
+          </span>
+          <% } %>
+          <% if(cat.low.length>0){ %>
+          <span class="badge badge-default" style="background:rgba(255,169,77,.15);color:var(--warn);border:1px solid rgba(255,169,77,.3)">
+            <%- cat.low.length %> low
+          </span>
+          <% } %>
+          <i class="fas fa-chevron-down cat-arrow" id="arrow-<%- ci %>"
+             style="color:var(--text2);font-size:12px;transition:transform .22s;margin-left:6px"></i>
+        </div>
+      </div>
+
+      <!-- Category Body (items) -->
+      <div id="cat-<%- ci %>" style="display:none">
+
+        <% if(cat.out.length > 0){ %>
+        <div style="padding:10px 20px 4px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--danger);font-weight:600">
+          <i class="fas fa-circle-xmark"></i> Out of Stock
+        </div>
+        <div class="table-wrap" style="padding:0 4px 4px">
+          <table>
+            <thead>
+              <tr>
+                <th>Product / Variant</th>
+                <th>Code / SKU</th>
+                <th style="text-align:right">Qty</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+            <% cat.out.forEach(function(item){ %>
+              <tr>
+                <td><strong><%- item.name %></strong></td>
+                <td class="muted"><%- item.code %></td>
+                <td style="text-align:right;font-weight:700;color:var(--danger)">0</td>
+                <td><span class="badge badge-default" style="background:rgba(255,77,109,.15);color:var(--danger);border:1px solid rgba(255,77,109,.3)">Out of Stock</span></td>
+              </tr>
+            <% }) %>
+            </tbody>
+          </table>
+        </div>
+        <% } %>
+
+        <% if(cat.low.length > 0){ %>
+        <% if(cat.out.length > 0){ %>
+        <div style="padding:10px 20px 4px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--warn);font-weight:600;border-top:1px solid var(--border)">
+        <% } else { %>
+        <div style="padding:10px 20px 4px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--warn);font-weight:600">
+        <% } %>
+          <i class="fas fa-triangle-exclamation"></i> Low Stock
+        </div>
+        <div class="table-wrap" style="padding:0 4px 8px">
+          <table>
+            <thead>
+              <tr>
+                <th>Product / Variant</th>
+                <th>Code / SKU</th>
+                <th style="text-align:right">Qty Left</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+            <% cat.low.forEach(function(item){ %>
+              <tr>
+                <td><strong><%- item.name %></strong></td>
+                <td class="muted"><%- item.code %></td>
+                <td style="text-align:right;font-weight:700;color:var(--warn)"><%- item.quantity %></td>
+                <td><span class="badge badge-default" style="background:rgba(255,169,77,.15);color:var(--warn);border:1px solid rgba(255,169,77,.3)">Low Stock</span></td>
+              </tr>
+            <% }) %>
+            </tbody>
+          </table>
+        </div>
+        <% } %>
+
+      </div>
+    </div>
+    <% }) %>
+    <% } %>
+
+    <div style="text-align:center;margin-top:16px">
+      <a href="/" style="color:var(--text2);font-size:13px;text-decoration:none">
+        <i class="fas fa-arrow-left"></i> Back to Dashboard
+      </a>
+    </div>
+
+  </div>
+</div>
+<%- include('partials/foot') %>
+
+<script>
+function toggleCat(i) {
+  const body  = document.getElementById('cat-' + i);
+  const arrow = document.getElementById('arrow-' + i);
+  const open  = body.style.display !== 'none';
+  body.style.display  = open ? 'none' : 'block';
+  arrow.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+// Auto-expand first category on load
+if (document.getElementById('cat-0')) toggleCat(0);
+</script>
+
