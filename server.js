@@ -13,7 +13,8 @@ const CUR     = '₹';
 // ── Express setup ────────────────────────────────────────
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
-app.use(express.static(path.join(__dirname, 'public')));
+app.set('view cache', true);
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1d', etag: true }));
 app.use(express.json());
 
 // ── Format helpers available in all EJS templates ────────
@@ -222,19 +223,49 @@ function tallyDate(s) {
   return /^\d{8}$/.test(d) ? d : todayStr().replace(/-/g, '');
 }
 
-// ── Common data (employee name, date) ────────────────────
+// ── In-memory TTL cache ───────────────────────────────────
+const _cache = new Map();
+function cached(key, ttlMs, fn) {
+  const hit = _cache.get(key);
+  if (hit && Date.now() - hit.t < ttlMs) return Promise.resolve(hit.v);
+  return fn().then(v => { _cache.set(key, { v, t: Date.now() }); return v; });
+}
+
+// ── Common data (employee, date, global stock alerts) ────
 async function common() {
-  let empName = 'Admin', empLetter = 'A', empRole = 'Moysklad';
-  try {
-    const emp = await ms('/context/employee');
-    empName   = emp.name || 'Admin';
-    empLetter = empName[0].toUpperCase();
-    empRole   = emp.position || 'Moysklad';
-  } catch (_) {}
+  const { empName, empLetter, empRole, stockAlerts, stockAlertCount } =
+    await cached('common', 3 * 60 * 1000, async () => {
+      let empName = 'Admin', empLetter = 'A', empRole = 'Moysklad';
+      let stockAlerts = [], stockAlertCount = 0;
+
+      const [empRes, stkRes] = await Promise.allSettled([
+        ms('/context/employee'),
+        ms('/report/stock/all?limit=1000')
+      ]);
+
+      if (empRes.status === 'fulfilled') {
+        const emp = empRes.value;
+        empName   = emp.name || 'Admin';
+        empLetter = empName[0].toUpperCase();
+        empRole   = emp.position || 'Moysklad';
+      }
+
+      if (stkRes.status === 'fulfilled') {
+        const below = (stkRes.value.rows || [])
+          .filter(r => (r.quantity || 0) < 100)
+          .sort((a, b) => (a.quantity || 0) - (b.quantity || 0));
+        stockAlertCount = below.length;
+        stockAlerts = below.slice(0, 60).map(r => ({ name: r.name || '—', qty: r.quantity || 0 }));
+      }
+
+      return { empName, empLetter, empRole, stockAlerts, stockAlertCount };
+    });
+
   return {
     empName, empLetter, empRole,
     date: new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' }),
-    time: new Date().toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })
+    time: new Date().toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' }),
+    stockAlerts, stockAlertCount
   };
 }
 
@@ -248,12 +279,14 @@ const agentName   = r => (r.agent?.name || r.counterparty?.name || '—');
 
 // Fetch customerorder state metadata → map of { id → name }
 async function getOrderStateMap() {
-  try {
-    const meta = await ms('/entity/customerorder/metadata');
-    const map = {};
-    (meta.states || []).forEach(s => { map[s.id] = s.name; });
-    return map;
-  } catch(_) { return {}; }
+  return cached('stateMap', 15 * 60 * 1000, async () => {
+    try {
+      const meta = await ms('/entity/customerorder/metadata');
+      const map = {};
+      (meta.states || []).forEach(s => { map[s.id] = s.name; });
+      return map;
+    } catch(_) { return {}; }
+  });
 }
 
 // Resolve state name: prefer expanded .name, fall back to stateMap by ID from href
@@ -479,157 +512,148 @@ app.get('/inventory', async (req, res) => {
   try {
     const c = await common();
     const data = await ms('/report/stock/all?limit=1000');
-    const rows = data.rows||[];
-    const folders = new Set(rows.map(r=>r.folder?.name).filter(Boolean));
-    const filterFolder = req.query.folder||'';
-    const filtered = filterFolder ? rows.filter(r=>r.folder?.name===filterFolder) : rows;
-    let low=0, inStk=0, outStk=0, totalVal=0, totalQty=0;
-    rows.forEach(r=>{
-      const q=r.quantity||0; totalQty+=q; totalVal+=q*(r.price||0);
-      if(q<=0) outStk++; else if(q<=5) {low++;inStk++;} else inStk++;
+    const rows = data.rows || [];
+
+    let low = 0, outStk = 0, totalVal = 0, totalQty = 0;
+    rows.forEach(r => {
+      const q = r.quantity || 0;
+      totalQty += q; totalVal += q * (r.price || 0);
+      if (q <= 0) outStk++; else if (q <= 100) low++;
     });
+
+    // Group variants by base model name (strip trailing "(Flavor)" suffix)
+    const modelMap = {};
+    rows.forEach(r => {
+      const fullName  = r.name || '—';
+      const baseName  = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
+      const flavorM   = fullName.match(/\(([^)]+)\)\s*$/);
+      const flavor    = flavorM ? flavorM[1] : null;
+      const qty       = r.quantity || 0;
+      const status    = qty <= 0 ? 'Out of Stock' : qty <= 100 ? 'Low Stock' : 'In Stock';
+
+      if (!modelMap[baseName]) modelMap[baseName] = { name: baseName, totalQty: 0, variants: [] };
+      modelMap[baseName].totalQty += qty;
+      modelMap[baseName].variants.push({ name: flavor || fullName, qty, status });
+    });
+
+    const models = Object.values(modelMap).map(m => {
+      const hasOut = m.variants.some(v => v.status === 'Out of Stock');
+      const hasLow = m.variants.some(v => v.status === 'Low Stock');
+      return {
+        name:         m.name,
+        totalQty:     m.totalQty,
+        variantCount: m.variants.length,
+        status:       hasOut ? 'Out of Stock' : hasLow ? 'Low Stock' : 'In Stock',
+        variants:     m.variants.sort((a, b) => a.name.localeCompare(b.name))
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+
+    // Detail lists for modal buttons on stat cards
+    const outItems = rows
+      .filter(r => (r.quantity || 0) <= 0)
+      .map(r => ({ name: r.name || '—', qty: 0 }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const lowItems = rows
+      .filter(r => (r.quantity || 0) > 0 && (r.quantity || 0) <= 100)
+      .map(r => ({ name: r.name || '—', qty: r.quantity }))
+      .sort((a, b) => a.qty - b.qty);
+
     res.render('inventory', {
       ...c, active: 'inventory',
-      items: filtered.map(r=>({
-        name:r.name||'—', code:r.code||'—',
-        qty:r.quantity||0, price:(r.price||0)/100,
-        val:((r.quantity||0)*(r.price||0))/100,
-        folder:r.folder?.name||'—',
-        stockDays:Math.round(r.stockDays||0),
-        status: (r.quantity||0)<=0?'Out of Stock':(r.quantity||0)<=5?'Low Stock':'In Stock'
-      })),
-      totalSKU:rows.length, low, inStk, outStk,
-      totalVal:totalVal/100, totalQty,
-      folders:[...folders], filterFolder
+      models, totalSKU: rows.length, low, outStk,
+      totalVal: totalVal / 100, totalQty,
+      outJSON: JSON.stringify(outItems),
+      lowJSON: JSON.stringify(lowItems)
     });
-  } catch(e) { res.status(500).render('error',{message:e.message}); }
+  } catch(e) { res.status(500).render('error', { message: e.message }); }
 });
 
 // ── PURCHASES ────────────────────────────────────────────
-app.get('/purchases', async (req, res) => {
-  try {
-    const c = await common();
-    const page = parseInt(req.query.page)||1;
-    const limit=50, offset=(page-1)*limit;
-    const data = await ms(`/entity/purchaseorder?limit=${limit}&offset=${offset}&order=moment,desc&expand=state,agent`);
-    const rows = data.rows||[];
-    const total = data.meta?.size||0;
-    res.render('purchases', {
-      ...c, active: 'purchases',
-      purchases: rows.map(r=>({
-        name:r.name||'—', supplier:agentName(r),
-        date:(r.moment||'').slice(0,10),
-        sum:(r.sum||0)/100, state:stateName(r)
-      })),
-      total, page, pages:Math.ceil(total/limit)
-    });
-  } catch(e) { res.status(500).render('error',{message:e.message}); }
-});
+app.get('/purchases', (req, res) => res.redirect('/'));
 
 
 // ── CUSTOMERS ────────────────────────────────────────────
 app.get('/customers', async (req, res) => {
   try {
     const c = await common();
-    const from = monthStart();
-    const [custData, profitData] = await Promise.allSettled([
-      ms('/entity/counterparty?limit=100&order=name,asc'),
-      ms(`/report/profit/bycounterparty?momentFrom=${enc(from)}&limit=100`)
+    const period = req.query.period || 'current';
+
+    // Build last 12 months list for filter
+    const months = [];
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i);
+      const key   = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const label = d.toLocaleString('en', { month: 'long', year: 'numeric' });
+      months.push({ key, label });
+    }
+
+    // Determine momentFrom / momentTo
+    let momentFrom = null, momentTo = null;
+    if (period === 'current') {
+      momentFrom = monthStart();
+    } else if (/^\d{4}-\d{2}$/.test(period)) {
+      const [yr, mo] = period.split('-').map(Number);
+      momentFrom = `${yr}-${String(mo).padStart(2,'0')}-01 00:00:00`;
+      const nd = new Date(yr, mo, 1);
+      momentTo = `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}-01 00:00:00`;
+    }
+
+    // Fetch orders with positions expanded (to get actual qty per customer)
+    // and total counterparty count in parallel
+    const filterParts = [];
+    if (momentFrom) filterParts.push(`moment>${momentFrom}`);
+    if (momentTo)   filterParts.push(`moment<${momentTo}`);
+    const filterStr = filterParts.join(';');
+    const ordersUrl = `/entity/customerorder?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent,positions&limit=100&order=moment,desc`;
+
+    const [ordRes, cpRes] = await Promise.allSettled([
+      msAll(ordersUrl),
+      ms('/entity/counterparty?limit=1')
     ]);
-    const customers = custData.status==='fulfilled' ? (custData.value.rows||[]) : [];
-    const profit = profitData.status==='fulfilled' ? (profitData.value.rows||[]) : [];
-    const profitMap = {};
-    profit.forEach(r=>{ if(r.counterparty?.name) profitMap[r.counterparty.name]={sales:r.salesCount||0, val:(r.sellSum||0)/100, profit:(r.profit||0)/100}; });
+
+    const allOrders   = ordRes.status === 'fulfilled' ? (ordRes.value.rows || []) : [];
+    const totalCustomers = cpRes.status === 'fulfilled' ? (cpRes.value.meta?.size || 0) : 0;
+
+    // Aggregate per customer from orders + their positions
+    const custMap = {};
+    allOrders.forEach(order => {
+      const name = order.agent?.name || '—';
+      if (name === '—') return;
+      const id = (order.agent?.meta?.href || '').split('/').pop();
+      if (!custMap[name]) custMap[name] = { id, name, orders: 0, totalQty: 0, totalVal: 0 };
+      custMap[name].orders++;
+      custMap[name].totalVal += (order.sum || 0) / 100;
+      (order.positions?.rows || []).forEach(pos => {
+        custMap[name].totalQty += Math.round(pos.quantity || 0);
+      });
+    });
+
+    const customers = Object.values(custMap)
+      .map(x => ({
+        ...x,
+        avgQty: x.orders > 0 ? +(x.totalQty / x.orders).toFixed(1) : 0,
+        avgVal: x.orders > 0 ? x.totalVal / x.orders : 0
+      }))
+      .sort((a, b) => b.totalVal - a.totalVal);
+
+    const chartTop = customers.slice(0, 12);
     res.render('customers', {
       ...c, active: 'customers',
-      customers: customers.map(r=>({
-        name:r.name||'—', phone:r.phone||'—', email:r.email||'—',
-        type:r.companyType||'—', city:(r.actualAddress?.city||'—'),
-        ...(profitMap[r.name]||{sales:'—',val:0,profit:0})
-      })),
-      total: customers.length
+      customers,
+      total: totalCustomers,
+      period,
+      months,
+      chartLabels:    JSON.stringify(chartTop.map(x => x.name)),
+      chartValueData: JSON.stringify(chartTop.map(x => Math.round(x.totalVal))),
+      chartOrderData: JSON.stringify(chartTop.map(x => x.orders))
     });
   } catch(e) { res.status(500).render('error',{message:e.message}); }
 });
 
-// ── SUPPLIERS ────────────────────────────────────────────
-app.get('/suppliers', async (req, res) => {
-  try {
-    const c = await common();
-    const data = await ms('/entity/counterparty?limit=200&order=name,asc');
-    const rows = data.rows||[];
-    res.render('suppliers', {
-      ...c, active: 'suppliers',
-      suppliers: rows.map(r=>({
-        name:r.name||'—', phone:r.phone||'—', email:r.email||'—',
-        type:r.companyType||'—', inn:r.inn||'—', code:r.code||'—'
-      })),
-      total: rows.length
-    });
-  } catch(e) { res.status(500).render('error',{message:e.message}); }
-});
-
-// ── REPORTS ──────────────────────────────────────────────
-app.get('/reports', async (req, res) => {
-  try {
-    const c = await common();
-    const from = monthStart();
-    const [prodData, custData] = await Promise.allSettled([
-      ms(`/report/profit/byproduct?momentFrom=${enc(from)}&limit=15`),
-      ms(`/report/profit/bycounterparty?momentFrom=${enc(from)}&limit=10`)
-    ]);
-    const products  = prodData.status==='fulfilled'?(prodData.value.rows||[]).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)):[];
-    const customers = custData.status==='fulfilled'?(custData.value.rows||[]).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)):[];
-    const totalSell = products.reduce((a,r)=>a+(r.sellSum||0),0);
-    const totalProfit = products.reduce((a,r)=>a+(r.profit||0),0);
-    res.render('reports', {
-      ...c, active: 'reports',
-      products: products.map(r=>({name:r.assortment?.name||'—', qty:Math.round(r.sellQuantity||0), sell:(r.sellSum||0)/100, cost:(r.sellCostSum||0)/100, profit:(r.profit||0)/100, margin:((r.margin||0)*100).toFixed(1)+'%'})),
-      customers: customers.map(r=>({name:r.counterparty?.name||'—', orders:r.salesCount||0, val:(r.sellSum||0)/100, profit:(r.profit||0)/100})),
-      totalSell:totalSell/100, totalProfit:totalProfit/100,
-      prodChartLabels: JSON.stringify(products.slice(0,8).map(r=>(r.assortment?.name||'?').split(' ').slice(0,2).join(' '))),
-      prodChartData:   JSON.stringify(products.slice(0,8).map(r=>Math.round((r.sellSum||0)/100))),
-      custChartLabels: JSON.stringify(customers.slice(0,8).map(r=>r.counterparty?.name||'?')),
-      custChartData:   JSON.stringify(customers.slice(0,8).map(r=>Math.round((r.sellSum||0)/100)))
-    });
-  } catch(e) { res.status(500).render('error',{message:e.message}); }
-});
-
-// ── ALERTS ───────────────────────────────────────────────
-app.get('/alerts', async (req, res) => {
-  try {
-    const c = await common();
-    const [stkData, invData, ordData] = await Promise.allSettled([
-      ms('/report/stock/all?limit=1000'),
-      ms('/entity/invoiceout?limit=200&order=moment,desc'),
-      ms('/entity/customerorder?limit=100&order=moment,desc&expand=state')
-    ]);
-    const stock = stkData.status==='fulfilled'?(stkData.value.rows||[]):[];
-    const invoices = invData.status==='fulfilled'?(invData.value.rows||[]):[];
-    const orders = ordData.status==='fulfilled'?(ordData.value.rows||[]):[];
-    const now = Date.now();
-    const alerts = [];
-    orders.filter(r=>stateName(r).toUpperCase()==='NEW').forEach(r=>
-      alerts.push({t:'r',i:'fa-shopping-cart',title:'New order: '+r.name, desc:`Amount: ₹${Math.round((r.sum||0)/100).toLocaleString('en-IN')}`, time:(r.moment||'').slice(0,10)}));
-    invoices.forEach(r=>{
-      const out=(r.sum||0)-(r.payedSum||0);
-      if(out<=0) return;
-      const d=Math.floor((now-new Date(r.moment))/86400000);
-      if(d>30) alerts.push({t:'b',i:'fa-clock',title:'Overdue invoice: '+r.name, desc:`Overdue by ${d} days — ₹${Math.round(out/100).toLocaleString('en-IN')}`, time:(r.moment||'').slice(0,10)});
-    });
-    stock.filter(r=>(r.quantity||0)<=0).forEach(r=>
-      alerts.push({t:'r',i:'fa-box-open',title:'Out of stock: '+r.name, desc:'Zero quantity available', time:'Now'}));
-    stock.filter(r=>(r.quantity||0)>0&&(r.quantity||0)<=5).forEach(r=>
-      alerts.push({t:'o',i:'fa-exclamation-triangle',title:'Low stock: '+r.name, desc:`Only ${r.quantity} unit(s) left`, time:'Now'}));
-    res.render('alerts', { ...c, active:'alerts', alerts, total:alerts.length });
-  } catch(e) { res.status(500).render('error',{message:e.message}); }
-});
-
-// ── SETTINGS ─────────────────────────────────────────────
-app.get('/settings', async (req, res) => {
-  const c = await common();
-  res.render('settings', { ...c, active:'settings', token: TOKEN.slice(0,8)+'••••••••••••••••••••••••••••••••' });
-});
+app.get('/suppliers', (req, res) => res.redirect('/customers'));
+app.get('/reports',   (req, res) => res.redirect('/'));
+app.get('/alerts',    (req, res) => res.redirect('/'));
+app.get('/settings',  (req, res) => res.redirect('/'));
 
 // ── ORDERS DAILY API (for "See More" on dashboard chart) ─
 app.get('/api/orders/daily', async (req, res) => {
@@ -824,7 +848,7 @@ app.get('/product-analytics', async (req, res) => {
     const stockItems   = allStock.filter(r => stockMatches(r.name || ''));
     const currentStock = stockItems.reduce((a, r) => a + Math.max(0, r.quantity || 0), 0);
     const outCount     = stockItems.filter(r => (r.quantity || 0) <= 0).length;
-    const lowCount     = stockItems.filter(r => (r.quantity || 0) > 0 && (r.quantity || 0) <= 5).length;
+    const lowCount     = stockItems.filter(r => (r.quantity || 0) > 0 && (r.quantity || 0) <= 100).length;
 
     // Build a set of known assortment IDs from stock items for fast matching
     const knownIds = new Set([id]);
@@ -898,7 +922,7 @@ app.get('/product-analytics', async (req, res) => {
       name:     r.name || '—',
       code:     r.code || r.article || '—',
       quantity: r.quantity || 0,
-      status:   (r.quantity || 0) <= 0 ? 'Out of Stock' : (r.quantity || 0) <= 5 ? 'Low Stock' : 'In Stock'
+      status:   (r.quantity || 0) <= 0 ? 'Out of Stock' : (r.quantity || 0) <= 100 ? 'Low Stock' : 'In Stock'
     })).sort((a, b) => a.name.localeCompare(b.name));
 
     res.render('product-analytics', {
@@ -913,53 +937,7 @@ app.get('/product-analytics', async (req, res) => {
   } catch (e) { res.status(500).render('error', { message: e.message }); }
 });
 
-// ── STOCK ALERTS PAGE ─────────────────────────────────────
-app.get('/stock-alerts', async (req, res) => {
-  try {
-    const c = await common();
-    const data = await ms('/report/stock/all?limit=1000');
-    const rows = data.rows || [];
-
-    const LOW_THRESHOLD = 5;
-
-    // Separate alert items
-    const outItems = rows.filter(r => (r.quantity || 0) <= 0);
-    const lowItems = rows.filter(r => (r.quantity || 0) > 0 && (r.quantity || 0) <= LOW_THRESHOLD);
-    const alertItems = [...outItems, ...lowItems];
-
-    // Group by category (folder)
-    const catMap = {};
-    alertItems.forEach(r => {
-      const cat = r.folder?.name || 'Uncategorized';
-      if (!catMap[cat]) catMap[cat] = { name: cat, out: [], low: [] };
-      const item = {
-        name:     r.name || '—',
-        code:     r.code || r.article || '—',
-        quantity: r.quantity || 0,
-        price:    (r.price || 0) / 100
-      };
-      if (item.quantity <= 0) catMap[cat].out.push(item);
-      else catMap[cat].low.push(item);
-    });
-
-    // Sort items within each category by name; sort categories by severity
-    const categories = Object.values(catMap).map(cat => ({
-      ...cat,
-      out: cat.out.sort((a, b) => a.name.localeCompare(b.name)),
-      low: cat.low.sort((a, b) => a.name.localeCompare(b.name)),
-      total: cat.out.length + cat.low.length
-    })).sort((a, b) => b.out.length - a.out.length || b.low.length - a.low.length);
-
-    res.render('stock-alerts', {
-      ...c, active: 'stock-alerts',
-      categories,
-      outTotal:  outItems.length,
-      lowTotal:  lowItems.length,
-      totalSKU:  rows.length,
-      threshold: LOW_THRESHOLD
-    });
-  } catch(e) { res.status(500).render('error', { message: e.message }); }
-});
+app.get('/stock-alerts', (req, res) => res.redirect('/inventory'));
 
 // ── TALLY FINANCIAL DASHBOARD ────────────────────────────
 app.get('/tally', async (req, res) => {

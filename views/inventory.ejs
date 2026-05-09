@@ -1,62 +1,134 @@
-﻿<%- include('partials/head') %>
+<%- include('partials/head') %>
 <%- include('partials/sidebar') %>
 <div class="main">
   <%- include('partials/header', {pageTitle: 'Inventory'}) %>
   <div class="page">
 
-    <div class="stats-grid">
-      <div class="stat-card success"><div class="stat-label">Total SKUs</div><div class="stat-value"><%- totalSKU %></div><i class="fas fa-boxes-stacked stat-icon"></i></div>
-      <div class="stat-card warn"><div class="stat-label">Low Stock</div><div class="stat-value"><%- low %></div><div class="stat-sub">qty ≤ 5</div><i class="fas fa-exclamation-triangle stat-icon"></i></div>
-      <div class="stat-card danger"><div class="stat-label">Out of Stock</div><div class="stat-value"><%- outStk %></div><i class="fas fa-box-open stat-icon"></i></div>
-      <div class="stat-card"><div class="stat-label">Stock Value</div><div class="stat-value"><%- fmtShort(totalVal) %></div><div class="stat-sub"><%- totalQty %> total qty</div><i class="fas fa-coins stat-icon"></i></div>
+    <!-- Summary Cards -->
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
+      <div class="stat-card success">
+        <div class="stat-label">Total SKUs</div>
+        <div class="stat-value"><%- totalSKU %></div>
+        <div class="stat-sub"><%- models.length %> models</div>
+        <i class="fas fa-boxes-stacked stat-icon"></i>
+      </div>
+      <div class="stat-card warn" style="cursor:pointer" onclick="openInvModal('low')">
+        <div class="stat-label">Low Stock</div>
+        <div class="stat-value"><%- low %></div>
+        <div class="stat-sub">qty ≤ 100</div>
+        <div class="inv-view-details">View Details <i class="fas fa-chevron-right" style="font-size:9px"></i></div>
+        <i class="fas fa-exclamation-triangle stat-icon"></i>
+      </div>
+      <div class="stat-card danger" style="cursor:pointer" onclick="openInvModal('out')">
+        <div class="stat-label">Out of Stock</div>
+        <div class="stat-value"><%- outStk %></div>
+        <div class="stat-sub">&nbsp;</div>
+        <div class="inv-view-details">View Details <i class="fas fa-chevron-right" style="font-size:9px"></i></div>
+        <i class="fas fa-box-open stat-icon"></i>
+      </div>
     </div>
 
-    <div class="card">
-      <div class="card-title"><i class="fas fa-filter"></i> Filter</div>
-      <form class="filter-bar" method="get">
-        <label>Category:</label>
-        <select name="folder" onchange="this.form.submit()">
-          <option value="">All Categories</option>
-          <% folders.forEach(function(f){ %>
-            <option value="<%- f %>" <%- filterFolder===f?'selected':'' %>><%- f %></option>
-          <% }) %>
-        </select>
-        <% if(filterFolder){ %>
-          <a href="/inventory" style="color:var(--text2);font-size:12px;margin-left:4px">Clear</a>
-        <% } %>
-      </form>
+    <!-- Item Detail Modal -->
+    <div id="invModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1200;align-items:center;justify-content:center">
+      <div style="background:var(--card);border-radius:14px;width:min(480px,92vw);max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.35)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px 14px;border-bottom:1px solid var(--border)">
+          <div>
+            <div id="invModalTitle" style="font-size:15px;font-weight:700"></div>
+            <div id="invModalSub" style="font-size:12px;color:var(--text2);margin-top:2px"></div>
+          </div>
+          <button onclick="closeInvModal()" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:4px 6px"><i class="fas fa-xmark"></i></button>
+        </div>
+        <div style="overflow-y:auto;padding:0 20px 20px">
+          <table style="width:100%;margin-top:14px">
+            <thead>
+              <tr>
+                <th style="font-size:11px;padding:6px 0;text-align:left;border-bottom:1px solid var(--border)">Item / Flavor</th>
+                <th style="font-size:11px;padding:6px 0;text-align:right;border-bottom:1px solid var(--border)">Qty</th>
+              </tr>
+            </thead>
+            <tbody id="invModalBody"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
+    <script type="application/json" id="outData"><%- outJSON %></script>
+    <script type="application/json" id="lowData"><%- lowJSON %></script>
+
+    <!-- Models Table -->
     <div class="card">
-      <div class="card-title"><i class="fas fa-table"></i> Stock Items (<%- items.length %>)</div>
+      <div class="card-title"><i class="fas fa-table"></i> Models (<%- models.length %>)</div>
       <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>Item Name</th><th>Code</th><th>Category</th>
-            <th style="text-align:right">Qty</th>
-            <th style="text-align:right">Price</th>
-            <th style="text-align:right">Value</th>
-            <th style="text-align:right">Days</th>
-            <th>Status</th>
-          </tr></thead>
-          <tbody>
-          <% if(items.length===0){ %>
-            <tr><td colspan="8"><div class="empty">No items found</div></td></tr>
-          <% } %>
-          <% items.forEach(function(item){ %>
+        <table id="invTable">
+          <thead>
             <tr>
-              <td><strong><%- item.name %></strong></td>
-              <td class="muted"><%- item.code %></td>
-              <td class="muted"><%- item.folder %></td>
-              <td style="text-align:right; font-weight:600"><%- item.qty %></td>
-              <td style="text-align:right"><%- fmt(item.price) %></td>
-              <td style="text-align:right; color:var(--accent2)"><%- fmt(item.val) %></td>
-              <td style="text-align:right" class="muted"><%- item.stockDays %>d</td>
+              <th>Model</th>
+              <th style="text-align:right">Total Qty</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+          <% models.forEach(function(model, idx) { %>
+
+            <% var sc = model.status==='In Stock'?'badge-instock':model.status==='Low Stock'?'badge-low':'badge-out'; %>
+            <% var hasVariants = model.variantCount > 1; %>
+
+            <tr class="model-row" <%- hasVariants ? 'onclick="toggleModel('+idx+')" style="cursor:pointer"' : '' %>>
               <td>
-                <% var sc = item.status==='In Stock'?'badge-instock':item.status==='Low Stock'?'badge-low':'badge-out'; %>
-                <span class="badge <%- sc %>"><%- item.status %></span>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <% if (hasVariants) { %>
+                  <i id="chev-<%- idx %>" class="fas fa-chevron-right"
+                     style="font-size:10px;color:var(--text2);transition:transform .2s;flex-shrink:0"></i>
+                  <% } else { %>
+                  <span style="width:10px;display:inline-block;flex-shrink:0"></span>
+                  <% } %>
+                  <span style="font-weight:600"><%- model.name %></span>
+                  <% if (hasVariants) { %>
+                  <span style="font-size:11px;color:var(--text2);flex-shrink:0"><%- model.variantCount %> variants</span>
+                  <% } %>
+                </div>
+              </td>
+              <td style="text-align:right;font-weight:700;font-size:15px"><%- model.totalQty %></td>
+              <td><span class="badge <%- sc %>"><%- model.status %></span></td>
+            </tr>
+
+            <% if (hasVariants) { %>
+            <tr id="detail-<%- idx %>" style="display:none">
+              <td colspan="3" style="padding:0 0 4px 0">
+                <div style="background:var(--bg);border-bottom:1px solid var(--border);padding:8px 0 4px 42px">
+                  <div style="padding:0 12px 8px 0">
+                    <div style="position:relative">
+                      <i class="fas fa-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text2);pointer-events:none"></i>
+                      <input id="search-<%- idx %>" type="text" placeholder="Search flavors…"
+                        oninput="filterVariants(<%- idx %>)"
+                        onclick="event.stopPropagation()"
+                        style="width:100%;box-sizing:border-box;padding:7px 10px 7px 30px;font-size:12px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);outline:none">
+                    </div>
+                  </div>
+                  <table style="width:100%">
+                    <thead>
+                      <tr>
+                        <th style="font-size:10px;padding:6px 12px;background:transparent;border-bottom:1px solid var(--border)">Flavor / Variant</th>
+                        <th style="font-size:10px;padding:6px 12px;text-align:right;background:transparent;border-bottom:1px solid var(--border)">Qty</th>
+                        <th style="font-size:10px;padding:6px 12px;background:transparent;border-bottom:1px solid var(--border)">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="vbody-<%- idx %>">
+                    <% model.variants.forEach(function(v) { %>
+                      <% var vc = v.status==='In Stock'?'badge-instock':v.status==='Low Stock'?'badge-low':'badge-out'; %>
+                      <tr style="border-bottom:1px solid rgba(108,99,255,.04)">
+                        <td style="padding:7px 12px;font-size:13px;color:var(--text)"><%- v.name %></td>
+                        <td style="padding:7px 12px;text-align:right;font-weight:600"><%- v.qty %></td>
+                        <td style="padding:7px 12px"><span class="badge <%- vc %>"><%- v.status %></span></td>
+                      </tr>
+                    <% }) %>
+                    </tbody>
+                  </table>
+                </div>
               </td>
             </tr>
+            <% } %>
+
           <% }) %>
           </tbody>
         </table>
@@ -65,4 +137,61 @@
 
   </div>
 </div>
+
+<script>
+function toggleModel(idx) {
+  var detail = document.getElementById('detail-' + idx);
+  var chev   = document.getElementById('chev-' + idx);
+  var open   = detail.style.display === 'none';
+  detail.style.display = open ? 'table-row' : 'none';
+  chev.style.transform = open ? 'rotate(90deg)' : '';
+  if (open) {
+    var inp = document.getElementById('search-' + idx);
+    if (inp) { inp.value = ''; filterVariants(idx); setTimeout(function(){ inp.focus(); }, 50); }
+  }
+}
+
+function filterVariants(idx) {
+  var query = document.getElementById('search-' + idx).value.toLowerCase().trim();
+  var rows  = document.getElementById('vbody-' + idx).querySelectorAll('tr');
+  rows.forEach(function(row) {
+    var name = row.cells[0] ? row.cells[0].textContent.toLowerCase() : '';
+    row.style.display = (!query || name.includes(query)) ? '' : 'none';
+  });
+}
+
+var OUT_ITEMS = JSON.parse(document.getElementById('outData').textContent);
+var LOW_ITEMS = JSON.parse(document.getElementById('lowData').textContent);
+
+function openInvModal(type) {
+  var items  = type === 'out' ? OUT_ITEMS : LOW_ITEMS;
+  var title  = type === 'out' ? 'Out of Stock Items' : 'Low Stock Items';
+  var sub    = type === 'out' ? items.length + ' items with zero quantity' : items.length + ' items with qty ≤ 100';
+  document.getElementById('invModalTitle').textContent = title;
+  document.getElementById('invModalSub').textContent   = sub;
+  var tbody = document.getElementById('invModalBody');
+  tbody.innerHTML = '';
+  if (items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;padding:24px;color:var(--text2);font-size:13px">No items</td></tr>';
+  } else {
+    items.forEach(function(item) {
+      var cls = type === 'out' ? 'txt-danger' : 'txt-warn';
+      tbody.innerHTML += '<tr style="border-bottom:1px solid var(--border)">' +
+        '<td style="padding:9px 0;font-size:13px">' + item.name + '</td>' +
+        '<td style="padding:9px 0;text-align:right;font-weight:700;font-size:13px" class="' + cls + '">' + item.qty + '</td></tr>';
+    });
+  }
+  var modal = document.getElementById('invModal');
+  modal.style.display = 'flex';
+}
+
+function closeInvModal() {
+  document.getElementById('invModal').style.display = 'none';
+}
+
+document.getElementById('invModal').addEventListener('click', function(e) {
+  if (e.target === this) closeInvModal();
+});
+</script>
+
 <%- include('partials/foot') %>

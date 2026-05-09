@@ -6,7 +6,67 @@
   <div style="flex:1"></div>
   <div class="topbar-date"><%- date %></div>
   <div class="topbar-time" style="margin-left:14px"><%- time %></div>
+  <div class="topbar-bell" onclick="toggleAlertPanel(event)" title="Stock Alerts (below 100)">
+    <i class="fas fa-bell" style="font-size:13px"></i>
+    <% var _alertCount = (typeof stockAlertCount !== 'undefined' ? stockAlertCount : 0); %>
+    <% if (_alertCount > 0) { %>
+    <span class="notif-badge"><%- _alertCount > 99 ? '99+' : _alertCount %></span>
+    <% } %>
+  </div>
   <a href="javascript:location.reload()" class="topbar-refresh" title="Refresh data">
     <i class="fas fa-rotate-right"></i>
   </a>
 </div>
+
+<!-- Stock Alert Panel -->
+<div class="alert-panel" id="alertPanel">
+  <div class="alert-panel-hdr">
+    <div>
+      <div style="font-size:13px;font-weight:700">Stock Alerts</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:1px"><%- _alertCount %> items below 100 qty</div>
+    </div>
+    <button onclick="closeAlertPanel()" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:14px;padding:2px 4px">
+      <i class="fas fa-xmark"></i>
+    </button>
+  </div>
+  <% var _alerts = (typeof stockAlerts !== 'undefined' ? stockAlerts : []); %>
+  <% if (_alerts.length === 0) { %>
+  <div style="padding:24px;text-align:center;color:var(--text2);font-size:13px">
+    <i class="fas fa-check-circle" style="color:var(--accent2);font-size:22px;display:block;margin-bottom:8px"></i>
+    All items are well stocked
+  </div>
+  <% } else { %>
+  <% _alerts.forEach(function(item) { %>
+  <%   var isOut = item.qty <= 0; %>
+  <%   var isLow = item.qty > 0 && item.qty <= 5; %>
+  <%   var dotColor = isOut ? 'var(--danger)' : (isLow ? 'var(--warn)' : 'rgba(136,145,181,.4)'); %>
+  <%   var qtyCls  = isOut ? 'txt-danger'    : (isLow ? 'txt-warn'    : 'txt-muted'); %>
+  <div class="alert-panel-row">
+    <div style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">
+      <i class="fas fa-circle" style="font-size:7px;margin-right:5px;color:<%- dotColor %>"></i>
+      <%- item.name %>
+    </div>
+    <div class="<%- qtyCls %>" style="font-size:12px;font-weight:700;flex-shrink:0;margin-left:8px">
+      <%- item.qty %>
+    </div>
+  </div>
+  <% }) %>
+  <% } %>
+</div>
+
+<script>
+function toggleAlertPanel(e) {
+  e.stopPropagation();
+  var p = document.getElementById('alertPanel');
+  p.style.display = p.style.display === 'block' ? 'none' : 'block';
+}
+function closeAlertPanel() {
+  document.getElementById('alertPanel').style.display = 'none';
+}
+document.addEventListener('click', function(e) {
+  var p = document.getElementById('alertPanel');
+  if (p && p.style.display === 'block' && !p.contains(e.target)) {
+    p.style.display = 'none';
+  }
+});
+</script>

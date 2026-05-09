@@ -1,46 +1,190 @@
-﻿<%- include('partials/head') %>
+<%- include('partials/head') %>
 <%- include('partials/sidebar') %>
 <div class="main">
   <%- include('partials/header', {pageTitle: 'Customers'}) %>
   <div class="page">
 
-    <div class="stats-grid">
-      <div class="stat-card"><div class="stat-label">Total Customers</div><div class="stat-value"><%- total %></div><i class="fas fa-users stat-icon"></i></div>
+    <!-- Top stat -->
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
+      <div class="stat-card">
+        <div class="stat-label">Total Customers</div>
+        <div class="stat-value"><%- total %></div>
+        <i class="fas fa-users stat-icon"></i>
+      </div>
+      <div class="stat-card success">
+        <div class="stat-label">Active This Period</div>
+        <div class="stat-value"><%- customers.length %></div>
+        <div class="stat-sub">with orders</div>
+        <i class="fas fa-user-check stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Revenue</div>
+        <div class="stat-value"><%- fmtShort(customers.reduce(function(a,x){return a+x.totalVal},0)) %></div>
+        <div class="stat-sub">selected period</div>
+        <i class="fas fa-indian-rupee-sign stat-icon"></i>
+      </div>
     </div>
 
-    <div class="card">
-      <div class="card-title"><i class="fas fa-users"></i> Customer List</div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>Name</th><th>Phone</th><th>Email</th><th>Type</th><th>City</th>
-            <th style="text-align:right">Orders</th>
-            <th style="text-align:right">Sales</th>
-            <th style="text-align:right">Profit</th>
-          </tr></thead>
-          <tbody>
-          <% if(customers.length===0){ %>
-            <tr><td colspan="8"><div class="empty">No customers found</div></td></tr>
-          <% } %>
-          <% customers.forEach(function(c){ %>
-            <tr>
-              <td><strong><%- c.name %></strong></td>
-              <td class="muted"><%- c.phone %></td>
-              <td class="muted"><%- c.email %></td>
-              <td class="muted"><%- c.type %></td>
-              <td class="muted"><%- c.city %></td>
-              <td style="text-align:right"><%- c.orders||'—' %></td>
-              <td style="text-align:right;color:var(--accent2)"><%- c.val?fmt(c.val):'—' %></td>
-              <td style="text-align:right;color:<%- c.profit>0?'var(--accent2)':c.profit<0?'var(--danger)':'var(--text)' %>">
-                <%- c.profit?fmt(c.profit):'—' %>
-              </td>
-            </tr>
-          <% }) %>
-          </tbody>
-        </table>
+    <!-- Period filter bar -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 16px;flex-wrap:wrap">
+      <i class="fas fa-calendar-alt" style="color:var(--text2);font-size:13px"></i>
+      <label style="font-size:13px;color:var(--text2)">Period:</label>
+      <select id="periodSel" onchange="goPeriod()"
+        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:8px;font-size:13px;outline:none;cursor:pointer">
+        <option value="current"   <%- period==='current'   ? 'selected':'' %>>This Month</option>
+        <% months.forEach(function(m){ %>
+        <option value="<%- m.key %>" <%- period===m.key ? 'selected':'' %>><%- m.label %></option>
+        <% }) %>
+      </select>
+      <span style="margin-left:auto;font-size:12px;color:var(--text2)"><%- customers.length %> customers · sorted by revenue</span>
+    </div>
+
+    <!-- Chart + Table side by side -->
+    <div style="display:grid;grid-template-columns:2fr 3fr;gap:20px;align-items:start">
+
+      <!-- Bar Chart -->
+      <div class="card" style="position:sticky;top:20px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span><i class="fas fa-chart-bar"></i> Top Customers</span>
+          <div style="display:flex;gap:6px">
+            <button id="btnVal" onclick="switchChart('value')"
+              style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer">By Value</button>
+            <button id="btnOrd" onclick="switchChart('orders')"
+              style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text2);cursor:pointer">By Orders</button>
+          </div>
+        </div>
+        <div style="height:520px;position:relative"><canvas id="custChart"></canvas></div>
       </div>
+
+      <!-- Customers Table -->
+      <div class="card">
+        <div class="card-title"><i class="fas fa-users"></i> Customer List (<%- customers.length %>)</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th style="text-align:right">Orders</th>
+                <th style="text-align:right">Total Qty</th>
+                <th style="text-align:right">Avg Qty/Order</th>
+                <th style="text-align:right">Avg Order Value</th>
+                <th style="text-align:right">Total Sales</th>
+              </tr>
+            </thead>
+            <tbody>
+            <% if(customers.length===0){ %>
+              <tr><td colspan="6"><div class="empty">No orders found for this period</div></td></tr>
+            <% } %>
+            <% customers.forEach(function(cx, i){ %>
+              <tr style="cursor:pointer" onclick="window.location='/customer-analytics?id=<%- cx.id %>&name=<%- encodeURIComponent(cx.name) %>'"
+                onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+                <td>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <div style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+                                display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0">
+                      <%- cx.name.charAt(0).toUpperCase() %>
+                    </div>
+                    <div>
+                      <div style="font-weight:600;font-size:13px"><%- cx.name %></div>
+                      <% if(i===0){ %><div style="font-size:10px;color:var(--accent2)">Top Performer</div><% } %>
+                    </div>
+                  </div>
+                </td>
+                <td style="text-align:right;font-weight:600"><%- cx.orders || '—' %></td>
+                <td style="text-align:right"><%- cx.totalQty || '—' %></td>
+                <td style="text-align:right;color:var(--text2)"><%- cx.orders > 0 ? cx.avgQty : '—' %></td>
+                <td style="text-align:right;color:var(--text2)"><%- cx.orders > 0 ? fmt(cx.avgVal) : '—' %></td>
+                <td style="text-align:right;font-weight:700;color:var(--accent2)"><%- cx.totalVal > 0 ? fmt(cx.totalVal) : '—' %></td>
+              </tr>
+            <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
 
   </div>
 </div>
+
+<script type="application/json" id="chartLabels"><%- chartLabels %></script>
+<script type="application/json" id="chartValueData"><%- chartValueData %></script>
+<script type="application/json" id="chartOrderData"><%- chartOrderData %></script>
+
+<script>
+const LABELS     = JSON.parse(document.getElementById('chartLabels').textContent);
+const VAL_DATA   = JSON.parse(document.getElementById('chartValueData').textContent);
+const ORD_DATA   = JSON.parse(document.getElementById('chartOrderData').textContent);
+const COLORS     = { accent:'#6c63ff', accent2:'#00d4aa', text2:'#8891b5' };
+
+function goPeriod() {
+  var p = document.getElementById('periodSel').value;
+  window.location.href = '/customers?period=' + p;
+}
+
+function fmtShortJS(n) {
+  if (!n || isNaN(n)) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e7) return '₹'+(n/1e7).toFixed(2)+' Cr';
+  if (a >= 1e5) return '₹'+(n/1e5).toFixed(1)+' L';
+  if (a >= 1e3) return '₹'+Math.round(n/1e3)+'K';
+  return '₹'+Math.round(n);
+}
+
+Chart.defaults.color      = COLORS.text2;
+Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+
+const custChart = new Chart(document.getElementById('custChart'), {
+  type: 'bar',
+  data: {
+    labels: LABELS.map(function(l){ return l.length > 12 ? l.slice(0,12)+'…' : l; }),
+    datasets: [{
+      label: 'Total Sales (₹)',
+      data: VAL_DATA,
+      backgroundColor: 'rgba(108,99,255,.7)',
+      borderColor: COLORS.accent,
+      borderWidth: 1,
+      borderRadius: 5,
+      barThickness: 26
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: function(ctx) { return ' ' + fmtShortJS(ctx.raw); }
+        }
+      }
+    },
+    scales: {
+      x: { beginAtZero: true, ticks: { callback: function(v){ return fmtShortJS(v); } }, grid: { color:'rgba(108,99,255,.07)' } },
+      y: { grid: { display: false }, ticks: { font: { size: 11 } } }
+    }
+  }
+});
+
+function switchChart(type) {
+  var isVal = type === 'value';
+  custChart.data.datasets[0].data  = isVal ? VAL_DATA : ORD_DATA;
+  custChart.data.datasets[0].label = isVal ? 'Total Sales (₹)' : 'Orders';
+  custChart.data.datasets[0].backgroundColor = isVal ? 'rgba(108,99,255,.7)' : 'rgba(0,212,170,.7)';
+  custChart.data.datasets[0].borderColor      = isVal ? COLORS.accent : COLORS.accent2;
+  custChart.options.scales.x.ticks.callback   = isVal
+    ? function(v){ return fmtShortJS(v); }
+    : function(v){ return v; };
+  custChart.update();
+
+  document.getElementById('btnVal').style.background   = isVal ? 'var(--accent)' : 'none';
+  document.getElementById('btnVal').style.color        = isVal ? '#fff' : 'var(--text2)';
+  document.getElementById('btnVal').style.borderColor  = isVal ? 'var(--accent)' : 'var(--border)';
+  document.getElementById('btnOrd').style.background   = !isVal ? 'var(--accent2)' : 'none';
+  document.getElementById('btnOrd').style.color        = !isVal ? '#fff' : 'var(--text2)';
+  document.getElementById('btnOrd').style.borderColor  = !isVal ? 'var(--accent2)' : 'var(--border)';
+}
+</script>
+
 <%- include('partials/foot') %>
