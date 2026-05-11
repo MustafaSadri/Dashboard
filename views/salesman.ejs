@@ -1,0 +1,270 @@
+<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Salesman Performance'}) %>
+  <div class="page">
+
+    <!-- Stat Cards -->
+    <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px">
+      <div class="stat-card">
+        <div class="stat-label">Salesmen</div>
+        <div class="stat-value"><%- salesmen.length %></div>
+        <div class="stat-sub">active this period</div>
+        <i class="fas fa-user-tie stat-icon"></i>
+      </div>
+      <div class="stat-card success">
+        <div class="stat-label">Total Shipments</div>
+        <div class="stat-value"><%- totalOrders %></div>
+        <div class="stat-sub">selected period</div>
+        <i class="fas fa-truck stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Revenue</div>
+        <div class="stat-value"><%- fmtShort(salesmen.reduce(function(a,s){return a+s.totalVal},0)) %></div>
+        <div class="stat-sub">all salesmen</div>
+        <i class="fas fa-indian-rupee-sign stat-icon"></i>
+      </div>
+      <div class="stat-card warn">
+        <div class="stat-label">Top Performer</div>
+        <div class="stat-value" style="font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          <%- salesmen.length > 0 ? salesmen[0].name : '—' %>
+        </div>
+        <div class="stat-sub"><%- salesmen.length > 0 ? fmt(salesmen[0].totalVal) : '' %></div>
+        <i class="fas fa-trophy stat-icon"></i>
+      </div>
+    </div>
+
+    <!-- Period filter -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 16px;flex-wrap:wrap">
+      <i class="fas fa-calendar-alt" style="color:var(--text2);font-size:13px"></i>
+      <label style="font-size:13px;color:var(--text2)">Period:</label>
+      <select id="periodSel" onchange="goPeriod()"
+        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:8px;font-size:13px;outline:none;cursor:pointer">
+        <option value="current" <%- period==='current'?'selected':'' %>>This Month</option>
+        <% months.forEach(function(m){ %>
+        <option value="<%- m.key %>" <%- period===m.key?'selected':'' %>><%- m.label %></option>
+        <% }) %>
+      </select>
+      <span style="margin-left:auto;font-size:12px;color:var(--text2)"><%- salesmen.length %> salesmen · sorted by revenue</span>
+    </div>
+
+    <!-- Chart + Table -->
+    <div style="display:grid;grid-template-columns:2fr 3fr;gap:20px;align-items:start">
+
+      <!-- Chart -->
+      <div class="card" style="position:sticky;top:20px">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span><i class="fas fa-chart-bar"></i> Comparison</span>
+          <div style="display:flex;gap:6px">
+            <button id="btnVal" onclick="switchChart('value')"
+              style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer">Value</button>
+            <button id="btnOrd" onclick="switchChart('orders')"
+              style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text2);cursor:pointer">Orders</button>
+            <button id="btnQty" onclick="switchChart('qty')"
+              style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text2);cursor:pointer">Orders</button>
+          </div>
+        </div>
+        <div style="height:420px;position:relative"><canvas id="smChart"></canvas></div>
+      </div>
+
+      <!-- Salesman Table -->
+      <div class="card">
+        <div class="card-title"><i class="fas fa-user-tie"></i> Salesman List (<%- salesmen.length %>)</div>
+        <% if(salesmen.length===0){ %>
+        <div class="empty"><i class="fas fa-user-slash"></i> No orders found for this period</div>
+        <% } else { %>
+        <div class="table-wrap">
+          <table id="smTable">
+            <thead>
+              <tr>
+                <th style="width:32px">#</th>
+                <th>Salesman</th>
+                <th style="text-align:right">Orders</th>
+                <th style="text-align:right">Total Revenue</th>
+                <th style="text-align:right">Avg / Order</th>
+                <th style="width:28px"></th>
+              </tr>
+            </thead>
+            <tbody>
+            <% salesmen.forEach(function(s, idx){ %>
+              <tr class="sm-row" style="cursor:pointer" onclick="toggleDetail(<%- idx %>)"
+                onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+                <td style="color:var(--text2);font-size:12px"><%- idx+1 %></td>
+                <td>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <div style="width:30px;height:30px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;
+                      background:linear-gradient(135deg,<%- idx===0?'#ffd700,#ffaa00':idx===1?'#c0c0c0,#a0a0a0':idx===2?'#cd7f32,#a0522d':'var(--accent),var(--accent2)' %>)">
+                      <%- s.name.charAt(0).toUpperCase() %>
+                    </div>
+                    <div>
+                      <div style="font-weight:600;font-size:13px"><%- s.name %></div>
+                      <% if(idx===0){ %><div style="font-size:10px;color:#ffd700"><i class="fas fa-trophy"></i> Top Performer</div><% } %>
+                    </div>
+                  </div>
+                </td>
+                <td style="text-align:right;font-weight:600"><%- s.orders %></td>
+                <td style="text-align:right;font-weight:700;color:var(--accent2)"><%- fmt(s.totalVal) %></td>
+                <td style="text-align:right;color:var(--text2);font-size:12px"><%- fmt(s.avgVal) %></td>
+                <td style="text-align:center">
+                  <i id="smchev-<%- idx %>" class="fas fa-chevron-right" style="font-size:10px;color:var(--text2);transition:transform .2s"></i>
+                </td>
+              </tr>
+              <!-- Expandable order list -->
+              <tr id="smdetail-<%- idx %>" style="display:none">
+                <td colspan="6" style="padding:0">
+                  <div style="background:var(--bg);border-bottom:1px solid var(--border);padding:8px 12px 12px 52px">
+                    <div style="font-size:11px;color:var(--text2);font-weight:600;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">
+                      Shipments — <%- s.name %>
+                    </div>
+                    <!-- Search -->
+                    <div style="position:relative;margin-bottom:8px;max-width:300px">
+                      <i class="fas fa-search" style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--text2);pointer-events:none"></i>
+                      <input type="text" placeholder="Search orders…"
+                        oninput="filterOrders(<%- idx %>,this.value)"
+                        onclick="event.stopPropagation()"
+                        style="width:100%;box-sizing:border-box;padding:6px 10px 6px 28px;font-size:12px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);outline:none">
+                    </div>
+                    <table style="width:100%" id="ordtbl-<%- idx %>">
+                      <thead>
+                        <tr>
+                          <th style="font-size:10px;padding:5px 10px;background:transparent;border-bottom:1px solid var(--border)">Shipment</th>
+                          <th style="font-size:10px;padding:5px 10px;background:transparent;border-bottom:1px solid var(--border)">Order</th>
+                          <th style="font-size:10px;padding:5px 10px;background:transparent;border-bottom:1px solid var(--border)">Date</th>
+                          <th style="font-size:10px;padding:5px 10px;background:transparent;border-bottom:1px solid var(--border)">Customer</th>
+                          <th style="font-size:10px;padding:5px 10px;text-align:right;background:transparent;border-bottom:1px solid var(--border)">Value</th>
+                        </tr>
+                      </thead>
+                      <tbody id="ordbody-<%- idx %>">
+                        <% s.orderList.forEach(function(o){ %>
+                        <tr class="ord-row" style="border-bottom:1px solid rgba(108,99,255,.05)">
+                          <td style="padding:6px 10px;font-size:12px;font-weight:600"><%- o.name %></td>
+                          <td style="padding:6px 10px;font-size:11px;color:var(--text2)"><%- o.orderName %></td>
+                          <td style="padding:6px 10px;font-size:12px;color:var(--text2)"><%- o.date %></td>
+                          <td style="padding:6px 10px;font-size:12px;color:var(--text2)"><%- o.customer %></td>
+                          <td style="padding:6px 10px;font-size:12px;text-align:right;font-weight:600;color:var(--accent2)"><%- fmt(o.val) %></td>
+                        </tr>
+                        <% }) %>
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+            <% }) %>
+            </tbody>
+          </table>
+        </div>
+        <% } %>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script type="application/json" id="chartLabels"><%- chartLabels %></script>
+<script type="application/json" id="chartValueData"><%- chartValueData %></script>
+<script type="application/json" id="chartOrderData"><%- chartOrderData %></script>
+<script type="application/json" id="chartQtyData"><%- chartQtyData %></script>
+<script type="application/json" id="salesmenData"><%- salesmenJSON %></script>
+
+<script>
+const LABELS   = JSON.parse(document.getElementById('chartLabels').textContent);
+const VAL_DATA = JSON.parse(document.getElementById('chartValueData').textContent);
+const ORD_DATA = JSON.parse(document.getElementById('chartOrderData').textContent);
+const QTY_DATA = JSON.parse(document.getElementById('chartQtyData').textContent);
+const SALESMEN = JSON.parse(document.getElementById('salesmenData').textContent);
+const COLORS   = { accent:'#6c63ff', accent2:'#00d4aa', warn:'#ffa94d', text2:'#8891b5' };
+
+function goPeriod() {
+  window.location.href = '/salesman?period=' + document.getElementById('periodSel').value;
+}
+
+function fmtShortJS(n) {
+  if (!n || isNaN(n)) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e7) return '₹'+(n/1e7).toFixed(2)+' Cr';
+  if (a >= 1e5) return '₹'+(n/1e5).toFixed(1)+' L';
+  if (a >= 1e3) return '₹'+Math.round(n/1e3)+'K';
+  return '₹'+Math.round(n);
+}
+
+Chart.defaults.color       = COLORS.text2;
+Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+
+const smChart = new Chart(document.getElementById('smChart'), {
+  type: 'bar',
+  data: {
+    labels: LABELS.map(function(l){ return l.length > 14 ? l.slice(0,14)+'…' : l; }),
+    datasets: [{
+      label: 'Total Value (₹)',
+      data: VAL_DATA,
+      backgroundColor: 'rgba(108,99,255,.75)',
+      borderColor: COLORS.accent,
+      borderWidth: 1,
+      borderRadius: 5,
+      barThickness: 28
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: function(ctx){ return ' ' + fmtShortJS(ctx.raw); } } }
+    },
+    scales: {
+      x: { beginAtZero:true, ticks:{ callback: function(v){ return fmtShortJS(v); } }, grid:{ color:'rgba(108,99,255,.07)' } },
+      y: { grid:{ display:false }, ticks:{ font:{ size:11 } } }
+    }
+  }
+});
+
+const btnCfg = {
+  value:  { data: VAL_DATA, label: 'Total Value (₹)',  bg: 'rgba(108,99,255,.75)', bc: COLORS.accent,  tick: function(v){ return fmtShortJS(v); } },
+  orders: { data: ORD_DATA, label: 'Orders',           bg: 'rgba(0,212,170,.75)',  bc: COLORS.accent2, tick: function(v){ return v; } },
+  qty:    { data: QTY_DATA, label: 'Shipments',          bg: 'rgba(255,169,77,.75)', bc: COLORS.warn,    tick: function(v){ return v; } }
+};
+
+function switchChart(type) {
+  const cfg = btnCfg[type];
+  smChart.data.datasets[0].data            = cfg.data;
+  smChart.data.datasets[0].label           = cfg.label;
+  smChart.data.datasets[0].backgroundColor = cfg.bg;
+  smChart.data.datasets[0].borderColor     = cfg.bc;
+  smChart.options.scales.x.ticks.callback  = cfg.tick;
+  smChart.update();
+
+  ['btnVal','btnOrd','btnQty'].forEach(function(id){
+    document.getElementById(id).style.background  = 'none';
+    document.getElementById(id).style.color       = COLORS.text2;
+    document.getElementById(id).style.borderColor = 'var(--border)';
+  });
+  const active = { value:'btnVal', orders:'btnOrd', qty:'btnQty' }[type];
+  document.getElementById(active).style.background  = cfg.bc;
+  document.getElementById(active).style.color       = '#fff';
+  document.getElementById(active).style.borderColor = cfg.bc;
+}
+
+function toggleDetail(idx) {
+  var row  = document.getElementById('smdetail-' + idx);
+  var chev = document.getElementById('smchev-' + idx);
+  var open = row.style.display === 'none';
+  row.style.display   = open ? 'table-row' : 'none';
+  chev.style.transform = open ? 'rotate(90deg)' : '';
+  if (open) {
+    var inp = row.querySelector('input');
+    if (inp) { inp.value = ''; filterOrders(idx, ''); setTimeout(function(){ inp.focus(); }, 50); }
+  }
+}
+
+function filterOrders(idx, query) {
+  var q    = query.toLowerCase().trim();
+  var rows = document.querySelectorAll('#ordtbl-' + idx + ' .ord-row');
+  rows.forEach(function(r) {
+    var text = r.textContent.toLowerCase();
+    r.style.display = (!q || text.includes(q)) ? '' : 'none';
+  });
+}
+</script>
+
+<%- include('partials/foot') %>

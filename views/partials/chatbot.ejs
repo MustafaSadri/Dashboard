@@ -1,0 +1,595 @@
+<!-- WareSmart AI — Centered Modal -->
+<style>
+/* ── Backdrop ── */
+#ws-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0); backdrop-filter: blur(0px);
+  z-index: 9990; pointer-events: none;
+  transition: background .3s, backdrop-filter .3s;
+}
+#ws-backdrop.ws-open {
+  background: rgba(0,0,0,.7); backdrop-filter: blur(10px);
+  pointer-events: auto; cursor: pointer;
+}
+
+/* ── Modal ── */
+#ws-panel {
+  position: fixed;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%) scale(0.93);
+  opacity: 0; pointer-events: none;
+  width: min(940px, 93vw);
+  height: min(86vh, 860px);
+  z-index: 9991;
+  display: flex; flex-direction: column;
+  background: #141420;
+  border-radius: 22px;
+  border: 1px solid rgba(108,99,255,.35);
+  box-shadow: 0 40px 100px rgba(0,0,0,.75), 0 0 0 1px rgba(108,99,255,.12);
+  transition: opacity .28s cubic-bezier(.4,0,.2,1), transform .28s cubic-bezier(.4,0,.2,1);
+  overflow: hidden;
+}
+#ws-panel.ws-open {
+  transform: translate(-50%, -50%) scale(1);
+  opacity: 1; pointer-events: auto;
+}
+
+/* ── Header ── */
+#ws-hd {
+  flex-shrink: 0;
+  background: linear-gradient(135deg,#6c63ff 0%,#4facfe 50%,#00d4aa 100%);
+  padding: 18px 24px;
+  display: flex; align-items: center; gap: 14px;
+  position: relative; overflow: hidden;
+}
+#ws-hd::after {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse at 80% 50%, rgba(255,255,255,.13) 0%, transparent 60%);
+  pointer-events: none;
+}
+.ws-ai-avatar {
+  width: 46px; height: 46px; border-radius: 13px;
+  background: rgba(255,255,255,.2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 21px; color: #fff; flex-shrink: 0;
+}
+.ws-hd-name { font-size: 16px; font-weight: 700; color: #fff; }
+.ws-hd-sub  { font-size: 11.5px; color: rgba(255,255,255,.78); margin-top: 2px; }
+.ws-live {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: #4cffb8; margin-right: 5px; vertical-align: middle;
+  animation: wsBlink 2s ease-in-out infinite;
+}
+@keyframes wsBlink { 0%,100%{opacity:1} 50%{opacity:.25} }
+.ws-hd-actions { margin-left: auto; display: flex; gap: 8px; }
+.ws-hd-btn {
+  width: 34px; height: 34px; border-radius: 9px;
+  background: rgba(255,255,255,.18); border: none; color: #fff;
+  cursor: pointer; font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.ws-hd-btn:hover { background: rgba(255,255,255,.32); }
+
+/* ── Messages ── */
+#ws-msgs {
+  flex: 1; overflow-y: auto; overflow-x: hidden;
+  padding: 24px 30px;
+  display: flex; flex-direction: column; gap: 20px;
+  scroll-behavior: smooth; background: #141420;
+}
+#ws-msgs::-webkit-scrollbar { width: 5px; }
+#ws-msgs::-webkit-scrollbar-track { background: rgba(255,255,255,.03); }
+#ws-msgs::-webkit-scrollbar-thumb { background: rgba(108,99,255,.3); border-radius: 4px; }
+
+/* ── Message rows ── */
+.ws-row { display: flex; align-items: flex-start; gap: 12px; }
+.ws-row.ws-user { flex-direction: row-reverse; }
+
+.ws-av {
+  width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 14px;
+  margin-top: 3px;
+}
+.ws-av-bot { background: linear-gradient(135deg,#6c63ff,#00d4aa); color: #fff; }
+.ws-av-usr { background: linear-gradient(135deg,#ffa94d,#ff6b6b); color: #fff; }
+
+.ws-col { display: flex; flex-direction: column; max-width: 90%; min-width: 0; flex: 1; }
+.ws-user .ws-col { align-items: flex-end; flex: 0 1 auto; }
+
+.ws-bbl {
+  padding: 14px 18px; border-radius: 18px;
+  font-size: 14px; line-height: 1.7;
+  word-break: break-word; min-width: 0;
+}
+.ws-bbl-bot {
+  background: #1c1c30; color: #e8e8f0;
+  border-top-left-radius: 4px;
+  border: 1px solid rgba(108,99,255,.2);
+  width: 100%; box-sizing: border-box;
+}
+.ws-bbl-usr {
+  background: linear-gradient(135deg,#6c63ff,#5450d8);
+  color: #fff; border-top-right-radius: 4px;
+}
+
+/* Inline markdown */
+.ws-bbl strong { font-weight: 700; color: #b4b0ff; }
+.ws-bbl-usr strong { color: #fff; }
+.ws-bbl em { font-style: italic; opacity: .85; }
+.ws-bbl code {
+  background: rgba(108,99,255,.25); padding: 2px 7px;
+  border-radius: 5px; font-size: 13px; font-family: 'Courier New',monospace; color: #b4b0ff;
+}
+
+/* Markdown table */
+.ws-tbl-wrap {
+  overflow-x: auto; margin: 10px 0; border-radius: 11px;
+  border: 1px solid rgba(108,99,255,.25); width: 100%;
+}
+.ws-tbl-wrap table {
+  border-collapse: collapse; width: 100%; min-width: 300px;
+  font-size: 13px;
+}
+.ws-tbl-wrap th {
+  background: rgba(108,99,255,.22); color: #c0bcff; font-weight: 700;
+  padding: 10px 15px; text-align: left;
+  border-bottom: 1px solid rgba(108,99,255,.3);
+}
+.ws-tbl-wrap td {
+  padding: 9px 15px; color: #dde0f0;
+  border-bottom: 1px solid rgba(108,99,255,.08);
+  vertical-align: top;
+}
+.ws-tbl-wrap tr:last-child td { border-bottom: none; }
+.ws-tbl-wrap tr:nth-child(even) td { background: rgba(255,255,255,.025); }
+
+/* Bullet list */
+.ws-list { margin: 6px 0 6px 4px; padding: 0; list-style: none; }
+.ws-list li { padding: 2px 0 2px 16px; position: relative; }
+.ws-list li::before {
+  content: '•'; position: absolute; left: 2px;
+  color: #6c63ff; font-weight: 700;
+}
+
+.ws-ts {
+  font-size: 10.5px; color: rgba(255,255,255,.25);
+  margin-top: 6px; padding: 0 4px;
+}
+
+/* ── Typing indicator ── */
+.ws-typing {
+  display: flex; gap: 5px; align-items: center;
+  padding: 13px 16px; background: #1c1c30;
+  border: 1px solid rgba(108,99,255,.2);
+  border-radius: 18px; border-top-left-radius: 4px; width: fit-content;
+}
+.ws-typing span {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: rgba(108,99,255,.7);
+  animation: wsDot 1.3s ease-in-out infinite;
+}
+.ws-typing span:nth-child(2) { animation-delay: .18s; }
+.ws-typing span:nth-child(3) { animation-delay: .36s; }
+@keyframes wsDot { 0%,60%,100%{opacity:.25;transform:translateY(0)} 30%{opacity:1;transform:translateY(-4px)} }
+
+.ws-searching {
+  display: flex; gap: 8px; align-items: center;
+  padding: 11px 16px; background: rgba(0,212,170,.1);
+  border: 1px solid rgba(0,212,170,.3);
+  border-radius: 18px; border-top-left-radius: 4px;
+  font-size: 13px; color: #00d4aa; width: fit-content;
+}
+.ws-searching i { animation: wsSpin 1s linear infinite; }
+@keyframes wsSpin { to { transform: rotate(360deg); } }
+
+/* ── Chips ── */
+#ws-chips-wrap {
+  flex-shrink: 0; padding: 12px 24px 10px;
+  background: #141420; border-top: 1px solid rgba(108,99,255,.12);
+}
+.ws-chips-label {
+  font-size: 10px; font-weight: 700; color: rgba(255,255,255,.28);
+  text-transform: uppercase; letter-spacing: .6px; margin-bottom: 9px;
+}
+#ws-chips-scroll {
+  display: flex; flex-wrap: wrap; gap: 7px;
+}
+.ws-chip {
+  font-size: 12px; padding: 6px 14px; border-radius: 20px;
+  border: 1px solid rgba(108,99,255,.35);
+  background: rgba(108,99,255,.1); color: rgba(255,255,255,.7);
+  cursor: pointer; white-space: nowrap; transition: all .15s;
+}
+.ws-chip:hover {
+  background: rgba(108,99,255,.3); border-color: #6c63ff; color: #fff;
+  transform: translateY(-1px);
+}
+.ws-chip-web { border-color: rgba(0,212,170,.35); background: rgba(0,212,170,.08); }
+.ws-chip-web:hover { background: rgba(0,212,170,.25); border-color: #00d4aa; }
+
+/* ── Input bar ── */
+#ws-bar {
+  flex-shrink: 0; padding: 14px 24px 18px;
+  background: #141420; border-top: 1px solid rgba(108,99,255,.15);
+  display: flex; gap: 10px; align-items: center;
+}
+#ws-input {
+  flex: 1; background: #1c1c30;
+  border: 1.5px solid rgba(108,99,255,.3); color: #e8e8f0;
+  padding: 13px 17px; border-radius: 13px;
+  font-size: 14px; outline: none;
+  transition: border .2s, box-shadow .2s; font-family: inherit;
+}
+#ws-input::placeholder { color: rgba(255,255,255,.28); }
+#ws-input:focus { border-color: #6c63ff; box-shadow: 0 0 0 3px rgba(108,99,255,.2); }
+#ws-send {
+  width: 50px; height: 50px; border-radius: 13px; flex-shrink: 0;
+  background: linear-gradient(135deg,#6c63ff,#00d4aa);
+  border: none; color: #fff; cursor: pointer; font-size: 17px;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform .15s, opacity .15s;
+  box-shadow: 0 4px 16px rgba(108,99,255,.4);
+}
+#ws-send:hover { transform: scale(1.08); }
+#ws-send:active { transform: scale(.94); }
+#ws-send:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+/* ── FAB ── */
+#ws-fab-wrap {
+  position: fixed; bottom: 28px; right: 28px; z-index: 9992;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  transition: opacity .2s, transform .2s;
+}
+#ws-fab {
+  width: 62px; height: 62px; border-radius: 50%;
+  background: linear-gradient(135deg,#6c63ff,#00d4aa);
+  border: none; cursor: pointer; color: #fff; font-size: 25px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 28px rgba(108,99,255,.55);
+  transition: transform .2s, box-shadow .2s; position: relative;
+}
+#ws-fab::before {
+  content: ''; position: absolute; inset: -7px; border-radius: 50%;
+  border: 2px solid rgba(108,99,255,.4);
+  animation: wsFabPulse 2.8s ease-out infinite;
+}
+@keyframes wsFabPulse { 0%{opacity:1;transform:scale(1)} 70%{opacity:0;transform:scale(1.5)} 100%{opacity:0} }
+#ws-fab:hover { transform: scale(1.1); box-shadow: 0 8px 36px rgba(108,99,255,.7); }
+#ws-fab:active { transform: scale(.95); }
+#ws-fab-label {
+  font-size: 10px; font-weight: 700; color: rgba(255,255,255,.5);
+  text-transform: uppercase; letter-spacing: .5px;
+  text-shadow: 0 1px 3px rgba(0,0,0,.5);
+}
+#ws-badge {
+  position: absolute; top: 3px; right: 3px;
+  width: 15px; height: 15px; border-radius: 50%;
+  background: #ff4d6d; border: 2px solid #0a0a14;
+  display: none; font-size: 9px; color: #fff;
+  align-items: center; justify-content: center; font-weight: 700;
+}
+</style>
+
+<!-- Backdrop (click outside = close) -->
+<div id="ws-backdrop" onclick="wsClose()"></div>
+
+<!-- Modal -->
+<div id="ws-panel" onclick="event.stopPropagation()">
+
+  <!-- Header -->
+  <div id="ws-hd">
+    <div class="ws-ai-avatar"><i class="fas fa-robot"></i></div>
+    <div style="flex:1;min-width:0">
+      <div class="ws-hd-name">WareSmart AI</div>
+      <div class="ws-hd-sub">
+        <span class="ws-live"></span>
+        <span id="ws-status">Live data · Web search enabled</span>
+      </div>
+    </div>
+    <div class="ws-hd-actions">
+      <button class="ws-hd-btn" onclick="wsClear()" title="Clear chat"><i class="fas fa-rotate-left"></i></button>
+      <button class="ws-hd-btn" onclick="wsClose()" title="Close (Esc)"><i class="fas fa-xmark"></i></button>
+    </div>
+  </div>
+
+  <!-- Messages -->
+  <div id="ws-msgs">
+    <div class="ws-row ws-bot">
+      <div class="ws-av ws-av-bot"><i class="fas fa-robot"></i></div>
+      <div class="ws-col">
+        <div class="ws-bbl ws-bbl-bot">👋 Hi! I'm <strong>WareSmart AI</strong> — your business intelligence advisor.<br><br>
+I have access to:<br>
+• <strong>Live MoySklad data</strong> — inventory, sales, orders, customers<br>
+• <strong>Full history</strong> — Nov 2025 to today, month by month<br>
+• <strong>Web search</strong> — market trends, regulations, global data<br><br>
+Ask me anything about your business! 🌐</div>
+        <div class="ws-ts" id="ws-first-ts"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick chips -->
+  <div id="ws-chips-wrap">
+    <div class="ws-chips-label">📊 My Business</div>
+    <div id="ws-chips-scroll">
+      <button class="ws-chip" onclick="wsChip(this,'Who is my best customer this month? And who was best last month?')">👥 Best customer</button>
+      <button class="ws-chip" onclick="wsChip(this,'What is the top selling product this month vs last month?')">🏆 Top product</button>
+      <button class="ws-chip" onclick="wsChip(this,'How many orders are pending right now? List them.')">⏳ Pending orders</button>
+      <button class="ws-chip" onclick="wsChip(this,'Which products will run out of stock soon? Give reorder quantities.')">🔮 Stock predictions</button>
+      <button class="ws-chip" onclick="wsChip(this,'What is today revenue and shipments?')">📅 Today</button>
+      <button class="ws-chip" onclick="wsChip(this,'Compare revenue this month vs last month and vs 3 months ago.')">📈 Growth trend</button>
+      <button class="ws-chip" onclick="wsChip(this,'Which items are not selling at all this month?')">🐌 Slow-moving</button>
+      <button class="ws-chip" onclick="wsChip(this,'Give me a complete business health report with risks and opportunities.')">🏥 Health report</button>
+      <button class="ws-chip" onclick="wsChip(this,'Show me last month best customer, products, and revenue breakdown.')">🗓️ Last month</button>
+      <button class="ws-chip ws-chip-web" onclick="wsChip(this,'Search: latest market trends for my product category and growth opportunities in India 2025',true)">📰 Market trends</button>
+      <button class="ws-chip ws-chip-web" onclick="wsChip(this,'Search: regulations and compliance requirements in India for my type of business products',true)">⚖️ Regulations</button>
+      <button class="ws-chip ws-chip-web" onclick="wsChip(this,'Based on my sales data and current market trends, what are the top 5 business decisions I should make?',true)">🎯 Strategy</button>
+    </div>
+  </div>
+
+  <!-- Input -->
+  <div id="ws-bar">
+    <input id="ws-input" type="text" placeholder="Ask anything about your business or market…"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();wsSend();}">
+    <button id="ws-send" onclick="wsSend()"><i class="fas fa-paper-plane"></i></button>
+  </div>
+
+</div>
+
+<!-- FAB -->
+<div id="ws-fab-wrap">
+  <button id="ws-fab" onclick="wsOpen()">
+    <i class="fas fa-comments"></i>
+    <span id="ws-badge"></span>
+  </button>
+  <div id="ws-fab-label">Ask AI</div>
+</div>
+
+<script>
+(function() {
+  var isOpen  = false;
+  var busy    = false;
+  var history = [];
+  var unread  = 0;
+
+  document.getElementById('ws-first-ts').textContent = nowTime();
+
+  function nowTime() {
+    return new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function escH(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function applyInline(s) {
+    return escH(s)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>');
+  }
+
+  function renderTable(lines) {
+    var rows = [];
+    var sepIdx = -1;
+    for (var i = 0; i < lines.length; i++) {
+      var t = lines[i].trim();
+      // Separator row: only -, :, |, spaces
+      if (/^\|[\s\-:|]+\|$/.test(t)) { sepIdx = i; continue; }
+      var cells = t.split('|').slice(1, -1).map(function(c){ return c.trim(); });
+      if (cells.length) rows.push({ lineIdx: i, cells: cells });
+    }
+    var html = '<div class="ws-tbl-wrap"><table>';
+    var bodyStarted = false;
+    for (var r = 0; r < rows.length; r++) {
+      var isHead = sepIdx > -1 && rows[r].lineIdx < sepIdx;
+      if (isHead) {
+        if (r === 0) html += '<thead>';
+        html += '<tr>' + rows[r].cells.map(function(c){ return '<th>' + applyInline(c) + '</th>'; }).join('') + '</tr>';
+        if (r === rows.length - 1 || !isHead) html += '</thead>';
+      } else {
+        if (!bodyStarted) { html += '<tbody>'; bodyStarted = true; }
+        html += '<tr>' + rows[r].cells.map(function(c){ return '<td>' + applyInline(c) + '</td>'; }).join('') + '</tr>';
+      }
+    }
+    if (!bodyStarted) html += '<tbody>';
+    html += '</tbody></table></div>';
+    return html;
+  }
+
+  function fmtReply(text) {
+    var lines = text.split('\n');
+    var segments = [];
+    var cur = null;
+
+    for (var i = 0; i < lines.length; i++) {
+      var t = lines[i].trim();
+      var isTableRow = t.startsWith('|') && t.endsWith('|') && t.length > 2;
+      var type = isTableRow ? 'table' : 'text';
+      if (!cur || cur.type !== type) {
+        if (cur) segments.push(cur);
+        cur = { type: type, lines: [] };
+      }
+      cur.lines.push(lines[i]);
+    }
+    if (cur) segments.push(cur);
+
+    var out = '';
+    for (var s = 0; s < segments.length; s++) {
+      var seg = segments[s];
+      if (seg.type === 'table') {
+        out += renderTable(seg.lines);
+      } else {
+        var parts = [];
+        var listItems = [];
+        for (var l = 0; l < seg.lines.length; l++) {
+          var line = seg.lines[l];
+          var trimLine = line.trim();
+          var bulletMatch = trimLine.match(/^[-•*]\s+(.+)/);
+          if (bulletMatch) {
+            listItems.push('<li>' + applyInline(bulletMatch[1]) + '</li>');
+          } else {
+            if (listItems.length) {
+              parts.push('<ul class="ws-list">' + listItems.join('') + '</ul>');
+              listItems = [];
+            }
+            parts.push(applyInline(line));
+          }
+        }
+        if (listItems.length) parts.push('<ul class="ws-list">' + listItems.join('') + '</ul>');
+        // Join with <br>, but don't put <br> around block elements
+        var joined = '';
+        for (var p = 0; p < parts.length; p++) {
+          if (p > 0 && !parts[p].startsWith('<ul') && !parts[p-1].endsWith('</ul>')) {
+            joined += '<br>';
+          }
+          joined += parts[p];
+        }
+        out += joined;
+      }
+    }
+    return out;
+  }
+
+  function wsOpen() {
+    if (isOpen) return;
+    isOpen = true;
+    document.getElementById('ws-panel').classList.add('ws-open');
+    document.getElementById('ws-backdrop').classList.add('ws-open');
+    document.getElementById('ws-fab-wrap').style.opacity = '0';
+    document.getElementById('ws-fab-wrap').style.pointerEvents = 'none';
+    unread = 0;
+    document.getElementById('ws-badge').style.display = 'none';
+    setTimeout(function(){ document.getElementById('ws-input').focus(); }, 300);
+  }
+  window.wsOpen = wsOpen;
+
+  function wsClose() {
+    if (!isOpen) return;
+    isOpen = false;
+    document.getElementById('ws-panel').classList.remove('ws-open');
+    document.getElementById('ws-backdrop').classList.remove('ws-open');
+    document.getElementById('ws-fab-wrap').style.opacity = '';
+    document.getElementById('ws-fab-wrap').style.pointerEvents = '';
+  }
+  window.wsClose = wsClose;
+
+  function wsClear() {
+    history = [];
+    document.getElementById('ws-msgs').innerHTML = '';
+    appendBot('Chat cleared. What would you like to know?');
+    document.getElementById('ws-chips-wrap').style.display = '';
+  }
+  window.wsClear = wsClear;
+
+  function wsChip(btn, text, isWeb) {
+    document.getElementById('ws-chips-wrap').style.display = 'none';
+    document.getElementById('ws-input').value = text;
+    window._wsIsWeb = !!isWeb;
+    wsSend();
+  }
+  window.wsChip = wsChip;
+
+  function appendBot(html, isRaw) {
+    var msgs = document.getElementById('ws-msgs');
+    var row  = document.createElement('div');
+    row.className = 'ws-row ws-bot';
+    row.innerHTML =
+      '<div class="ws-av ws-av-bot"><i class="fas fa-robot"></i></div>' +
+      '<div class="ws-col"><div class="ws-bbl ws-bbl-bot">' +
+        (isRaw ? html : fmtReply(html)) +
+      '</div><div class="ws-ts">' + nowTime() + '</div></div>';
+    msgs.appendChild(row);
+    msgs.scrollTop = msgs.scrollHeight;
+    if (!isOpen) {
+      unread++;
+      var b = document.getElementById('ws-badge');
+      b.textContent = unread > 9 ? '9+' : unread;
+      b.style.display = 'flex';
+    }
+  }
+
+  function appendUser(text) {
+    var msgs = document.getElementById('ws-msgs');
+    var row  = document.createElement('div');
+    row.className = 'ws-row ws-user';
+    row.innerHTML =
+      '<div class="ws-av ws-av-usr"><i class="fas fa-user"></i></div>' +
+      '<div class="ws-col">' +
+        '<div class="ws-bbl ws-bbl-usr">' + escH(text) + '</div>' +
+        '<div class="ws-ts">' + nowTime() + '</div>' +
+      '</div>';
+    msgs.appendChild(row);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function showTyping(web) {
+    var msgs = document.getElementById('ws-msgs');
+    var row  = document.createElement('div');
+    row.className = 'ws-row ws-bot'; row.id = 'ws-typing';
+    if (web) {
+      row.innerHTML = '<div class="ws-av ws-av-bot"><i class="fas fa-robot"></i></div>' +
+        '<div class="ws-col"><div class="ws-searching"><i class="fas fa-circle-notch"></i> Searching the web…</div></div>';
+    } else {
+      row.innerHTML = '<div class="ws-av ws-av-bot"><i class="fas fa-robot"></i></div>' +
+        '<div class="ws-col"><div class="ws-typing"><span></span><span></span><span></span></div></div>';
+    }
+    msgs.appendChild(row);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function hideTyping() {
+    var el = document.getElementById('ws-typing');
+    if (el) el.remove();
+  }
+
+  function wsSend() {
+    if (busy) return;
+    var inp  = document.getElementById('ws-input');
+    var text = inp.value.trim(); if (!text) return;
+    inp.value = '';
+    document.getElementById('ws-chips-wrap').style.display = 'none';
+    history.push({ role: 'user', content: text });
+    appendUser(text);
+
+    var isWeb = !!window._wsIsWeb; window._wsIsWeb = false;
+    busy = true;
+    document.getElementById('ws-send').disabled = true;
+    document.getElementById('ws-status').textContent = isWeb ? 'Searching web…' : 'Thinking…';
+    showTyping(isWeb);
+
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history.slice(-20) })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      hideTyping();
+      var reply = d.reply || d.error || 'Something went wrong.';
+      history.push({ role: 'assistant', content: reply });
+      appendBot(reply);
+      document.getElementById('ws-status').textContent = 'Live data · Web search enabled';
+    })
+    .catch(function(e) {
+      hideTyping();
+      appendBot('⚠️ Error: ' + escH(e.message));
+      document.getElementById('ws-status').textContent = 'Live data · Web search enabled';
+    })
+    .finally(function() {
+      busy = false;
+      document.getElementById('ws-send').disabled = false;
+    });
+  }
+  window.wsSend = wsSend;
+
+  // Keyboard: Ctrl+/ or Ctrl+K to toggle, Escape to close
+  document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === '/' || e.key === 'k')) {
+      e.preventDefault(); isOpen ? wsClose() : wsOpen();
+    }
+    if (e.key === 'Escape' && isOpen) wsClose();
+  });
+})();
+</script>

@@ -28,30 +28,6 @@
       </div>
     </div>
 
-    <!-- Item Detail Modal -->
-    <div id="invModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1200;align-items:center;justify-content:center">
-      <div style="background:var(--card);border-radius:14px;width:min(480px,92vw);max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.35)">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px 14px;border-bottom:1px solid var(--border)">
-          <div>
-            <div id="invModalTitle" style="font-size:15px;font-weight:700"></div>
-            <div id="invModalSub" style="font-size:12px;color:var(--text2);margin-top:2px"></div>
-          </div>
-          <button onclick="closeInvModal()" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:4px 6px"><i class="fas fa-xmark"></i></button>
-        </div>
-        <div style="overflow-y:auto;padding:0 20px 20px">
-          <table style="width:100%;margin-top:14px">
-            <thead>
-              <tr>
-                <th style="font-size:11px;padding:6px 0;text-align:left;border-bottom:1px solid var(--border)">Item / Flavor</th>
-                <th style="font-size:11px;padding:6px 0;text-align:right;border-bottom:1px solid var(--border)">Qty</th>
-              </tr>
-            </thead>
-            <tbody id="invModalBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
     <script type="application/json" id="outData"><%- outJSON %></script>
     <script type="application/json" id="lowData"><%- lowJSON %></script>
 
@@ -138,6 +114,50 @@
   </div>
 </div>
 
+<!-- Item Detail Modal — outside .main so position:fixed covers full viewport -->
+<div id="invModal" style="display:none;position:fixed;inset:0;z-index:2000;align-items:center;justify-content:center;padding:20px;box-sizing:border-box">
+  <!-- Backdrop -->
+  <div onclick="closeInvModal()" style="position:absolute;inset:0;background:rgba(10,10,20,.72);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)"></div>
+  <!-- Card -->
+  <div style="position:relative;background:var(--card);border-radius:18px;width:min(520px,100%);max-height:82vh;display:flex;flex-direction:column;
+              box-shadow:0 24px 80px rgba(0,0,0,.55),0 0 0 1px rgba(108,99,255,.18);
+              animation:modalIn .22s cubic-bezier(.34,1.2,.64,1)">
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 22px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div>
+        <div id="invModalTitle" style="font-size:16px;font-weight:700;letter-spacing:.1px"></div>
+        <div id="invModalSub" style="font-size:12px;color:var(--text2);margin-top:3px"></div>
+      </div>
+      <button onclick="closeInvModal()"
+        style="background:rgba(108,99,255,.1);border:none;color:var(--text2);cursor:pointer;font-size:14px;
+               padding:0;width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+               transition:background .15s"
+        onmouseover="this.style.background='rgba(108,99,255,.25)'" onmouseout="this.style.background='rgba(108,99,255,.1)'">
+        <i class="fas fa-xmark"></i>
+      </button>
+    </div>
+    <!-- Body -->
+    <div style="overflow-y:auto;padding:4px 22px 22px">
+      <table style="width:100%;margin-top:12px;border-collapse:collapse">
+        <thead>
+          <tr>
+            <th style="font-size:11px;padding:8px 0;text-align:left;border-bottom:1px solid var(--border);color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.6px">Item / Flavor</th>
+            <th style="font-size:11px;padding:8px 0;text-align:right;border-bottom:1px solid var(--border);color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.6px">Qty</th>
+          </tr>
+        </thead>
+        <tbody id="invModalBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes modalIn {
+  from { opacity:0; transform:scale(.93) translateY(12px); }
+  to   { opacity:1; transform:scale(1)  translateY(0); }
+}
+</style>
+
 <script>
 function toggleModel(idx) {
   var detail = document.getElementById('detail-' + idx);
@@ -164,33 +184,48 @@ var OUT_ITEMS = JSON.parse(document.getElementById('outData').textContent);
 var LOW_ITEMS = JSON.parse(document.getElementById('lowData').textContent);
 
 function openInvModal(type) {
-  var items  = type === 'out' ? OUT_ITEMS : LOW_ITEMS;
-  var title  = type === 'out' ? 'Out of Stock Items' : 'Low Stock Items';
-  var sub    = type === 'out' ? items.length + ' items with zero quantity' : items.length + ' items with qty ≤ 100';
-  document.getElementById('invModalTitle').textContent = title;
-  document.getElementById('invModalSub').textContent   = sub;
+  var items = type === 'out' ? OUT_ITEMS : LOW_ITEMS;
+  var title = type === 'out' ? 'Out of Stock Items' : 'Low Stock Items';
+  var icon  = type === 'out' ? 'fa-box-open' : 'fa-exclamation-triangle';
+  var color = type === 'out' ? 'var(--danger)' : 'var(--warn)';
+  var sub   = type === 'out'
+    ? items.length + ' items with zero quantity'
+    : items.length + ' items with qty below 100';
+
+  document.getElementById('invModalTitle').innerHTML =
+    '<i class="fas ' + icon + '" style="margin-right:8px;color:' + color + '"></i>' + title;
+  document.getElementById('invModalSub').textContent = sub;
+
   var tbody = document.getElementById('invModalBody');
   tbody.innerHTML = '';
   if (items.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;padding:24px;color:var(--text2);font-size:13px">No items</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;padding:32px;color:var(--text2);font-size:13px">' +
+      '<i class="fas fa-check-circle" style="color:var(--accent2);font-size:24px;display:block;margin-bottom:8px"></i>All clear!</td></tr>';
   } else {
     items.forEach(function(item) {
       var cls = type === 'out' ? 'txt-danger' : 'txt-warn';
-      tbody.innerHTML += '<tr style="border-bottom:1px solid var(--border)">' +
-        '<td style="padding:9px 0;font-size:13px">' + item.name + '</td>' +
-        '<td style="padding:9px 0;text-align:right;font-weight:700;font-size:13px" class="' + cls + '">' + item.qty + '</td></tr>';
+      var dot = type === 'out' ? 'var(--danger)' : 'var(--warn)';
+      tbody.innerHTML +=
+        '<tr style="border-bottom:1px solid rgba(108,99,255,.07);transition:background .12s" ' +
+        'onmouseover="this.style.background=\'rgba(108,99,255,.05)\'" onmouseout="this.style.background=\'\'">' +
+        '<td style="padding:10px 0;font-size:13px">' +
+          '<i class="fas fa-circle" style="font-size:6px;color:' + dot + ';margin-right:8px;vertical-align:middle"></i>' +
+          item.name +
+        '</td>' +
+        '<td style="padding:10px 0;text-align:right;font-weight:700;font-size:14px" class="' + cls + '">' + item.qty + '</td></tr>';
     });
   }
-  var modal = document.getElementById('invModal');
-  modal.style.display = 'flex';
+  document.getElementById('invModal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
 }
 
 function closeInvModal() {
   document.getElementById('invModal').style.display = 'none';
+  document.body.style.overflow = '';
 }
 
-document.getElementById('invModal').addEventListener('click', function(e) {
-  if (e.target === this) closeInvModal();
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeInvModal();
 });
 </script>
 

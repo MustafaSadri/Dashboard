@@ -269,6 +269,33 @@ async function common() {
   };
 }
 
+// ── Shared cached data helpers ───────────────────────────
+// These are called from multiple routes — caching avoids duplicate API calls.
+const getStock = () =>
+  cached('stock_all', 3*60*1000, () => ms('/report/stock/all?limit=1000').then(r => r.rows || []));
+
+const getRecentDemands = () =>
+  cached('demands_200', 90*1000, () => ms('/entity/demand?limit=200&order=moment,desc').then(r => r.rows || []));
+
+const getAllOrders = () =>
+  cached('orders_all', 2*60*1000, () => ms('/entity/customerorder?limit=1000&order=moment,desc').then(r => r.rows || []));
+
+const getProfitByProduct = (from, to) => {
+  const key = `prof_prod_${from}_${to||''}`;
+  const url  = to
+    ? `/report/profit/byproduct?momentFrom=${enc(from)}&momentTo=${enc(to)}&limit=10`
+    : `/report/profit/byproduct?momentFrom=${enc(from)}&limit=10`;
+  return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []));
+};
+
+const getProfitByCounterparty = (from, to) => {
+  const key = `prof_cust_${from}_${to||''}`;
+  const url  = to
+    ? `/report/profit/bycounterparty?momentFrom=${enc(from)}&momentTo=${enc(to)}&limit=10`
+    : `/report/profit/bycounterparty?momentFrom=${enc(from)}&limit=10`;
+  return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []));
+};
+
 // ── Helpers ──────────────────────────────────────────────
 const todayStr   = () => localDateStr(new Date());
 const localDateStr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -308,21 +335,21 @@ app.get('/', async (req, res) => {
     const c = await common();
     const from = monthStart();
 
-    const [shipRes, ordRes, stkRes, prodRes, custRes, stateMapRes] = await Promise.allSettled([
-      ms('/entity/demand?limit=200&order=moment,desc'),
-      ms('/entity/customerorder?limit=1000&order=moment,desc'),
-      ms('/report/stock/all?limit=1000'),
-      ms(`/report/profit/byproduct?momentFrom=${enc(from)}&limit=10`),
-      ms(`/report/profit/bycounterparty?momentFrom=${enc(from)}&limit=10`),
-      getOrderStateMap()
+    const [shipments, orders, stock, products, customers, stateMap] = await Promise.all([
+      getRecentDemands(),
+      getAllOrders(),
+      getStock(),
+      getProfitByProduct(from),
+      getProfitByCounterparty(from),
+      getOrderStateMap(),
+    ]).then(r => [
+      r[0],
+      r[1],
+      r[2],
+      (r[3] || []).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)),
+      (r[4] || []).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)),
+      r[5],
     ]);
-
-    const shipments = shipRes.status==='fulfilled' ? (shipRes.value.rows || []) : [];
-    const orders    = ordRes.status==='fulfilled'  ? (ordRes.value.rows  || []) : [];
-    const stock     = stkRes.status==='fulfilled'  ? (stkRes.value.rows  || []) : [];
-    const products  = prodRes.status==='fulfilled' ? (prodRes.value.rows || []).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)) : [];
-    const customers = custRes.status==='fulfilled' ? (custRes.value.rows || []).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)) : [];
-    const stateMap  = stateMapRes.status==='fulfilled' ? stateMapRes.value : {};
 
     // Today's shipments (Sales Today)
     const today = todayStr();
@@ -354,7 +381,7 @@ app.get('/', async (req, res) => {
     stock.forEach(r => {
       const q=r.quantity||0; totalQty+=q; totalVal+=q*(r.price||0);
       if (r.folder?.name) folders.add(r.folder.name);
-      if (q<=0) outStock++; else if (q<=5) { lowStock++; inStock++; } else inStock++;
+      if (q<=0) outStock++; else if (q<100) { lowStock++; inStock++; } else inStock++;
     });
 
     const totalSell    = products.reduce((a,r)=>a+(r.sellSum||0),0);
@@ -395,16 +422,14 @@ app.get('/orders-status', async (req, res) => {
     const sixAgo = new Date(now); sixAgo.setMonth(sixAgo.getMonth() - 6);
     const df     = `moment>=${localDateStr(sixAgo)} 00:00:00`;
 
-    // Fetch orders (no expand=owner — silently fails in many token configs), demands, and state map
-    const [ordRes, demRes, smRes] = await Promise.allSettled([
-      msAll(`/entity/customerorder?filter=${enc(df)}&order=moment,desc&expand=agent,store,state`),
-      msAll(`/entity/demand?filter=${enc(df)}&order=moment,desc`),
-      getOrderStateMap()
+    // Fetch orders, demands, state map — orders/demands cached 2 min per date filter
+    const ordKey = `orders_6mo_${localDateStr(sixAgo)}`;
+    const demKey = `demands_6mo_${localDateStr(sixAgo)}`;
+    const [rawOrders, demands, stateMap] = await Promise.all([
+      cached(ordKey, 2*60*1000, () => msAll(`/entity/customerorder?filter=${enc(df)}&order=moment,desc&expand=agent,store,state`).then(r => r.rows || [])),
+      cached(demKey, 2*60*1000, () => msAll(`/entity/demand?filter=${enc(df)}&order=moment,desc`).then(r => r.rows || [])),
+      getOrderStateMap(),
     ]);
-
-    const rawOrders = ordRes.status === 'fulfilled' ? ordRes.value.rows  : [];
-    const demands   = demRes.status === 'fulfilled' ? demRes.value.rows  : [];
-    const stateMap  = smRes.status  === 'fulfilled' ? smRes.value        : {};
 
     // Collect unique owner hrefs from all orders, then fetch each employee directly.
     // This is more reliable than expand=owner or /entity/employee (both have permission issues).
@@ -510,9 +535,8 @@ app.get('/orders-status', async (req, res) => {
 // ── INVENTORY ────────────────────────────────────────────
 app.get('/inventory', async (req, res) => {
   try {
-    const c = await common();
-    const data = await ms('/report/stock/all?limit=1000');
-    const rows = data.rows || [];
+    const c    = await common();
+    const rows = await getStock();
 
     let low = 0, outStk = 0, totalVal = 0, totalQty = 0;
     rows.forEach(r => {
@@ -572,6 +596,95 @@ app.get('/inventory', async (req, res) => {
 app.get('/purchases', (req, res) => res.redirect('/'));
 
 
+// ── SALESMAN PERFORMANCE ─────────────────────────────────
+app.get('/salesman', async (req, res) => {
+  try {
+    const c = await common();
+    const period = req.query.period || 'current';
+
+    // Build last 12 months for filter
+    const months = [];
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i);
+      const key   = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const label = d.toLocaleString('en', { month: 'long', year: 'numeric' });
+      months.push({ key, label });
+    }
+
+    // Date range
+    let momentFrom = null, momentTo = null;
+    if (period === 'current') {
+      momentFrom = monthStart();
+    } else if (/^\d{4}-\d{2}$/.test(period)) {
+      const [yr, mo] = period.split('-').map(Number);
+      momentFrom = `${yr}-${String(mo).padStart(2,'0')}-01 00:00:00`;
+      const nd = new Date(yr, mo, 1);
+      momentTo = `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}-01 00:00:00`;
+    }
+
+    const filterParts = [];
+    if (momentFrom) filterParts.push(`moment>${momentFrom}`);
+    if (momentTo)   filterParts.push(`moment<${momentTo}`);
+    const filterStr = filterParts.join(';');
+
+    // Get ALL employees in one call (cached 15 min) — keyed by UUID.
+    const empMap = await cached('employees_map', 15*60*1000, async () => {
+      const r = await ms('/entity/employee?limit=100');
+      const map = {};
+      (r.rows || []).forEach(e => {
+        const uuid = (e.meta?.href || '').split('/').pop().split('?')[0];
+        if (uuid) map[uuid] = e.name || e.shortFio || e.uid || '—';
+      });
+      return map;
+    });
+
+    // Fetch customerOrders for the period — owner is the salesman, sum is revenue.
+    // This matches what MoySklad's Sales Orders page shows exactly.
+    const ordUrl = `/entity/customerorder?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent&order=moment,desc`;
+    const { rows: orders } = await msAll(ordUrl);
+
+    // Aggregate by salesman (customerOrder.owner)
+    const smMap = {};
+    orders.forEach(order => {
+      const ownerUUID = (order.owner?.meta?.href || '').split('/').pop().split('?')[0];
+      const name      = ownerUUID ? (empMap[ownerUUID] || 'Unassigned') : 'Unassigned';
+      const val       = (order.sum || 0) / 100;
+      const date      = (order.moment || '').slice(0, 10);
+      const customer  = order.agent?.name || '—';
+      const orderName = order.name || '—';
+      const state     = order.state?.name || '—';
+
+      if (!smMap[name]) smMap[name] = { name, orders: 0, totalVal: 0, orderList: [] };
+      smMap[name].orders++;
+      smMap[name].totalVal += val;
+      smMap[name].orderList.push({ name: orderName, orderName, date, customer, val, state });
+    });
+
+    const salesmen = Object.values(smMap)
+      .map(s => ({
+        name:      s.name,
+        orders:    s.orders,
+        shipments: s.orders,   // kept for template compatibility
+        totalVal:  s.totalVal,
+        avgVal:    s.orders > 0 ? s.totalVal / s.orders : 0,
+        orderList: s.orderList.sort((a, b) => new Date(b.date) - new Date(a.date))
+      }))
+      .sort((a, b) => b.totalVal - a.totalVal);
+
+    const chartTop = salesmen.slice(0, 10);
+    res.render('salesman', {
+      ...c, active: 'salesman',
+      salesmen, period, months,
+      totalOrders: orders.length,
+      chartLabels:    JSON.stringify(chartTop.map(s => s.name)),
+      chartValueData: JSON.stringify(chartTop.map(s => Math.round(s.totalVal))),
+      chartOrderData: JSON.stringify(chartTop.map(s => s.orders)),
+      chartQtyData:   JSON.stringify(chartTop.map(s => s.orders)),
+      salesmenJSON:   JSON.stringify(salesmen)
+    });
+  } catch(e) { res.status(500).render('error', { message: e.message }); }
+});
+
 // ── CUSTOMERS ────────────────────────────────────────────
 app.get('/customers', async (req, res) => {
   try {
@@ -606,13 +719,11 @@ app.get('/customers', async (req, res) => {
     const filterStr = filterParts.join(';');
     const ordersUrl = `/entity/customerorder?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent,positions&limit=100&order=moment,desc`;
 
-    const [ordRes, cpRes] = await Promise.allSettled([
-      msAll(ordersUrl),
-      ms('/entity/counterparty?limit=1')
+    const custOrdKey = `cust_orders_${filterStr}`;
+    const [allOrders, totalCustomers] = await Promise.all([
+      cached(custOrdKey, 2*60*1000, () => msAll(ordersUrl).then(r => r.rows || [])),
+      cached('counterparty_count', 10*60*1000, () => ms('/entity/counterparty?limit=1').then(r => r.meta?.size || 0)),
     ]);
-
-    const allOrders   = ordRes.status === 'fulfilled' ? (ordRes.value.rows || []) : [];
-    const totalCustomers = cpRes.status === 'fulfilled' ? (cpRes.value.meta?.size || 0) : 0;
 
     // Aggregate per customer from orders + their positions
     const custMap = {};
@@ -938,6 +1049,456 @@ app.get('/product-analytics', async (req, res) => {
 });
 
 app.get('/stock-alerts', (req, res) => res.redirect('/inventory'));
+
+// ── AI CHATBOT ────────────────────────────────────────────
+const Anthropic = require('@anthropic-ai/sdk');
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+async function buildChatContext() {
+  return cached('chatCtx', 10 * 60 * 1000, async () => {
+    const now           = new Date();
+    const daysIntoMonth = now.getDate();
+    const today         = todayStr();
+
+    // ── Date boundaries ──────────────────────────────────
+    const curMonthStart = monthStart(); // e.g. "2026-05-01 00:00:00"
+    const prevD         = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonthStart= `${localDateStr(prevD)} 00:00:00`;
+    const prevMonthEnd  = `${localDateStr(new Date(now.getFullYear(), now.getMonth(), 0))} 23:59:59`;
+    const threeMonthsAgo= new Date(now); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    const from3mo       = `${localDateStr(threeMonthsAgo)} 00:00:00`;
+
+    const curMonthName  = now.toLocaleString('en', { month: 'long', year: 'numeric' });
+    const prevMonthName = prevD.toLocaleString('en', { month: 'long', year: 'numeric' });
+    const dateStr       = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+
+    // ── Parallel fetch — every relevant MoySklad endpoint ──
+    const [
+      stkRes,        // stock levels
+      demCurRes,     // this month shipments (with agent)
+      demPrevRes,    // last month shipments
+      prodCurRes,    // this month profit by product
+      prodPrevRes,   // last month profit by product
+      custCurRes,    // this month profit by counterparty  ← correct customer source
+      custPrevRes,   // last month profit by counterparty
+      ordAllRes,     // last 3 months orders (for pending/delayed)
+      stateMapRes,   // order state names
+    ] = await Promise.allSettled([
+      ms('/report/stock/all?limit=1000'),
+      ms(`/entity/demand?filter=${enc('moment>'+curMonthStart)}&limit=1000&expand=agent&order=moment,desc`),
+      ms(`/entity/demand?filter=${enc('moment>'+prevMonthStart+';moment<'+prevMonthEnd)}&limit=1000&expand=agent&order=moment,desc`),
+      ms(`/report/profit/byproduct?momentFrom=${enc(curMonthStart)}&limit=1000`),
+      ms(`/report/profit/byproduct?momentFrom=${enc(prevMonthStart)}&momentTo=${enc(prevMonthEnd)}&limit=1000`),
+      ms(`/report/profit/bycounterparty?momentFrom=${enc(curMonthStart)}&limit=500`),
+      ms(`/report/profit/bycounterparty?momentFrom=${enc(prevMonthStart)}&momentTo=${enc(prevMonthEnd)}&limit=500`),
+      ms(`/entity/customerorder?filter=${enc('moment>'+from3mo)}&limit=1000&expand=agent,state&order=moment,desc`),
+      getOrderStateMap(),
+    ]);
+
+    // ── Parse all responses ──────────────────────────────
+    const stock     = stkRes.status      === 'fulfilled' ? (stkRes.value.rows     || []) : [];
+    const demCur    = demCurRes.status   === 'fulfilled' ? (demCurRes.value.rows  || []) : [];
+    const demPrev   = demPrevRes.status  === 'fulfilled' ? (demPrevRes.value.rows || []) : [];
+    const prodCur   = prodCurRes.status  === 'fulfilled' ? (prodCurRes.value.rows || []) : [];
+    const prodPrev  = prodPrevRes.status === 'fulfilled' ? (prodPrevRes.value.rows|| []) : [];
+    const custCur   = custCurRes.status  === 'fulfilled' ? (custCurRes.value.rows || []) : [];
+    const custPrev  = custPrevRes.status === 'fulfilled' ? (custPrevRes.value.rows|| []) : [];
+    const allOrders = ordAllRes.status   === 'fulfilled' ? (ordAllRes.value.rows  || []) : [];
+    const stateMap  = stateMapRes.status === 'fulfilled' ? stateMapRes.value : {};
+
+    const fmt  = n => `₹${Math.round(n).toLocaleString('en-IN')}`;
+    const fmtS = n => {
+      const a = Math.abs(n);
+      if (a >= 1e7) return `₹${(n/1e7).toFixed(2)} Cr`;
+      if (a >= 1e5) return `₹${(n/1e5).toFixed(1)} L`;
+      return fmt(n);
+    };
+    const pct = (a, b) => b > 0 ? ((a - b) / b * 100).toFixed(1) + '%' : 'N/A';
+
+    // ── Inventory ───────────────────────────────────────
+    let outStk = 0, lowStk = 0, inStk = 0;
+    stock.forEach(r => {
+      const q = r.quantity || 0;
+      if (q <= 0) outStk++; else if (q <= 100) lowStk++; else inStk++;
+    });
+    const lowItems = stock.filter(r => (r.quantity||0) > 0 && (r.quantity||0) <= 100)
+      .sort((a, b) => a.quantity - b.quantity).slice(0, 30)
+      .map(r => `  • ${r.name}: ${r.quantity} pcs`);
+    const outItems = stock.filter(r => (r.quantity||0) <= 0).slice(0, 30)
+      .map(r => `  • ${r.name}`);
+
+    // ── Sales velocity & predictions ────────────────────
+    const velMap = {};
+    prodCur.forEach(r => {
+      if (!r.assortment?.name) return;
+      velMap[r.assortment.name] = {
+        dailyQty: (r.sellQuantity || 0) / daysIntoMonth,
+        monthQty: Math.round(r.sellQuantity || 0),
+      };
+    });
+    const runningOut = stock
+      .map(r => {
+        const v = velMap[r.name];
+        const qty = r.quantity || 0;
+        const daysLeft = v && v.dailyQty > 0 ? Math.round(qty / v.dailyQty) : null;
+        return { name: r.name, qty, daysLeft, reorder: v ? Math.round(v.dailyQty * 30) : 0 };
+      })
+      .filter(r => r.qty > 0 && r.daysLeft !== null && r.daysLeft <= 45)
+      .sort((a, b) => a.daysLeft - b.daysLeft).slice(0, 20);
+
+    const slowMoving = stock
+      .filter(r => (r.quantity||0) > 0 && (!velMap[r.name] || velMap[r.name].monthQty === 0))
+      .sort((a, b) => (b.quantity||0) - (a.quantity||0)).slice(0, 20);
+
+    // ── Pending & delayed orders ─────────────────────────
+    const pendingOrders = allOrders.filter(r => {
+      const s = resolveState(r, stateMap).toLowerCase();
+      return s && s !== 'dispatched' && s !== 'draft';
+    });
+    const delayedOrders = allOrders
+      .filter(r => {
+        const s = resolveState(r, stateMap).toLowerCase();
+        return r.deliveryPlannedMoment && s !== 'dispatched' && new Date(r.deliveryPlannedMoment) < now;
+      })
+      .map(r => ({
+        name: r.name || '—', customer: r.agent?.name || '—',
+        state: resolveState(r, stateMap) || '—',
+        planned: (r.deliveryPlannedMoment || '').slice(0, 10),
+        daysLate: Math.floor((now - new Date(r.deliveryPlannedMoment)) / 86400000),
+        val: (r.sum || 0) / 100
+      })).sort((a, b) => b.daysLate - a.daysLate);
+
+    // ── This month sales ─────────────────────────────────
+    const curRevenue   = demCur.reduce((a, r) => a + (r.sum||0), 0) / 100;
+    const prevRevenue  = demPrev.reduce((a, r) => a + (r.sum||0), 0) / 100;
+    const todayDemands = demCur.filter(r => (r.moment||'').startsWith(today));
+    const todayRevenue = todayDemands.reduce((a, r) => a + (r.sum||0), 0) / 100;
+
+    // ── Top products — current month ─────────────────────
+    const topProdCur = prodCur
+      .filter(r => r.assortment?.name)
+      .map(r => ({ name: r.assortment.name, qty: Math.round(r.sellQuantity||0), val: (r.sellSum||0)/100, margin: (r.sellSum||0) > 0 ? Math.round(((r.sellSum - (r.buySum||0)) / r.sellSum) * 100) : null }))
+      .sort((a, b) => b.val - a.val).slice(0, 15);
+    const topProdByQty = [...topProdCur].sort((a, b) => b.qty - a.qty).slice(0, 10);
+    const highMargin = topProdCur.filter(p => p.margin !== null).sort((a, b) => b.margin - a.margin).slice(0, 10);
+
+    // ── Top products — last month ────────────────────────
+    const topProdPrev = prodPrev
+      .filter(r => r.assortment?.name)
+      .map(r => ({ name: r.assortment.name, qty: Math.round(r.sellQuantity||0), val: (r.sellSum||0)/100 }))
+      .sort((a, b) => b.val - a.val).slice(0, 10);
+
+    // ── Top customers — current month (bycounterparty) ──
+    const topCustCur = custCur
+      .filter(r => r.counterparty?.name)
+      .map(r => ({ name: r.counterparty.name, orders: r.salesCount||0, val: (r.sellSum||0)/100, qty: Math.round(r.sellQuantity||0) }))
+      .sort((a, b) => b.val - a.val).slice(0, 15);
+    const topCustByOrders = [...topCustCur].sort((a, b) => b.orders - a.orders).slice(0, 10);
+
+    // ── Robust counterparty name helper ─────────────────
+    const cpName = r => r.counterparty?.name || r.agent?.name || r.name || null;
+
+    // ── Top customers — last month ───────────────────────
+    const topCustPrev = custPrev
+      .filter(r => cpName(r))
+      .map(r => ({ name: cpName(r), orders: r.salesCount||0, val: (r.sellSum||0)/100 }))
+      .sort((a, b) => b.val - a.val).slice(0, 10);
+
+    // Re-parse current month customers with robust name helper
+    const topCustCurFixed = custCur
+      .filter(r => cpName(r))
+      .map(r => ({ name: cpName(r), orders: r.salesCount||0, val: (r.sellSum||0)/100, qty: Math.round(r.sellQuantity||0) }))
+      .sort((a, b) => b.val - a.val).slice(0, 15);
+    const topCustByOrdersFixed = [...topCustCurFixed].sort((a, b) => b.orders - a.orders).slice(0, 10);
+
+    // ── Historical months: Nov 2025 → month before current ──
+    const histMonths = [];
+    {
+      let hy = 2025, hm = 11;
+      const nowY = now.getFullYear(), nowM = now.getMonth() + 1;
+      while (hy < nowY || (hy === nowY && hm < nowM)) {
+        const d    = new Date(hy, hm - 1, 1);
+        const last = new Date(hy, hm, 0);
+        // Skip months already covered as "current" or "prev" (they have full data)
+        const key = `${hy}-${String(hm).padStart(2,'0')}`;
+        if (key !== prevD.toISOString().slice(0,7).replace('-','').slice(0,7)) { // always add
+          histMonths.push({
+            label: d.toLocaleString('en', { month: 'long', year: 'numeric' }),
+            from:  `${key}-01 00:00:00`,
+            to:    `${localDateStr(last)} 23:59:59`,
+          });
+        }
+        hm++; if (hm > 12) { hm = 1; hy++; }
+      }
+    }
+
+    // Fetch 3 calls per historical month in parallel: customers, products, shipment count
+    const histResults = histMonths.length > 0
+      ? await Promise.allSettled(
+          histMonths.flatMap(m => [
+            ms(`/report/profit/bycounterparty?momentFrom=${enc(m.from)}&momentTo=${enc(m.to)}&limit=50`),
+            ms(`/report/profit/byproduct?momentFrom=${enc(m.from)}&momentTo=${enc(m.to)}&limit=50`),
+            ms(`/entity/demand?filter=${enc('moment>'+m.from+';moment<'+m.to)}&limit=1`),
+          ])
+        )
+      : [];
+
+    const monthlyHistory = histMonths.map((m, i) => {
+      const cRows     = histResults[i*3]?.status === 'fulfilled' ? (histResults[i*3].value.rows || []) : [];
+      const pRows     = histResults[i*3+1]?.status === 'fulfilled' ? (histResults[i*3+1].value.rows || []) : [];
+      const demMeta   = histResults[i*3+2]?.status === 'fulfilled' ? histResults[i*3+2].value : null;
+      const shipments = demMeta?.meta?.size ?? demMeta?.rows?.length ?? null;
+      const revenue   = cRows.reduce((a, r) => a + (r.sellSum||0), 0) / 100;
+      return {
+        label: m.label,
+        revenue,
+        shipments,
+        custs: cRows.filter(r => cpName(r)).map(r => ({ name: cpName(r), val: (r.sellSum||0)/100, orders: r.salesCount||0 })).sort((a,b) => b.val-a.val).slice(0,10),
+        prods: pRows.filter(r => r.assortment?.name).map(r => ({ name: r.assortment.name, val: (r.sellSum||0)/100, qty: Math.round(r.sellQuantity||0) })).sort((a,b) => b.val-a.val).slice(0,10),
+      };
+    }).reverse(); // newest first
+
+    // ── Detect business type from product names ──────────
+    const productNames = topProdCur.map(p => p.name).join(', ');
+
+    // ── Build prompt ─────────────────────────────────────
+    const L   = [];
+    const sec = t => L.push('', `── ${t} ──`);
+
+    L.push(
+      `You are WareSmart AI — an advanced Business Intelligence and Strategy Advisor for a distribution/trading company.`,
+      ``,
+      `YOUR CAPABILITIES:`,
+      `1. LIVE MOYSKLAD DATA: Complete inventory, sales, customer, and order data is provided below — use it directly.`,
+      `2. WEB SEARCH: You have a web_search tool. Use it proactively for: market trends, competitor analysis, pricing benchmarks, regulations, industry news, global data, and any external information.`,
+      `3. BUSINESS EXPERTISE: Apply expert-level knowledge in supply chain, pricing strategy, customer retention, cash flow, demand forecasting, and distribution management.`,
+      ``,
+      `HOW TO RESPOND:`,
+      `- Be CONCISE. No preamble, no explanations, no summaries. Just the answer.`,
+      `- Lead with a markdown table whenever the answer has multiple rows or columns. No prose before the table.`,
+      `- After the table, max 1-2 bullet points if a critical action is needed — otherwise nothing.`,
+      `- For market/external questions: use web_search first, then give a tight table or 2-line summary.`,
+      `- Numbers: ₹ format, L for lakhs, Cr for crores. Round to 2 decimal places.`,
+      ``,
+      `BUSINESS CONTEXT:`,
+      `- Products in system: ${productNames.slice(0, 200)}`,
+      `- Operating currency: Indian Rupees (₹)`,
+      `- Current month: ${curMonthName} | Previous month: ${prevMonthName}`,
+      `- Sales velocity basis: ${daysIntoMonth} days elapsed this month`,
+      `- Today: ${today}`,
+      ``,
+      `DECISION FRAMEWORKS TO APPLY:`,
+      `- ABC analysis: Rank customers/products by revenue contribution`,
+      `- Stock health: Flag items running out vs. slow-movers accumulating`,
+      `- Cash flow signals: Pending orders = revenue locked, delayed = risk`,
+      `- Growth indicators: Month-over-month trends, top vs bottom performers`,
+      `- Market context: Compare your metrics against industry benchmarks when asked`,
+      ``,
+      `${'═'.repeat(60)}`,
+      `LIVE MOYSKLAD DATA SNAPSHOT — ${dateStr}`,
+      `${'═'.repeat(60)}`
+    );
+
+    // INVENTORY
+    sec(`INVENTORY`);
+    L.push(`Total SKUs: ${stock.length} | In Stock: ${inStk} | Low Stock (≤100 pcs): ${lowStk} | Out of Stock: ${outStk}`);
+    if (lowItems.length) { L.push(`\nLow Stock Items (${lowStk}):`); L.push(...lowItems); }
+    if (outItems.length) { L.push(`\nOut of Stock (${outStk} items):`); L.push(...outItems); }
+
+    // PREDICTIONS
+    sec(`STOCK DEPLETION PREDICTIONS (running out within 45 days)`);
+    if (runningOut.length) {
+      L.push(`Calculated from ${daysIntoMonth}-day sales rate:`);
+      runningOut.forEach(r => L.push(`  • ${r.name}: ${r.qty} pcs → ~${r.daysLeft} days left | Reorder: ${r.reorder} pcs`));
+    } else { L.push(`No items predicted to run out within 45 days.`); }
+
+    sec(`SLOW-MOVING ITEMS (in stock, zero sales in ${curMonthName})`);
+    if (slowMoving.length) {
+      slowMoving.forEach(r => L.push(`  • ${r.name}: ${r.quantity} pcs idle`));
+    } else { L.push(`All items have had sales activity this month.`); }
+
+    // SALES — THIS MONTH
+    sec(`SALES — ${curMonthName} (CURRENT MONTH)`);
+    const mom = prevRevenue > 0 ? ` (${Number(pct(curRevenue, prevRevenue)) >= 0 ? '+' : ''}${pct(curRevenue, prevRevenue)} vs last month)` : '';
+    L.push(
+      `Shipments: ${demCur.length} | Revenue: ${fmtS(curRevenue)}${mom}`,
+      `Avg per shipment: ${demCur.length ? fmtS(curRevenue / demCur.length) : '—'}`,
+      `Today (${today}): ${todayDemands.length} shipments | ${fmtS(todayRevenue)}`
+    );
+
+    // SALES — LAST MONTH
+    sec(`SALES — ${prevMonthName} (PREVIOUS MONTH)`);
+    L.push(`Shipments: ${demPrev.length} | Revenue: ${fmtS(prevRevenue)}`);
+
+    // TOP PRODUCTS — CURRENT
+    sec(`TOP PRODUCTS BY REVENUE — ${curMonthName}`);
+    if (topProdCur.length) {
+      topProdCur.forEach((p, i) => L.push(`${i+1}. ${p.name} — ${fmtS(p.val)}${p.margin !== null ? ` (${p.margin}% margin)` : ''} | ${p.qty.toLocaleString('en-IN')} pcs`));
+    } else { L.push(`No product sales data this month.`); }
+
+    sec(`TOP PRODUCTS BY QTY SOLD — ${curMonthName}`);
+    if (topProdByQty.length) {
+      topProdByQty.forEach((p, i) => L.push(`${i+1}. ${p.name} — ${p.qty.toLocaleString('en-IN')} pcs | ${fmtS(p.val)}`));
+    }
+
+    // TOP PRODUCTS — LAST MONTH
+    sec(`TOP PRODUCTS BY REVENUE — ${prevMonthName} (LAST MONTH)`);
+    if (topProdPrev.length) {
+      topProdPrev.forEach((p, i) => L.push(`${i+1}. ${p.name} — ${fmtS(p.val)} | ${p.qty.toLocaleString('en-IN')} pcs`));
+    } else { L.push(`No data.`); }
+
+    // HIGH MARGIN
+    sec(`MOST PROFITABLE PRODUCTS (by gross margin %)`);
+    if (highMargin.length) {
+      highMargin.forEach((p, i) => L.push(`${i+1}. ${p.name} — ${p.margin}% margin | ${fmtS(p.val)}`));
+    } else { L.push(`Margin data unavailable (buy prices may not be set in MoySklad).`); }
+
+    // CUSTOMERS — CURRENT MONTH
+    sec(`TOP CUSTOMERS BY REVENUE — ${curMonthName}`);
+    if (topCustCurFixed.length) {
+      topCustCurFixed.forEach((c, i) => L.push(`${i+1}. ${c.name} — ${fmtS(c.val)} | ${c.orders} orders | ${c.qty.toLocaleString('en-IN')} pcs`));
+    } else { L.push(`No counterparty revenue data this month.`); }
+
+    sec(`TOP CUSTOMERS BY ORDER COUNT — ${curMonthName}`);
+    if (topCustByOrdersFixed.length) {
+      topCustByOrdersFixed.forEach((c, i) => L.push(`${i+1}. ${c.name} — ${c.orders} orders | ${fmtS(c.val)}`));
+    }
+
+    // CUSTOMERS — LAST MONTH
+    sec(`TOP CUSTOMERS BY REVENUE — ${prevMonthName} (LAST MONTH)`);
+    if (topCustPrev.length) {
+      topCustPrev.forEach((c, i) => L.push(`${i+1}. ${c.name} — ${fmtS(c.val)} | ${c.orders} orders`));
+    } else { L.push(`No data.`); }
+
+    // HISTORICAL MONTHLY DATA
+    if (monthlyHistory.length > 0) {
+      sec(`COMPLETE MONTHLY HISTORY — Nov 2025 to ${prevMonthName}`);
+      monthlyHistory.forEach(m => {
+        const shipStr = m.shipments !== null ? `${m.shipments} shipments` : 'shipments: N/A';
+        L.push(``, `${m.label.toUpperCase()} — Revenue: ${fmtS(m.revenue)} | ${shipStr} | Avg/shipment: ${m.shipments ? fmtS(m.revenue / m.shipments) : '—'}`);
+        if (m.custs.length) {
+          L.push(`  Top Customers: ` + m.custs.map((c,i) => `${i+1}. ${c.name} (${fmtS(c.val)}, ${c.orders} orders)`).join(' | '));
+        } else { L.push(`  Top Customers: No data`); }
+        if (m.prods.length) {
+          L.push(`  Top Products:  ` + m.prods.map((p,i) => `${i+1}. ${p.name} (${fmtS(p.val)}, ${p.qty} pcs)`).join(' | '));
+        } else { L.push(`  Top Products:  No data`); }
+      });
+    }
+
+    // PENDING
+    sec(`PENDING ORDERS (${pendingOrders.length} not yet dispatched)`);
+    if (pendingOrders.length) {
+      pendingOrders.slice(0, 25).forEach(o => {
+        const state = resolveState(o, stateMap) || '—';
+        L.push(`  • ${o.name||'—'} | Customer: ${o.agent?.name||'—'} | State: ${state} | ${fmtS((o.sum||0)/100)}`);
+      });
+      if (pendingOrders.length > 25) L.push(`  ... and ${pendingOrders.length - 25} more`);
+    } else { L.push(`No pending orders.`); }
+
+    // DELAYED
+    sec(`DELAYED ORDERS (past planned delivery date)`);
+    if (delayedOrders.length) {
+      delayedOrders.slice(0, 15).forEach(o => {
+        L.push(`  • ${o.name} | ${o.customer} | ${o.daysLate} days overdue | Planned: ${o.planned} | State: ${o.state} | ${fmtS(o.val)}`);
+      });
+    } else { L.push(`No delayed orders.`); }
+
+    return L.join('\n');
+  });
+}
+
+// ── Web search via DuckDuckGo (no API key needed) ────────
+async function webSearch(query) {
+  try {
+    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const r = await fetch(url, {
+      headers: { 'User-Agent': 'WareSmart-AI/1.0' },
+      signal: AbortSignal.timeout(7000)
+    });
+    const d = await r.json();
+    const parts = [];
+    if (d.AbstractText) parts.push(`Overview: ${d.AbstractText}`);
+    if (d.Answer)       parts.push(`Direct Answer: ${d.Answer}`);
+    if (d.AbstractSource) parts.push(`Source: ${d.AbstractSource}`);
+    (d.RelatedTopics || []).slice(0, 8).forEach(t => { if (t.Text) parts.push(`• ${t.Text}`); });
+    (d.Results        || []).slice(0, 5).forEach(t => { if (t.Text) parts.push(`• ${t.Text}`); });
+    return parts.length
+      ? `[Web Search Results for: "${query}"]\n${parts.join('\n')}`
+      : `[No instant results found for: "${query}". Use your training knowledge to answer.]`;
+  } catch (e) {
+    return `[Web search failed: ${e.message}. Use your training knowledge to answer this question.]`;
+  }
+}
+
+// ── Chat tools definition ─────────────────────────────────
+const CHAT_TOOLS = [{
+  name: 'web_search',
+  description: 'Search the internet for real-time information: market trends, industry news, regulations, competitor data, global pricing, product reviews, government policies, economic indicators. Use this whenever the question goes beyond the MoySklad business data provided in the system prompt.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'A focused, specific search query. Example: "vaping market India 2025 trends" or "e-cigarette regulations India GST"'
+      }
+    },
+    required: ['query']
+  }
+}];
+
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { messages } = req.body;
+    if (!Array.isArray(messages) || messages.length === 0)
+      return res.status(400).json({ error: 'messages array required' });
+
+    const systemPrompt = await buildChatContext();
+    let msgHistory = [...messages.slice(-20)];
+
+    // Agentic loop: allow up to 5 rounds (each round may have multiple tool calls)
+    for (let round = 0; round < 5; round++) {
+      const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 2048,
+        system: systemPrompt,
+        tools: CHAT_TOOLS,
+        messages: msgHistory
+      });
+
+      // If Claude wants to use tools, execute ALL tool calls in this response in parallel
+      if (response.stop_reason === 'tool_use') {
+        const toolUses = response.content.filter(c => c.type === 'tool_use');
+        if (toolUses.length > 0) {
+          // Run every search simultaneously
+          const searchResults = await Promise.all(
+            toolUses.map(t => t.name === 'web_search' ? webSearch(t.input.query) : Promise.resolve('Tool not supported.'))
+          );
+          // Return one tool_result per tool_use — order and IDs must match
+          const toolResults = toolUses.map((t, i) => ({
+            type: 'tool_result',
+            tool_use_id: t.id,
+            content: searchResults[i]
+          }));
+          msgHistory = [
+            ...msgHistory,
+            { role: 'assistant', content: response.content },
+            { role: 'user',      content: toolResults }
+          ];
+          continue;
+        }
+      }
+
+      // Claude finished (end_turn or no tool calls) — extract the text reply
+      const replyText = response.content.find(c => c.type === 'text')?.text || 'No response generated.';
+      return res.json({ reply: replyText });
+    }
+
+    res.json({ reply: 'I completed multiple searches. Please ask your question again for a fresh answer.' });
+  } catch (e) {
+    console.error('Chat API error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ── TALLY FINANCIAL DASHBOARD ────────────────────────────
 app.get('/tally', async (req, res) => {
