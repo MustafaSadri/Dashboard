@@ -87,46 +87,78 @@
         <div class="card-title"><i class="fas fa-chart-column"></i> Monthly Sales Trend <span id="trendLabel" style="font-size:11px;color:var(--text2);font-weight:400;margin-left:6px"></span></div>
         <div class="chart-box"><canvas id="trendChart"></canvas></div>
       </div>
-      <div class="card">
-        <div class="card-title"><i class="fas fa-layer-group"></i> Variant / Flavour Breakdown</div>
-        <% if(variants.length===0){ %>
-          <div class="empty"><i class="fas fa-box-open"></i>No variant data found</div>
+      <div class="card" style="display:flex;flex-direction:column">
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span><i class="fas fa-layer-group"></i> Flavour / SKU Breakdown <span style="font-size:11px;font-weight:400;color:var(--text2)">(6-month sales)</span></span>
+          <a href="/sku-analysis" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;display:flex;align-items:center;gap:5px;background:rgba(108,99,255,.1);border:1px solid rgba(108,99,255,.25);padding:5px 12px;border-radius:8px;white-space:nowrap">
+            <i class="fas fa-tags"></i> Full SKU Analysis <i class="fas fa-arrow-right" style="font-size:10px"></i>
+          </a>
+        </div>
+        <% if(flavorBreakdown.length===0){ %>
+          <div class="empty" style="flex:1">
+            <i class="fas fa-chart-pie" style="font-size:2rem;color:var(--accent);opacity:.6;margin-bottom:10px"></i>
+            <div style="font-size:14px;color:var(--text2);margin-bottom:14px">No flavour breakdown available for this product</div>
+            <a href="/sku-analysis" style="display:inline-flex;align-items:center;gap:8px;background:var(--accent);color:#fff;padding:9px 20px;border-radius:10px;font-size:13px;font-weight:600;text-decoration:none">
+              <i class="fas fa-tags"></i> View SKU Analysis Page
+            </a>
+          </div>
         <% } else { %>
-        <div class="table-wrap">
+        <div class="table-wrap" style="flex:1;overflow-y:auto;max-height:340px">
           <table>
             <thead>
               <tr>
-                <th>Variant / Flavour</th>
-                <th>Code</th>
+                <th>Flavour</th>
+                <th style="text-align:right">Qty Sold (6mo)</th>
+                <th style="text-align:right">Revenue</th>
                 <th style="text-align:right">Stock</th>
-                <th>Status</th>
               </tr>
             </thead>
-            <tbody id="variantBody">
-            <% variants.forEach(function(v){ %>
-              <tr id="vrow-<%- encodeURIComponent(v.name) %>"
-                  style="cursor:pointer;transition:background .15s"
-                  data-vname="<%- v.name %>"
-                  onclick="selectVariant(this.dataset.vname)"
+            <tbody>
+            <% var totalFlavPCS = flavorBreakdown.reduce(function(a,f){return a+f.pcs},0); %>
+            <% flavorBreakdown.forEach(function(f){ %>
+              <% var pct = totalFlavPCS>0 ? ((f.pcs/totalFlavPCS)*100).toFixed(1) : '0'; %>
+              <tr style="transition:background .15s"
                   onmouseover="this.style.background='rgba(108,99,255,.06)'"
                   onmouseout="this.style.background=''">
-                <td><strong><%- v.name %></strong></td>
-                <td class="muted"><%- v.code %></td>
-                <td style="text-align:right;font-weight:700;color:<%- v.quantity<=0?'var(--danger)':v.quantity<=5?'var(--warn)':'var(--accent2)' %>">
-                  <%- v.quantity<=0 ? '0' : v.quantity %>
-                </td>
                 <td>
-                  <% if(v.status==='Out of Stock'){ %>
-                    <span class="badge badge-default" style="background:rgba(255,77,109,.15);color:var(--danger);border:1px solid rgba(255,77,109,.3)">Out of Stock</span>
-                  <% } else if(v.status==='Low Stock'){ %>
-                    <span class="badge badge-default" style="background:rgba(255,169,77,.15);color:var(--warn);border:1px solid rgba(255,169,77,.3)">Low Stock</span>
+                  <div style="font-weight:600;font-size:13px"><%- f.flavor %></div>
+                  <div style="font-size:11px;color:var(--text2);margin-top:2px">
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <div style="width:60px;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden">
+                        <div class="pct-bar" data-pct="<%- pct %>" style="height:100%;background:var(--accent);border-radius:2px"></div>
+                      </div>
+                      <%- pct %>%
+                    </div>
+                  </div>
+                </td>
+                <td style="text-align:right;font-weight:700;color:var(--accent2)"><%- f.pcs.toLocaleString('en-IN') %></td>
+                <td style="text-align:right;color:var(--text2);font-size:12px">
+                  <% if(f.revenue>=10000000){ %>₹<%- (f.revenue/10000000).toFixed(2) %> Cr
+                  <% } else if(f.revenue>=100000){ %>₹<%- (f.revenue/100000).toFixed(1) %> L
+                  <% } else { %>₹<%- f.revenue.toLocaleString('en-IN') %>
+                  <% } %>
+                </td>
+                <td style="text-align:right">
+                  <% if(f.stock===null){ %>
+                    <span style="color:var(--text2);font-size:11px">—</span>
+                  <% } else if(f.stockStatus==='out'){ %>
+                    <span style="color:var(--danger);font-weight:700;font-size:12px">0 <span style="font-size:10px;opacity:.7">OUT</span></span>
+                  <% } else if(f.stockStatus==='low'){ %>
+                    <span style="color:var(--warn);font-weight:700;font-size:12px"><%- f.stock %> <span style="font-size:10px;opacity:.7">LOW</span></span>
                   <% } else { %>
-                    <span class="badge badge-paid">In Stock</span>
+                    <span style="color:var(--accent2);font-weight:600;font-size:12px"><%- f.stock.toLocaleString('en-IN') %></span>
                   <% } %>
                 </td>
               </tr>
             <% }) %>
             </tbody>
+            <tfoot>
+              <tr style="border-top:2px solid var(--border)">
+                <td><strong>Total</strong></td>
+                <td style="text-align:right;font-weight:700;color:var(--accent2)"><%- totalFlavPCS.toLocaleString('en-IN') %></td>
+                <td colspan="2"></td>
+              </tr>
+            </tfoot>
           </table>
         </div>
         <% } %>
@@ -167,6 +199,11 @@
 const TREND    = <%- trendJSON %>;
 const VARIANTS = <%- variantsJSON %>;
 const COLORS   = { accent:'#6c63ff', accent2:'#00d4aa', warn:'#ffa94d', danger:'#ff4d6d', text2:'#8891b5' };
+
+// Set percentage bar widths (avoids EJS-in-style linter errors)
+document.querySelectorAll('.pct-bar').forEach(el => {
+  el.style.width = (el.dataset.pct || 0) + '%';
+});
 
 function fmtShort(n) {
   if(n==null||isNaN(n)) return '—';
