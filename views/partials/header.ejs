@@ -4,8 +4,25 @@
   </button>
   <div class="topbar-title"><%- pageTitle %></div>
   <div style="flex:1"></div>
-  <div class="topbar-date"><%- date %></div>
-  <div class="topbar-time" style="margin-left:14px"><%- time %></div>
+  <div class="topbar-date" id="topbarDate"></div>
+  <div class="topbar-time" style="margin-left:14px" id="topbarTime"></div>
+  <script>
+    (function(){
+      function pad(n){ return String(n).padStart(2,'0'); }
+      function tick(){
+        var d = new Date();
+        var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        document.getElementById('topbarDate').textContent =
+          pad(d.getDate()) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+        var h = d.getHours(), m = pad(d.getMinutes());
+        var ampm = h >= 12 ? 'pm' : 'am';
+        h = h % 12 || 12;
+        document.getElementById('topbarTime').textContent = pad(h) + ':' + m + ' ' + ampm;
+      }
+      tick();
+      setInterval(tick, 60000);
+    })();
+  </script>
   <div class="topbar-bell" onclick="toggleAlertPanel(event)" title="Stock Alerts (below 100)">
     <i class="fas fa-bell" style="font-size:13px"></i>
     <% var _alertCount = (typeof stockAlertCount !== 'undefined' ? stockAlertCount : 0); %>
