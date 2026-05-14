@@ -8,7 +8,7 @@ const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
 const TALLY_BASE    = process.env.TALLY_URL || process.env.TALLY_BASE || 'http://localhost:9000';
 const TALLY_COMPANY = process.env.TALLY_COMPANY || '';
 const PORT = process.env.PORT || 3000;
-const CUR     = '₹';
+const CUR     = '₽';
 
 // ── Express setup ────────────────────────────────────────
 app.set('view engine', 'ejs');
@@ -26,13 +26,13 @@ app.use((req, res, next) => {
   res.locals.date      = new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' });
   res.locals.time      = new Date().toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' });
   res.locals.fmt = (n) =>
-    (n == null || isNaN(n)) ? '—' : CUR + Math.round(n).toLocaleString('en-IN');
+    (n == null || isNaN(n)) ? '—' : CUR + Math.round(n).toLocaleString('en-US');
   res.locals.fmtShort = (n) => {
     if (n == null || isNaN(n)) return '—';
     const a = Math.abs(n);
-    if (a >= 1e7) return CUR + (n/1e7).toFixed(2) + ' Cr';
-    if (a >= 1e5) return CUR + (n/1e5).toFixed(1) + ' L';
-    if (a >= 1e3) return CUR + (n/1e3).toFixed(0) + 'K';
+    if (a >= 1e9) return CUR + (n/1e9).toFixed(2) + ' B';
+    if (a >= 1e6) return CUR + (n/1e6).toFixed(2) + ' M';
+    if (a >= 1e3) return CUR + Math.round(n/1e3) + 'K';
     return CUR + Math.round(n);
   };
   res.locals.fmtDate = (s) => s ? s.slice(0,10) : '—';
@@ -309,6 +309,11 @@ const getRecentDemands = () =>
 const getAllOrders = () =>
   cached('orders_all', 2*60*1000, () => ms('/entity/customerorder?limit=1000&order=moment,desc').then(r => r.rows || []));
 
+const getOrdersFromDec25 = () =>
+  cached('orders_dec25', 5*60*1000, () =>
+    msAll(`/entity/customerorder?filter=${enc('moment>=2025-12-01 00:00:00')}&order=moment,asc`)
+      .then(r => r.rows || []));
+
 const getProfitByProduct = (from, to) => {
   const key = `prof_prod_${from}_${to||''}`;
   const url  = to
@@ -413,8 +418,9 @@ app.get('/', async (req, res) => {
       if (q<=0) outStock++; else if (q<100) { lowStock++; inStock++; } else inStock++;
     });
 
-    const totalSell    = products.reduce((a,r)=>a+(r.sellSum||0),0);
-    const weeklyOrders = buildDailyCounts(orders, 8);
+    const totalSell      = products.reduce((a,r)=>a+(r.sellSum||0),0);
+    const weeklyOrders   = buildDailyCounts(orders, 15);
+    const monthlyOrders  = await getOrdersFromDec25().then(rows => buildMonthlyCounts(rows));
 
     res.render('dashboard', {
       ...c, active: 'dashboard',
@@ -438,7 +444,8 @@ app.get('/', async (req, res) => {
       lowStock, inStock, outStock,
       totalSKU: stock.length, totalVal: totalVal/100,
       totalQty, categories: folders.size,
-      weeklyData: JSON.stringify(weeklyOrders)
+      weeklyData:   JSON.stringify(weeklyOrders),
+      monthlyData:  JSON.stringify(monthlyOrders)
     });
   } catch (e) { res.status(500).render('error', { message: e.message }); }
 });
@@ -960,6 +967,38 @@ app.get('/api/orders/daily', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/orders/monthly', async (req, res) => {
+  try {
+    const before = req.query.before; // "YYYY-MM" — load 6 months ending before this month
+    if (before) {
+      const [yr, mo] = before.split('-').map(Number);
+      // End = last day of the month BEFORE `before`
+      const endDate   = new Date(yr, mo - 1, 0); // e.g. before=2025-12 → end=2025-11-30
+      const startDate = new Date(endDate.getFullYear(), endDate.getMonth() - 5, 1); // 6 months range
+      const from = `${localDateStr(startDate)} 00:00:00`;
+      const to   = `${localDateStr(endDate)} 23:59:59`;
+      const key  = `orders_hist_${localDateStr(startDate).slice(0,7)}_${localDateStr(endDate).slice(0,7)}`;
+      const rows = await cached(key, 10*60*1000, () =>
+        msAll(`/entity/customerorder?filter=${enc('moment>='+from+';moment<='+to)}&order=moment,asc`)
+          .then(r => r.rows || [])
+      );
+      const months = [];
+      let y = startDate.getFullYear(), m = startDate.getMonth() + 1;
+      const ey = endDate.getFullYear(), em = endDate.getMonth() + 1;
+      while (y < ey || (y === ey && m <= em)) {
+        const k = `${y}-${String(m).padStart(2,'0')}`;
+        months.push({ key: k, label: new Date(y, m-1, 1).toLocaleString('en', { month: 'short', year: '2-digit' }), count: 0 });
+        if (++m > 12) { m = 1; y++; }
+      }
+      const mMap = {}; months.forEach(e => { mMap[e.key] = e; });
+      rows.forEach(r => { const ym = (r.moment||'').slice(0,7); if (mMap[ym]) mMap[ym].count++; });
+      return res.json(months);
+    }
+    const rows = await getOrdersFromDec25();
+    res.json(buildMonthlyCounts(rows));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── SHIPMENTS PAGE ────────────────────────────────────────
 app.get('/shipments', async (req, res) => {
   try {
@@ -1396,11 +1435,12 @@ async function buildChatContext() {
     const curTotalPCS  = Object.values(curProfitTotals).reduce((a, v) => a + v, 0);
     const prevTotalPCS = Object.values(prevProfitTotals).reduce((a, v) => a + v, 0);
 
-    const fmt  = n => `₹${Math.round(n).toLocaleString('en-IN')}`;
+    const fmt  = n => `₽${Math.round(n).toLocaleString('en-US')}`;
     const fmtS = n => {
       const a = Math.abs(n);
-      if (a >= 1e7) return `₹${(n/1e7).toFixed(2)} Cr`;
-      if (a >= 1e5) return `₹${(n/1e5).toFixed(1)} L`;
+      if (a >= 1e9) return `₽${(n/1e9).toFixed(2)} B`;
+      if (a >= 1e6) return `₽${(n/1e6).toFixed(2)} M`;
+      if (a >= 1e3) return `₽${Math.round(n/1e3)}K`;
       return fmt(n);
     };
     const pct = (a, b) => b > 0 ? ((a - b) / b * 100).toFixed(1) + '%' : 'N/A';
@@ -1559,7 +1599,7 @@ async function buildChatContext() {
     L.push(
       `You are WareSmart AI — a sharp Business Intelligence assistant for a distribution/trading company.`,
       `Today: ${today} | Current month: ${curMonthName} | Previous month: ${prevMonthName} | ${daysIntoMonth} days elapsed this month`,
-      `Currency: Indian Rupees (₹). Format: ₹X,XX,XXX or X.XX L (lakhs) or X.XX Cr (crores).`,
+      `Currency: Russian Rubles (₽). Format: ₽X,XXX or ₽X.XXK (thousands) or ₽X.XXM (millions) or ₽X.XXB (billions).`,
       ``,
       `━━━ TOOLS — USE THESE FOR ALL DATA QUESTIONS ━━━`,
       `You have 4 tools. ALWAYS prefer tools over guessing:`,
@@ -1591,7 +1631,7 @@ async function buildChatContext() {
       `- No preamble. No "Sure!", no "Great question!". Lead directly with the answer.`,
       `- Use a markdown table when the answer has multiple rows. No prose before the table.`,
       `- After any table: max 1-2 bullet points only if there's a critical action needed.`,
-      `- Numbers: round to whole rupees for large amounts, 2 decimal for ratios.`,
+      `- Numbers: use ₽ symbol. Round to whole rubles for large amounts, 2 decimal for ratios. Use K/M/B suffixes.`,
       `- If the question is about a specific product or month → always call query_sales first.`,
       `- If the question asks for flavour/SKU/variant breakdown → call query_sales with group_by="sku". NEVER say "API doesn't support flavour breakdown" — it does via group_by="sku".`,
       `- If the question is about stock/inventory → always call query_inventory first.`,
@@ -2167,6 +2207,25 @@ app.get('/tally', async (req, res) => {
 //  START
 // ════════════════════════════════════════════════════════
 // Returns [today, yesterday, ..., n-1 days ago] — newest first, no overflow into wrong bucket
+function buildMonthlyCounts(items) {
+  const now = new Date();
+  const months = [];
+  let y = 2025, m = 12;
+  while (y < now.getFullYear() || (y === now.getFullYear() && m <= now.getMonth() + 1)) {
+    const key   = `${y}-${String(m).padStart(2,'0')}`;
+    const label = new Date(y, m - 1, 1).toLocaleString('en', { month: 'short', year: '2-digit' });
+    months.push({ key, label, count: 0 });
+    if (++m > 12) { m = 1; y++; }
+  }
+  const mMap = {};
+  months.forEach(e => { mMap[e.key] = e; });
+  items.forEach(r => {
+    const ym = (r.moment || '').slice(0, 7);
+    if (mMap[ym]) mMap[ym].count++;
+  });
+  return months; // oldest → newest (left → right)
+}
+
 function buildDailyCounts(items, n) {
   const map = {};
   items.forEach(r => {
