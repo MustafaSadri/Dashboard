@@ -99,16 +99,16 @@ const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct'
 function fmtShort(n) {
   if (n == null || isNaN(n)) return '—';
   const a = Math.abs(n);
-  if (a >= 1e7) return '₹' + (n/1e7).toFixed(2) + ' Cr';
-  if (a >= 1e5) return '₹' + (n/1e5).toFixed(1) + ' L';
-  if (a >= 1e3) return '₹' + Math.round(n/1e3) + 'K';
-  return '₹' + Math.round(n);
+  if (a >= 1e9) return '₽' + (n/1e9).toFixed(2) + ' B';
+  if (a >= 1e6) return '₽' + (n/1e6).toFixed(2) + ' M';
+  if (a >= 1e3) return '₽' + Math.round(n/1e3) + 'K';
+  return '₽' + Math.round(n);
 }
 function fmtFull(n) {
-  return '₹' + Math.round(n).toLocaleString('en-IN');
+  return '₽' + Math.round(n).toLocaleString();
 }
 function dayName(dateStr) {
-  return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-IN', { weekday: 'long' });
+  return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
 }
 
 function applyFilter() {

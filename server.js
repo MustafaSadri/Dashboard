@@ -987,11 +987,11 @@ app.get('/api/orders/monthly', async (req, res) => {
       const ey = endDate.getFullYear(), em = endDate.getMonth() + 1;
       while (y < ey || (y === ey && m <= em)) {
         const k = `${y}-${String(m).padStart(2,'0')}`;
-        months.push({ key: k, label: new Date(y, m-1, 1).toLocaleString('en', { month: 'short', year: '2-digit' }), count: 0 });
+        months.push({ key: k, label: new Date(y, m-1, 1).toLocaleString('en', { month: 'short', year: '2-digit' }), count: 0, value: 0 });
         if (++m > 12) { m = 1; y++; }
       }
       const mMap = {}; months.forEach(e => { mMap[e.key] = e; });
-      rows.forEach(r => { const ym = (r.moment||'').slice(0,7); if (mMap[ym]) mMap[ym].count++; });
+      rows.forEach(r => { const ym = (r.moment||'').slice(0,7); if (mMap[ym]) { mMap[ym].count++; mMap[ym].value += Math.round((r.sum||0)/100); } });
       return res.json(months);
     }
     const rows = await getOrdersFromDec25();
@@ -1597,7 +1597,7 @@ async function buildChatContext() {
     const sec = t => L.push('', `── ${t} ──`);
 
     L.push(
-      `You are WareSmart AI — a sharp Business Intelligence assistant for a distribution/trading company.`,
+      `You are PLATINA AI — a sharp Business Intelligence assistant for a distribution/trading company.`,
       `Today: ${today} | Current month: ${curMonthName} | Previous month: ${prevMonthName} | ${daysIntoMonth} days elapsed this month`,
       `Currency: Russian Rubles (₽). Format: ₽X,XXX or ₽X.XXK (thousands) or ₽X.XXM (millions) or ₽X.XXB (billions).`,
       ``,
@@ -1821,7 +1821,7 @@ async function webSearch(query) {
   try {
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
     const r = await fetch(url, {
-      headers: { 'User-Agent': 'WareSmart-AI/1.0' },
+      headers: { 'User-Agent': 'PLATINA-AI/1.0' },
       signal: AbortSignal.timeout(7000)
     });
     const d = await r.json();
@@ -2214,14 +2214,14 @@ function buildMonthlyCounts(items) {
   while (y < now.getFullYear() || (y === now.getFullYear() && m <= now.getMonth() + 1)) {
     const key   = `${y}-${String(m).padStart(2,'0')}`;
     const label = new Date(y, m - 1, 1).toLocaleString('en', { month: 'short', year: '2-digit' });
-    months.push({ key, label, count: 0 });
+    months.push({ key, label, count: 0, value: 0 });
     if (++m > 12) { m = 1; y++; }
   }
   const mMap = {};
   months.forEach(e => { mMap[e.key] = e; });
   items.forEach(r => {
     const ym = (r.moment || '').slice(0, 7);
-    if (mMap[ym]) mMap[ym].count++;
+    if (mMap[ym]) { mMap[ym].count++; mMap[ym].value += Math.round((r.sum||0)/100); }
   });
   return months; // oldest → newest (left → right)
 }
@@ -2230,13 +2230,17 @@ function buildDailyCounts(items, n) {
   const map = {};
   items.forEach(r => {
     const date = (r.moment || '').slice(0, 10);
-    if (date) map[date] = (map[date] || 0) + 1;
+    if (date) {
+      if (!map[date]) map[date] = { count: 0, value: 0 };
+      map[date].count++;
+      map[date].value += Math.round((r.sum||0)/100);
+    }
   });
   const now = new Date();
   return Array.from({ length: n }, (_, i) => {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
-    return map[localDateStr(d)] || 0;
+    return map[localDateStr(d)] || { count: 0, value: 0 };
   });
 }
 
@@ -2252,7 +2256,7 @@ function startServer(port) {
 
   server.on('listening', () => {
     const ip = getLocalIP();
-    console.log(`\n  WareSmart running`);
+    console.log(`\n  PLATINA running`);
     console.log(`  Local:   http://localhost:${port}`);
     console.log(`  Network: http://${ip}:${port}\n`);
   });

@@ -13,6 +13,11 @@
     <span class="notif-badge"><%- _alertCount > 99 ? '99+' : _alertCount %></span>
     <% } %>
   </div>
+  <button id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme"
+    style="background:none;border:1px solid var(--border);color:var(--text2);border-radius:8px;
+           padding:6px 10px;cursor:pointer;font-size:13px;transition:all .2s;margin-left:8px">
+    <i class="fas fa-sun"></i>
+  </button>
   <a href="javascript:location.reload()" class="topbar-refresh" title="Refresh data">
     <i class="fas fa-rotate-right"></i>
   </a>

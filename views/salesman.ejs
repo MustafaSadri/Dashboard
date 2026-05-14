@@ -181,10 +181,10 @@ function goPeriod() {
 function fmtShortJS(n) {
   if (!n || isNaN(n)) return '—';
   const a = Math.abs(n);
-  if (a >= 1e7) return '₹'+(n/1e7).toFixed(2)+' Cr';
-  if (a >= 1e5) return '₹'+(n/1e5).toFixed(1)+' L';
-  if (a >= 1e3) return '₹'+Math.round(n/1e3)+'K';
-  return '₹'+Math.round(n);
+  if (a >= 1e9) return '₽'+(n/1e9).toFixed(2)+' B';
+  if (a >= 1e6) return '₽'+(n/1e6).toFixed(2)+' M';
+  if (a >= 1e3) return '₽'+Math.round(n/1e3)+'K';
+  return '₽'+Math.round(n);
 }
 
 Chart.defaults.color       = COLORS.text2;
@@ -195,7 +195,7 @@ const smChart = new Chart(document.getElementById('smChart'), {
   data: {
     labels: LABELS.map(function(l){ return l.length > 14 ? l.slice(0,14)+'…' : l; }),
     datasets: [{
-      label: 'Total Value (₹)',
+      label: 'Total Value (₽)',
       data: VAL_DATA,
       backgroundColor: 'rgba(108,99,255,.75)',
       borderColor: COLORS.accent,
@@ -220,7 +220,7 @@ const smChart = new Chart(document.getElementById('smChart'), {
 });
 
 const btnCfg = {
-  value:  { data: VAL_DATA, label: 'Total Value (₹)',  bg: 'rgba(108,99,255,.75)', bc: COLORS.accent,  tick: function(v){ return fmtShortJS(v); } },
+  value:  { data: VAL_DATA, label: 'Total Value (₽)',  bg: 'rgba(108,99,255,.75)', bc: COLORS.accent,  tick: function(v){ return fmtShortJS(v); } },
   orders: { data: ORD_DATA, label: 'Orders',           bg: 'rgba(0,212,170,.75)',  bc: COLORS.accent2, tick: function(v){ return v; } },
   qty:    { data: QTY_DATA, label: 'Shipments',          bg: 'rgba(255,169,77,.75)', bc: COLORS.warn,    tick: function(v){ return v; } }
 };

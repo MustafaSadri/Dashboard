@@ -3,9 +3,61 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WareSmart</title>
+  <title>PLATINA</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
   <link rel="stylesheet" href="/css/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
+<script>
+  var LIGHT_VARS = {
+    '--bg':          '#f0f2fa',
+    '--bg2':         '#ffffff',
+    '--bg3':         '#e4e7f5',
+    '--text':        '#1a1d2e',
+    '--text2':       '#5a6180',
+    '--border':      'rgba(108,99,255,.22)',
+    '--card-shadow': '0 4px 20px rgba(108,99,255,.09)'
+  };
+  var DARK_VARS = {
+    '--bg':          '#0f1117',
+    '--bg2':         '#1a1d2e',
+    '--bg3':         '#252840',
+    '--text':        '#e8eaf6',
+    '--text2':       '#8891b5',
+    '--border':      'rgba(108,99,255,.18)',
+    '--card-shadow': '0 4px 24px rgba(0,0,0,.4)'
+  };
+
+  function _applyVars(vars) {
+    var root = document.documentElement;
+    for (var k in vars) root.style.setProperty(k, vars[k]);
+  }
+
+  function _isLight() {
+    return localStorage.getItem('platina_theme') === 'light';
+  }
+
+  // Apply saved theme immediately to avoid flash — dark is default
+  if (_isLight()) {
+    _applyVars(LIGHT_VARS);
+  } else {
+    _applyVars(DARK_VARS);
+    localStorage.setItem('platina_theme', 'dark');
+  }
+
+  function toggleTheme() {
+    var goLight = !_isLight();
+    _applyVars(goLight ? LIGHT_VARS : DARK_VARS);
+    localStorage.setItem('platina_theme', goLight ? 'light' : 'dark');
+    _syncThemeIcon();
+  }
+
+  function _syncThemeIcon() {
+    var btn = document.getElementById('themeToggle');
+    if (!btn) return;
+    btn.innerHTML = _isLight() ? '<i class="fas fa-moon"></i>' : '<i class="fas fa-sun"></i>';
+  }
+
+  document.addEventListener('DOMContentLoaded', _syncThemeIcon);
+</script>

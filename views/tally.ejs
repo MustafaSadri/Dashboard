@@ -264,7 +264,7 @@ if (document.getElementById('debtChart') && dData.length) {
       borderWidth: 1, borderRadius: 5 }] },
     options: { responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
-      scales: { y: { beginAtZero: true, ticks: { callback: v => '₹' + Math.round(v/1000) + 'K' } },
+      scales: { y: { beginAtZero: true, ticks: { callback: v => '₽' + Math.round(v/1000) + 'K' } },
                 x: { grid: { display: false } } } }
   });
 }
@@ -276,7 +276,7 @@ if (document.getElementById('credChart') && cData.length) {
       borderWidth: 1, borderRadius: 5 }] },
     options: { responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
-      scales: { y: { beginAtZero: true, ticks: { callback: v => '₹' + Math.round(v/1000) + 'K' } },
+      scales: { y: { beginAtZero: true, ticks: { callback: v => '₽' + Math.round(v/1000) + 'K' } },
                 x: { grid: { display: false } } } }
   });
 }

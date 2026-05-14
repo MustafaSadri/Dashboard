@@ -125,10 +125,10 @@ function goPeriod() {
 function fmtShortJS(n) {
   if (!n || isNaN(n)) return '—';
   const a = Math.abs(n);
-  if (a >= 1e7) return '₹'+(n/1e7).toFixed(2)+' Cr';
-  if (a >= 1e5) return '₹'+(n/1e5).toFixed(1)+' L';
-  if (a >= 1e3) return '₹'+Math.round(n/1e3)+'K';
-  return '₹'+Math.round(n);
+  if (a >= 1e9) return '₽'+(n/1e9).toFixed(2)+' B';
+  if (a >= 1e6) return '₽'+(n/1e6).toFixed(2)+' M';
+  if (a >= 1e3) return '₽'+Math.round(n/1e3)+'K';
+  return '₽'+Math.round(n);
 }
 
 Chart.defaults.color      = COLORS.text2;
@@ -139,7 +139,7 @@ const custChart = new Chart(document.getElementById('custChart'), {
   data: {
     labels: LABELS.map(function(l){ return l.length > 12 ? l.slice(0,12)+'…' : l; }),
     datasets: [{
-      label: 'Total Sales (₹)',
+      label: 'Total Sales (₽)',
       data: VAL_DATA,
       backgroundColor: 'rgba(108,99,255,.7)',
       borderColor: COLORS.accent,
@@ -170,7 +170,7 @@ const custChart = new Chart(document.getElementById('custChart'), {
 function switchChart(type) {
   var isVal = type === 'value';
   custChart.data.datasets[0].data  = isVal ? VAL_DATA : ORD_DATA;
-  custChart.data.datasets[0].label = isVal ? 'Total Sales (₹)' : 'Orders';
+  custChart.data.datasets[0].label = isVal ? 'Total Sales (₽)' : 'Orders';
   custChart.data.datasets[0].backgroundColor = isVal ? 'rgba(108,99,255,.7)' : 'rgba(0,212,170,.7)';
   custChart.data.datasets[0].borderColor      = isVal ? COLORS.accent : COLORS.accent2;
   custChart.options.scales.x.ticks.callback   = isVal

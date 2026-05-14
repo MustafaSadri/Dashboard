@@ -40,9 +40,9 @@
     <div class="card" style="margin-bottom:20px">
       <div class="card-title" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <i class="fas fa-chart-column"></i>
-        <span id="chartTitle">Monthly Orders</span>
+        <span id="chartTitle">Monthly Revenue</span>
         <span id="chartRangeLabel" style="font-size:11px;color:var(--text2);font-weight:400"></span>
-        <div style="margin-left:auto;display:flex;gap:6px">
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
           <button id="btnMonthly" onclick="switchView('monthly')"
             style="padding:5px 14px;border-radius:7px;font-size:12px;cursor:pointer;font-weight:600;transition:all .15s;background:var(--accent);color:#fff;border:1px solid var(--accent)">
             <i class="fas fa-calendar-alt"></i> Monthly
@@ -123,33 +123,43 @@ let allMonths   = [...MONTHLY_INIT];
 let currentView = 'monthly';
 let noMoreData  = false;
 
-// ── Growth % label plugin ─────────────────────────────────
+function fmtTick(v) {
+  if (v >= 1e9) return '₽' + (v/1e9).toFixed(1) + 'B';
+  if (v >= 1e6) return '₽' + (v/1e6).toFixed(1) + 'M';
+  if (v >= 1e3) return '₽' + Math.round(v/1e3) + 'K';
+  return '₽' + Math.round(v);
+}
+function fmtFull(v) {
+  if (v >= 1e9) return '₽' + (v/1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return '₽' + (v/1e6).toFixed(2) + 'M';
+  if (v >= 1e3) return '₽' + Math.round(v/1e3) + 'K';
+  return '₽' + Math.round(v);
+}
+
+// ── Growth % + value label plugin ────────────────────────
 const growthPlugin = {
   id: 'growthLabels',
   afterDatasetsDraw(chart) {
     if (currentView !== 'monthly') return;
     const { ctx } = chart;
-    const meta   = chart.getDatasetMeta(0);
-    const counts = chart.data.datasets[0].data;
-    meta.data.forEach((bar, i) => {
-      const curr = counts[i];
-      // Draw order count inside/below top of bar
+    const barMeta = chart.getDatasetMeta(0);
+    const barVals = chart.data.datasets[0].data;
+    barMeta.data.forEach((bar, i) => {
+      const curr = barVals[i];
+      // Value label inside bar top
       ctx.save();
-      ctx.fillStyle = 'rgba(255,255,255,.75)';
-      ctx.font = '600 11px Inter, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,.82)';
+      ctx.font = '600 10px Inter, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(curr, bar.x, bar.y + 5);
+      ctx.fillText(fmtTick(curr), bar.x, bar.y + 5);
       ctx.restore();
-
-      // Newest is on the left; older month is at i+1 (to the right)
-      const prev = counts[i + 1];
-      if (prev == null) return; // last bar = oldest, no prior month to compare
+      // Growth % pill vs previous month (older is to the right)
+      const prev = barVals[i + 1];
+      if (prev == null) return;
       const pct   = prev === 0 ? null : ((curr - prev) / prev * 100);
       const text  = pct === null ? 'NEW' : (pct >= 0 ? '▲' : '▼') + ' ' + Math.abs(pct).toFixed(0) + '%';
       const color = pct === null ? COLORS.accent : pct >= 0 ? COLORS.accent2 : COLORS.danger;
-
-      // Pill background
       ctx.save();
       ctx.font = 'bold 10px Inter, sans-serif';
       const tw = ctx.measureText(text).width + 10;
@@ -168,8 +178,7 @@ const growthPlugin = {
 
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
+  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
   ctx.quadraticCurveTo(x + w, y, x + w, y + r);
   ctx.lineTo(x + w, y + h - r);
   ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
@@ -180,50 +189,77 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// ── Chart init ────────────────────────────────────────────
+// ── Chart init (bar + line combo) ────────────────────────
 const weeklyChart = new Chart(document.getElementById('weeklyChart'), {
   type: 'bar',
   plugins: [growthPlugin],
-  data: { labels: [], datasets: [{ label: 'Orders', data: [],
-    backgroundColor: 'rgba(108,99,255,.65)', borderColor: COLORS.accent,
-    borderWidth: 1, borderRadius: 6 }] },
+  data: {
+    labels: [],
+    datasets: [
+      { // 0 – bar (primary metric)
+        type: 'bar', label: 'Revenue', data: [],
+        backgroundColor: 'rgba(108,99,255,.65)', borderColor: COLORS.accent,
+        borderWidth: 1, borderRadius: 6, yAxisID: 'yBar', order: 2
+      },
+      { // 1 – line (secondary metric)
+        type: 'line', label: 'Orders', data: [],
+        borderColor: COLORS.accent2, backgroundColor: 'rgba(0,212,170,.12)',
+        borderWidth: 2.5, pointRadius: 4, pointBackgroundColor: COLORS.accent2,
+        fill: false, tension: 0.35, yAxisID: 'yLine', order: 1
+      }
+    ]
+  },
   options: {
     responsive: true, maintainAspectRatio: false,
-    layout: { padding: { top: 32, left: 4, right: 4 } },
+    layout: { padding: { top: 36, left: 4, right: 8 } },
     plugins: {
       legend: { display: false },
       tooltip: {
         callbacks: {
           title: i => i[0].label,
           label: c => {
-            const idx  = c.dataIndex;
-            const curr = c.raw;
-            const prev = c.dataset.data[idx + 1]; // older month is to the right
-            if (prev == null) return `${curr} orders`;
-            const pct = prev === 0 ? '∞' : ((curr - prev) / prev * 100).toFixed(1) + '%';
-            const sign = (prev === 0 || curr >= prev) ? '+' : '';
-            return [`${curr} orders`, `Growth vs prev month: ${sign}${pct}`];
+            const idx = c.dataIndex;
+            if (c.datasetIndex === 0) {
+              const curr = c.raw, prev = c.dataset.data[idx + 1];
+              if (prev == null) return `Revenue: ${fmtFull(curr)}`;
+              const pct  = prev === 0 ? '∞' : ((curr - prev) / prev * 100).toFixed(1) + '%';
+              const sign = (prev === 0 || curr >= prev) ? '+' : '';
+              return [`Revenue: ${fmtFull(curr)}`, `Growth vs prev: ${sign}${pct}`];
+            }
+            return `Orders: ${c.raw}`;
           }
         }
       }
     },
     scales: {
-      y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(108,99,255,.07)' } },
+      yBar: {
+        type: 'linear', position: 'left', beginAtZero: true,
+        ticks: { callback: v => fmtTick(v) },
+        grid: { color: 'rgba(108,99,255,.07)' }
+      },
+      yLine: {
+        type: 'linear', position: 'right', beginAtZero: true,
+        ticks: { callback: v => Number.isInteger(v) ? v : '' },
+        grid: { display: false }
+      },
       x: { grid: { display: false } }
     }
   }
 });
 
-// ── Render helpers ────────────────────────────────────────
+// ── Data helpers ──────────────────────────────────────────
+const barOf  = m => m.value;
+const lineOf = m => m.count;
+
 function renderMonthly() {
-  // Newest month on the LEFT — reverse allMonths (which is oldest→newest)
   const display = [...allMonths].reverse();
-  weeklyChart.data.labels             = display.map(m => m.label);
-  weeklyChart.data.datasets[0].data  = display.map(m => m.count);
+  weeklyChart.data.labels = display.map(m => m.label);
+  weeklyChart.data.datasets[0].data = display.map(barOf);
+  weeklyChart.data.datasets[1].data = display.map(lineOf);
   weeklyChart.update();
   const newest = allMonths[allMonths.length - 1]?.label || '';
   const oldest = allMonths[0]?.label || '';
-  document.getElementById('chartTitle').textContent      = 'Monthly Orders';
+  document.getElementById('chartTitle').textContent      = 'Monthly Revenue';
   document.getElementById('chartRangeLabel').textContent = newest && oldest ? `${newest} → ${oldest}` : '';
   document.getElementById('showMoreWrap').style.display  = 'block';
 }
@@ -236,15 +272,18 @@ function makeDayLabel(daysAgo) {
 function renderDaily() {
   const reversed = [...DAILY].reverse();
   const offset   = DAILY.length - 1;
-  weeklyChart.data.labels             = reversed.map((_, i) => makeDayLabel(offset - i));
-  weeklyChart.data.datasets[0].data  = reversed;
+  weeklyChart.data.labels = reversed.map((_, i) => makeDayLabel(offset - i));
+  weeklyChart.data.datasets[0].data = reversed.map(barOf);
+  weeklyChart.data.datasets[1].data = reversed.map(lineOf);
   weeklyChart.update();
-  document.getElementById('chartTitle').textContent      = 'Orders — Last 15 Days';
+  document.getElementById('chartTitle').textContent      = 'Revenue — Last 15 Days';
   document.getElementById('chartRangeLabel').textContent = `${makeDayLabel(offset)} → ${makeDayLabel(0)}`;
   document.getElementById('showMoreWrap').style.display  = 'none';
 }
 
-// ── Show More (prepend older months) ─────────────────────
+function render() { currentView === 'monthly' ? renderMonthly() : renderDaily(); }
+
+// ── Show More ─────────────────────────────────────────────
 let loadingMore = false;
 async function loadMoreMonths() {
   if (loadingMore || noMoreData) return;
@@ -257,38 +296,26 @@ async function loadMoreMonths() {
     const before = allMonths[0]?.key || '2025-12';
     const resp   = await fetch(`/api/orders/monthly?before=${before}`);
     const older  = await resp.json();
-    if (!older.length) {
-      noMoreData    = true;
-      btn.innerHTML = '<i class="fas fa-check"></i> All data loaded';
-      return;
-    }
+    if (!older.length) { noMoreData = true; btn.innerHTML = '<i class="fas fa-check"></i> All data loaded'; return; }
     allMonths = [...older, ...allMonths];
     renderMonthly();
-    if (older.every(m => m.count === 0)) {
-      noMoreData    = true;
-      btn.innerHTML = '<i class="fas fa-check"></i> All data loaded';
-      return;
-    }
-    btn.innerHTML = orig;
-    btn.disabled  = false;
-  } catch(e) {
-    btn.innerHTML = orig;
-    btn.disabled  = false;
-  }
+    if (older.every(m => m.count === 0 && m.value === 0)) { noMoreData = true; btn.innerHTML = '<i class="fas fa-check"></i> All data loaded'; return; }
+    btn.innerHTML = orig; btn.disabled = false;
+  } catch(e) { btn.innerHTML = orig; btn.disabled = false; }
   loadingMore = false;
 }
 
 // ── Toggle buttons ────────────────────────────────────────
-const ACTIVE_STYLE   = 'padding:5px 14px;border-radius:7px;font-size:12px;cursor:pointer;font-weight:600;transition:all .15s;background:var(--accent);color:#fff;border:1px solid var(--accent)';
-const INACTIVE_STYLE = 'padding:5px 14px;border-radius:7px;font-size:12px;cursor:pointer;font-weight:500;transition:all .15s;background:var(--bg3);color:var(--text2);border:1px solid var(--border)';
+const ST_ACTIVE  = 'padding:5px 14px;border-radius:7px;font-size:12px;cursor:pointer;font-weight:600;transition:all .15s;background:var(--accent);color:#fff;border:1px solid var(--accent)';
+const ST_INACTIVE= 'padding:5px 14px;border-radius:7px;font-size:12px;cursor:pointer;font-weight:500;transition:all .15s;background:var(--bg3);color:var(--text2);border:1px solid var(--border)';
 
 function switchView(view) {
   currentView = view;
-  document.getElementById('btnMonthly').style.cssText = view === 'monthly' ? ACTIVE_STYLE : INACTIVE_STYLE;
-  document.getElementById('btnDaily').style.cssText   = view === 'daily'   ? ACTIVE_STYLE : INACTIVE_STYLE;
-  view === 'monthly' ? renderMonthly() : renderDaily();
+  document.getElementById('btnMonthly').style.cssText = view === 'monthly' ? ST_ACTIVE : ST_INACTIVE;
+  document.getElementById('btnDaily').style.cssText   = view === 'daily'   ? ST_ACTIVE : ST_INACTIVE;
+  render();
 }
 
-// Default
-renderMonthly();
+// Init
+switchView('monthly');
 </script>

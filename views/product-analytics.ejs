@@ -133,10 +133,7 @@
                 </td>
                 <td style="text-align:right;font-weight:700;color:var(--accent2)"><%- f.pcs.toLocaleString('en-IN') %></td>
                 <td style="text-align:right;color:var(--text2);font-size:12px">
-                  <% if(f.revenue>=10000000){ %>₹<%- (f.revenue/10000000).toFixed(2) %> Cr
-                  <% } else if(f.revenue>=100000){ %>₹<%- (f.revenue/100000).toFixed(1) %> L
-                  <% } else { %>₹<%- f.revenue.toLocaleString('en-IN') %>
-                  <% } %>
+                  <% const _rv=f.revenue; %><%- _rv>=1e9?'₽'+(_rv/1e9).toFixed(2)+' B':_rv>=1e6?'₽'+(_rv/1e6).toFixed(2)+' M':_rv>=1e3?'₽'+Math.round(_rv/1e3)+'K':'₽'+Math.round(_rv) %>
                 </td>
                 <td style="text-align:right">
                   <% if(f.stock===null){ %>
@@ -208,12 +205,12 @@ document.querySelectorAll('.pct-bar').forEach(el => {
 function fmtShort(n) {
   if(n==null||isNaN(n)) return '—';
   const a=Math.abs(n);
-  if(a>=1e7) return '₹'+(n/1e7).toFixed(2)+' Cr';
-  if(a>=1e5) return '₹'+(n/1e5).toFixed(1)+' L';
-  if(a>=1e3) return '₹'+Math.round(n/1e3)+'K';
-  return '₹'+Math.round(n);
+  if(a>=1e9) return '₽'+(n/1e9).toFixed(2)+' B';
+  if(a>=1e6) return '₽'+(n/1e6).toFixed(2)+' M';
+  if(a>=1e3) return '₽'+Math.round(n/1e3)+'K';
+  return '₽'+Math.round(n);
 }
-function fmtFull(n){ return '₹'+Math.round(n||0).toLocaleString('en-IN'); }
+function fmtFull(n){ return '₽'+Math.round(n||0).toLocaleString(); }
 
 Chart.defaults.color = COLORS.text2;
 Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
