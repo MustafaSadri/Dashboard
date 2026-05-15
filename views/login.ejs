@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PLATINA — Sign In</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <script>
+    var LIGHT_VARS = {
+      '--bg':          '#f0f2fa',
+      '--bg2':         '#ffffff',
+      '--bg3':         '#e4e7f5',
+      '--text':        '#1a1d2e',
+      '--text2':       '#5a6180',
+      '--border':      'rgba(108,99,255,.22)',
+      '--card-shadow': '0 4px 20px rgba(108,99,255,.09)'
+    };
+    var DARK_VARS = {
+      '--bg':          '#0f1117',
+      '--bg2':         '#1a1d2e',
+      '--bg3':         '#252840',
+      '--text':        '#e8eaf6',
+      '--text2':       '#8891b5',
+      '--border':      'rgba(108,99,255,.18)',
+      '--card-shadow': '0 4px 24px rgba(0,0,0,.4)'
+    };
+    function _applyVars(v){ var r=document.documentElement; for(var k in v) r.style.setProperty(k,v[k]); }
+    (localStorage.getItem('platina_theme') === 'dark') ? _applyVars(DARK_VARS) : (_applyVars(LIGHT_VARS), localStorage.setItem('platina_theme','light'));
+  </script>
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: var(--bg);
+    }
+    .login-wrap {
+      width: 100%;
+      max-width: 400px;
+      padding: 16px;
+    }
+    .login-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 40px 36px 36px;
+      box-shadow: var(--card-shadow);
+    }
+    .login-logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    .login-logo-icon {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, #6c63ff, #00d4aa);
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; color: #fff; font-weight: 700;
+      flex-shrink: 0;
+    }
+    .login-logo-text { font-size: 20px; font-weight: 700; letter-spacing: .3px; color: var(--text); }
+    .login-logo-sub  { font-size: 10px; color: var(--text2); letter-spacing: 1px; text-transform: uppercase; }
+    .login-title { font-size: 17px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+    .login-sub   { font-size: 13px; color: var(--text2); margin-bottom: 28px; }
+    .field-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text2);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+      text-align: center;
+    }
+    .field-wrap {
+      position: relative;
+      margin-bottom: 22px;
+    }
+    .field-wrap input {
+      width: 100%;
+      padding: 14px 44px 14px 16px;
+      background: var(--bg3);
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      color: var(--text);
+      font-size: 22px;
+      letter-spacing: 10px;
+      font-family: monospace;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+      text-align: center;
+    }
+    .field-wrap input:focus {
+      border-color: #6c63ff;
+      box-shadow: 0 0 0 3px rgba(108,99,255,.15);
+    }
+    .field-wrap input::placeholder {
+      letter-spacing: 6px;
+      font-size: 18px;
+      color: var(--text2);
+      opacity: .5;
+    }
+    .field-wrap .toggle-pw {
+      position: absolute;
+      right: 13px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text2);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 4px;
+      line-height: 1;
+    }
+    /* suppress browser password-manager icon */
+    input::-ms-reveal,
+    input::-ms-clear { display: none; }
+    input::-webkit-credentials-auto-fill-button,
+    input::-webkit-strong-password-auto-fill-button { display: none !important; }
+    .error-box {
+      background: rgba(255,77,109,.1);
+      border: 1px solid rgba(255,77,109,.3);
+      border-radius: 9px;
+      padding: 11px 14px;
+      font-size: 13px;
+      color: #ff4d6d;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn-login {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(135deg, #6c63ff, #5a52e0);
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+      letter-spacing: .3px;
+      margin-top: 4px;
+    }
+    .btn-login:hover  { opacity: .92; }
+    .btn-login:active { transform: scale(.98); }
+    .theme-btn {
+      position: fixed;
+      top: 16px; right: 16px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      color: var(--text2);
+      border-radius: 8px;
+      padding: 7px 11px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all .2s;
+    }
+  </style>
+</head>
+<body>
+
+<button class="theme-btn" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">
+  <i class="fas fa-moon"></i>
+</button>
+
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="login-logo-icon">P</div>
+      <div>
+        <div class="login-logo-text">PLATINA</div>
+        <div class="login-logo-sub">Warehouse Intelligence</div>
+      </div>
+    </div>
+
+    <div class="login-title">Welcome back</div>
+    <div class="login-sub">Enter your passcode to continue</div>
+
+    <% if (error) { %>
+    <div class="error-box">
+      <i class="fas fa-circle-exclamation"></i>
+      <%- error %>
+    </div>
+    <% } %>
+
+    <form method="POST" action="/login">
+      <div class="field-wrap">
+        <label class="field-label" for="passcode">Passcode</label>
+        <input
+          type="password"
+          id="passcode"
+          name="passcode"
+          placeholder="····"
+          autocomplete="new-password"
+          autofocus
+          required
+        >
+        <button type="button" class="toggle-pw" onclick="togglePw()" tabindex="-1" id="pwEye">
+          <i class="fas fa-eye"></i>
+        </button>
+      </div>
+
+      <button type="submit" class="btn-login">
+        <i class="fas fa-right-to-bracket" style="margin-right:7px"></i>Enter
+      </button>
+    </form>
+  </div>
+</div>
+
+<script>
+  function togglePw() {
+    var inp = document.getElementById('passcode');
+    var eye = document.getElementById('pwEye');
+    var show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    eye.innerHTML = show ? '<i class="fas fa-eye-slash"></i>' : '<i class="fas fa-eye"></i>';
+  }
+
+  function _isLight() { return localStorage.getItem('platina_theme') !== 'dark'; }
+  function toggleTheme() {
+    var goLight = !_isLight();
+    _applyVars(goLight ? LIGHT_VARS : DARK_VARS);
+    localStorage.setItem('platina_theme', goLight ? 'light' : 'dark');
+    document.getElementById('themeToggle').innerHTML = goLight
+      ? '<i class="fas fa-moon"></i>'
+      : '<i class="fas fa-sun"></i>';
+  }
+  document.getElementById('themeToggle').innerHTML = _isLight()
+    ? '<i class="fas fa-moon"></i>'
+    : '<i class="fas fa-sun"></i>';
+</script>
+</body>
+</html>

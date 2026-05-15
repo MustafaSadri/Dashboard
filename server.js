@@ -1,7 +1,11 @@
 require('dotenv').config();
 const express = require('express');
+const session = require('express-session');
 const path    = require('path');
 const app     = express();
+
+// ── Auth credentials ─────────────────────────────────────
+const PASSCODE = process.env.PASSCODE || '1990';
 
 const TOKEN   = process.env.TOKEN || '';
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
@@ -16,6 +20,37 @@ app.set('views', path.join(__dirname, 'views'));
 app.set('view cache', true);
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1d', etag: true }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'platina_secret_key_2024',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { maxAge: 8 * 60 * 60 * 1000 } // 8-hour session
+}));
+
+// ── Auth routes ───────────────────────────────────────────
+app.get('/login', (req, res) => {
+  if (req.session.loggedIn) return res.redirect('/');
+  res.render('login', { error: null });
+});
+
+app.post('/login', (req, res) => {
+  if (req.body.passcode === PASSCODE) {
+    req.session.loggedIn = true;
+    return res.redirect('/');
+  }
+  res.render('login', { error: 'Incorrect passcode. Try again.' });
+});
+
+app.get('/logout', (req, res) => {
+  req.session.destroy(() => res.redirect('/login'));
+});
+
+// ── Auth guard — protects all routes below ────────────────
+app.use((req, res, next) => {
+  if (req.session.loggedIn) return next();
+  res.redirect('/login');
+});
 
 // ── Format helpers available in all EJS templates ────────
 app.use((req, res, next) => {

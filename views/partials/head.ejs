@@ -35,15 +35,15 @@
   }
 
   function _isLight() {
-    return localStorage.getItem('platina_theme') === 'light';
+    return localStorage.getItem('platina_theme') !== 'dark';
   }
 
-  // Apply saved theme immediately to avoid flash — dark is default
+  // Apply saved theme immediately to avoid flash — light is default
   if (_isLight()) {
     _applyVars(LIGHT_VARS);
+    localStorage.setItem('platina_theme', 'light');
   } else {
     _applyVars(DARK_VARS);
-    localStorage.setItem('platina_theme', 'dark');
   }
 
   function toggleTheme() {
