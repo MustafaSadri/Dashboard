@@ -342,7 +342,7 @@ const getRecentDemands = () =>
   cached('demands_200', 90*1000, () => ms('/entity/demand?limit=200&order=moment,desc').then(r => r.rows || []));
 
 const getAllOrders = () =>
-  cached('orders_all', 2*60*1000, () => ms('/entity/customerorder?limit=1000&order=moment,desc').then(r => r.rows || []));
+  cached('orders_all', 2*60*1000, () => ms('/entity/customerorder?limit=1000&order=moment,desc&expand=state').then(r => r.rows || []));
 
 const getOrdersFromDec25 = () =>
   cached('orders_dec25', 5*60*1000, () =>
