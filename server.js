@@ -349,6 +349,11 @@ const getOrdersFromDec25 = () =>
     msAll(`/entity/customerorder?filter=${enc('moment>=2025-12-01 00:00:00')}&order=moment,asc`)
       .then(r => r.rows || []));
 
+const getDemandsFromDec25 = () =>
+  cached('demands_dec25', 5*60*1000, () =>
+    msAll(`/entity/demand?filter=${enc('moment>=2025-12-01 00:00:00')}&order=moment,asc`)
+      .then(r => r.rows || []));
+
 const getProfitByProduct = (from, to) => {
   const key = `prof_prod_${from}_${to||''}`;
   const url  = to
@@ -443,6 +448,7 @@ app.get('/', async (req, res) => {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
       .map(([name, count]) => ({ name, count }));
+    const pendingValue = pendingOrders.reduce((a, r) => a + (r.sum || 0), 0) / 100;
 
     // Stock stats
     let lowStock=0, inStock=0, outStock=0, totalQty=0, totalVal=0;
@@ -454,13 +460,13 @@ app.get('/', async (req, res) => {
     });
 
     const totalSell      = products.reduce((a,r)=>a+(r.sellSum||0),0);
-    const weeklyOrders   = buildDailyCounts(orders, 15);
-    const monthlyOrders  = await getOrdersFromDec25().then(rows => buildMonthlyCounts(rows));
+    const weeklyOrders   = buildDailyCounts(shipments, 15);
+    const monthlyOrders  = await getDemandsFromDec25().then(rows => buildMonthlyCounts(rows));
 
     res.render('dashboard', {
       ...c, active: 'dashboard',
       salesToday: salesToday/100, shipmentsToday,
-      pending, pendingStates,
+      pending, pendingStates, pendingValue,
       totalOrders: orders.length,
       products: products.slice(0,10).map(r=>({
         name: r.assortment?.name||'—',
@@ -1012,9 +1018,9 @@ app.get('/api/orders/monthly', async (req, res) => {
       const startDate = new Date(endDate.getFullYear(), endDate.getMonth() - 5, 1); // 6 months range
       const from = `${localDateStr(startDate)} 00:00:00`;
       const to   = `${localDateStr(endDate)} 23:59:59`;
-      const key  = `orders_hist_${localDateStr(startDate).slice(0,7)}_${localDateStr(endDate).slice(0,7)}`;
+      const key  = `demands_hist_${localDateStr(startDate).slice(0,7)}_${localDateStr(endDate).slice(0,7)}`;
       const rows = await cached(key, 10*60*1000, () =>
-        msAll(`/entity/customerorder?filter=${enc('moment>='+from+';moment<='+to)}&order=moment,asc`)
+        msAll(`/entity/demand?filter=${enc('moment>='+from+';moment<='+to)}&order=moment,asc`)
           .then(r => r.rows || [])
       );
       const months = [];
@@ -1029,7 +1035,7 @@ app.get('/api/orders/monthly', async (req, res) => {
       rows.forEach(r => { const ym = (r.moment||'').slice(0,7); if (mMap[ym]) { mMap[ym].count++; mMap[ym].value += Math.round((r.sum||0)/100); } });
       return res.json(months);
     }
-    const rows = await getOrdersFromDec25();
+    const rows = await getDemandsFromDec25();
     res.json(buildMonthlyCounts(rows));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

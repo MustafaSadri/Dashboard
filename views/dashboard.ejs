@@ -17,8 +17,11 @@
       <a href="/orders-status" style="text-decoration:none">
       <div class="stat-card" style="cursor:pointer" title="Click to see pending orders">
         <div class="stat-label">Pending Orders <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
-        <div class="stat-value"><%- pending %></div>
-        <div class="stat-sub">
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <div class="stat-value"><%- pending %></div>
+          <div style="font-size:18px;font-weight:700;color:var(--accent);letter-spacing:-.3px;padding:2px 10px;background:rgba(108,99,255,.11);border-radius:7px;white-space:nowrap"><%- fmtShort(pendingValue) %></div>
+        </div>
+        <div class="stat-sub" style="margin-top:4px">
           <% if(pendingStates.length===0){ %>No pending orders
           <% } else { pendingStates.forEach(function(s,i){ %><%- s.name %>: <%- s.count %><%- i<pendingStates.length-1?' · ':'' %>
           <% }) } %>
@@ -62,6 +65,22 @@
           onmouseout="this.style.color='var(--text2)';this.style.borderColor='var(--border)'">
           <i class="fas fa-chevron-left"></i> Show More (older months)
         </button>
+      </div>
+      <div style="display:flex;gap:12px;justify-content:center;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+        <a href="/sku-analysis" style="text-decoration:none">
+          <button style="display:flex;align-items:center;gap:9px;padding:10px 26px;border-radius:9px;border:1.5px solid var(--accent);background:rgba(108,99,255,.13);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;transition:all .18s;box-shadow:0 2px 10px rgba(108,99,255,.13)"
+            onmouseover="this.style.background='var(--accent)';this.style.color='#fff';this.style.boxShadow='0 4px 16px rgba(108,99,255,.35)'"
+            onmouseout="this.style.background='rgba(108,99,255,.13)';this.style.color='var(--accent)';this.style.boxShadow='0 2px 10px rgba(108,99,255,.13)'">
+            <i class="fas fa-barcode" style="font-size:14px"></i> SKU Analysis
+          </button>
+        </a>
+        <a href="/salesman" style="text-decoration:none">
+          <button style="display:flex;align-items:center;gap:9px;padding:10px 26px;border-radius:9px;border:1.5px solid var(--accent);background:rgba(108,99,255,.13);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;transition:all .18s;box-shadow:0 2px 10px rgba(108,99,255,.13)"
+            onmouseover="this.style.background='var(--accent)';this.style.color='#fff';this.style.boxShadow='0 4px 16px rgba(108,99,255,.35)'"
+            onmouseout="this.style.background='rgba(108,99,255,.13)';this.style.color='var(--accent)';this.style.boxShadow='0 2px 10px rgba(108,99,255,.35)'">
+            <i class="fas fa-user-tie" style="font-size:14px"></i> Salesman Analysis
+          </button>
+        </a>
       </div>
     </div>
 
@@ -202,7 +221,7 @@ const weeklyChart = new Chart(document.getElementById('weeklyChart'), {
         borderWidth: 1, borderRadius: 6, yAxisID: 'yBar', order: 2
       },
       { // 1 – line (secondary metric)
-        type: 'line', label: 'Orders', data: [],
+        type: 'line', label: 'Shipments', data: [],
         borderColor: COLORS.accent2, backgroundColor: 'rgba(0,212,170,.12)',
         borderWidth: 2.5, pointRadius: 4, pointBackgroundColor: COLORS.accent2,
         fill: false, tension: 0.35, yAxisID: 'yLine', order: 1
@@ -226,7 +245,7 @@ const weeklyChart = new Chart(document.getElementById('weeklyChart'), {
               const sign = (prev === 0 || curr >= prev) ? '+' : '';
               return [`Revenue: ${fmtFull(curr)}`, `Growth vs prev: ${sign}${pct}`];
             }
-            return `Orders: ${c.raw}`;
+            return `Shipments: ${c.raw}`;
           }
         }
       }
