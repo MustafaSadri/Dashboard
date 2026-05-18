@@ -11,6 +11,12 @@
         <div class="alert-icon r"><i class="fas fa-plug-circle-xmark"></i></div>
         <div>
           <div style="font-weight:700;color:var(--danger);margin-bottom:4px">TallyPrime Not Connected</div>
+          <% if(fromCache){ %>
+          <div style="color:var(--warn);font-size:13px;margin-bottom:4px">
+            <i class="fas fa-database" style="margin-right:4px"></i>Showing last synced data
+            <% if(syncedAt){ %> · <span style="font-size:12px">synced <%= new Date(syncedAt).toLocaleString('en-IN') %></span><% } %>
+          </div>
+          <% } %>
           <div style="color:var(--text2);font-size:13px"><%- error || 'Could not connect to Tally at ' + tallyUrl %></div>
           <div style="color:var(--text2);font-size:12px;margin-top:5px">
             Connecting to: <strong><%- tallyUrl %></strong> &nbsp;·&nbsp;
@@ -24,7 +30,16 @@
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;font-size:13px;color:var(--accent2)">
       <i class="fas fa-circle-check"></i>
       <span>Connected to TallyPrime<% if(company){ %> · <strong style="color:var(--text)"><%- company %></strong><% } %></span>
-      <a href="/tally" class="topbar-refresh" title="Refresh" style="margin-left:auto"><i class="fas fa-rotate-right"></i></a>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+        <% if(syncedAt){ %>
+        <span style="font-size:12px;color:var(--text2)"><i class="fas fa-database" style="margin-right:4px"></i>Last synced: <%= new Date(syncedAt).toLocaleString('en-IN') %></span>
+        <% } %>
+        <button id="syncBtn" onclick="syncNow()" style="display:flex;align-items:center;gap:7px;padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">
+          <i class="fas fa-cloud-arrow-up" id="syncIcon"></i>
+          <span id="syncText">Sync to DB</span>
+        </button>
+        <a href="/tally" class="topbar-refresh" title="Refresh"><i class="fas fa-rotate-right"></i></a>
+      </div>
     </div>
     <% } %>
 
@@ -245,6 +260,38 @@
   </div>
 </div>
 <%- include('partials/foot') %>
+
+<script>
+async function syncNow() {
+  const btn  = document.getElementById('syncBtn');
+  const icon = document.getElementById('syncIcon');
+  const txt  = document.getElementById('syncText');
+  btn.disabled = true;
+  icon.className = 'fas fa-spinner fa-spin';
+  txt.textContent = 'Syncing…';
+  try {
+    const r = await fetch('/api/tally/sync', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      icon.className = 'fas fa-check';
+      txt.textContent = 'Synced!';
+      setTimeout(() => location.reload(), 800);
+    } else {
+      icon.className = 'fas fa-xmark';
+      txt.textContent = 'Failed';
+      btn.disabled = false;
+      alert('Sync failed: ' + (d.error || 'Unknown error'));
+      setTimeout(() => { icon.className='fas fa-cloud-arrow-up'; txt.textContent='Sync to DB'; }, 2000);
+    }
+  } catch(e) {
+    icon.className = 'fas fa-xmark';
+    txt.textContent = 'Error';
+    btn.disabled = false;
+    alert('Sync error: ' + e.message);
+    setTimeout(() => { icon.className='fas fa-cloud-arrow-up'; txt.textContent='Sync to DB'; }, 2000);
+  }
+}
+</script>
 
 <% if(connected && (debtors.length>0 || creditors.length>0)){ %>
 <script>

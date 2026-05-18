@@ -2,7 +2,39 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const path    = require('path');
+const { MongoClient } = require('mongodb');
 const app     = express();
+
+// ── MongoDB ───────────────────────────────────────────────
+const MONGO_URI = process.env.MONGODB_URI || '';
+const MONGO_DB  = process.env.MONGODB_DB_NAME || 'tally_sync';
+let _mongoClient = null;
+async function getMongoDb() {
+  if (!MONGO_URI) return null;
+  if (!_mongoClient) {
+    _mongoClient = new MongoClient(MONGO_URI);
+    await _mongoClient.connect();
+  }
+  return _mongoClient.db(MONGO_DB);
+}
+async function saveTallySnapshot(data) {
+  try {
+    const db = await getMongoDb();
+    if (!db) return;
+    await db.collection('tally_snapshots').replaceOne(
+      { _id: 'main' },
+      { _id: 'main', ...data, syncedAt: new Date() },
+      { upsert: true }
+    );
+  } catch(e) { console.error('Mongo save error:', e.message); }
+}
+async function loadTallySnapshot() {
+  try {
+    const db = await getMongoDb();
+    if (!db) return null;
+    return await db.collection('tally_snapshots').findOne({ _id: 'main' });
+  } catch(e) { console.error('Mongo load error:', e.message); return null; }
+}
 
 // ── Auth credentials ─────────────────────────────────────
 const PASSCODE = process.env.PASSCODE || '1990';
@@ -135,8 +167,8 @@ async function fetchAllPos(demandId) {
 }
 
 // TallyPrime XML helper. Start Tally and enable its HTTP server on port 9000.
-async function tallyXml(xml) {
-  const signal = AbortSignal.timeout(8000);
+async function tallyXml(xml, timeoutMs = 30000) {
+  const signal = AbortSignal.timeout(timeoutMs);
   const r = await fetch(TALLY_BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'text/xml;charset=utf-8' },
@@ -2229,8 +2261,7 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // ── TALLY FINANCIAL DASHBOARD ────────────────────────────
-app.get('/tally', async (req, res) => {
-  const c = await common();
+async function fetchLiveTallyData() {
   const result = {
     connected: false, company: TALLY_COMPANY || '', error: null,
     tallyUrl: TALLY_BASE,
@@ -2239,67 +2270,108 @@ app.get('/tally', async (req, res) => {
     debtors: [], creditors: [], recentVouchers: []
   };
 
-  try {
-    // Fetch all ledgers — this also confirms Tally is reachable
-    const ledXml = await tallyCollection('AllLedgers', `
+  const ledXml = await tallyCollection('AllLedgers', `
 <COLLECTION NAME="AllLedgers" ISMODIFY="No">
   <TYPE>Ledger</TYPE>
   <FETCH>Name,Parent,ClosingBalance</FETCH>
 </COLLECTION>`);
 
-    result.connected = true;
+  result.connected = true;
 
-    for (const blk of blocks(ledXml, 'LEDGER')) {
-      const name   = attr(blk, 'NAME') || stripXml(getTag(blk, 'NAME')) || '—';
-      const parent = stripXml(getTag(blk, 'PARENT')).toLowerCase();
-      const balStr = stripXml(getTag(blk, 'CLOSINGBALANCE'));
-      const bal    = parseTallyAmount(balStr);
-      const absBal = Math.abs(bal);
-      const isCr   = /\bCr\b/i.test(balStr);
+  for (const blk of blocks(ledXml, 'LEDGER')) {
+    const name   = attr(blk, 'NAME') || stripXml(getTag(blk, 'NAME')) || '—';
+    const parent = stripXml(getTag(blk, 'PARENT')).toLowerCase();
+    const balStr = stripXml(getTag(blk, 'CLOSINGBALANCE'));
+    const bal    = parseTallyAmount(balStr);
+    const absBal = Math.abs(bal);
+    const isCr   = /\bCr\b/i.test(balStr);
 
-      if      (parent.includes('sales account'))    result.totalSales     += absBal;
-      else if (parent.includes('purchase account')) result.totalPurchases += absBal;
-      else if (parent.includes('indirect expense')) result.totalExpenses  += absBal;
-      else if (parent === 'cash-in-hand' || parent === 'cash in hand') result.cashBalance += absBal;
-      else if (parent.includes('bank account'))     result.bankBalance    += absBal;
-      else if (parent.includes('sundry debtor')) {
-        if (absBal > 0) result.debtors.push({ name, balance: isCr ? -absBal : absBal });
-      }
-      else if (parent.includes('sundry creditor')) {
-        if (absBal > 0) result.creditors.push({ name, balance: isCr ? absBal : -absBal });
-      }
+    if      (parent.includes('sales account'))    result.totalSales     += absBal;
+    else if (parent.includes('purchase account')) result.totalPurchases += absBal;
+    else if (parent.includes('indirect expense')) result.totalExpenses  += absBal;
+    else if (parent === 'cash-in-hand' || parent === 'cash in hand') result.cashBalance += absBal;
+    else if (parent.includes('bank account'))     result.bankBalance    += absBal;
+    else if (parent.includes('sundry debtor')) {
+      if (absBal > 0) result.debtors.push({ name, balance: isCr ? -absBal : absBal });
     }
+    else if (parent.includes('sundry creditor')) {
+      if (absBal > 0) result.creditors.push({ name, balance: isCr ? absBal : -absBal });
+    }
+  }
 
-    result.debtors         = result.debtors.filter(d => d.balance > 0).sort((a,b) => b.balance - a.balance).slice(0, 15);
-    result.creditors       = result.creditors.filter(c => c.balance > 0).sort((a,b) => b.balance - a.balance).slice(0, 15);
-    result.totalOutstanding = result.debtors.reduce((a, r) => a + r.balance, 0);
-    result.supplierDues    = result.creditors.reduce((a, r) => a + r.balance, 0);
+  result.debtors          = result.debtors.filter(d => d.balance > 0).sort((a,b) => b.balance - a.balance).slice(0, 15);
+  result.creditors        = result.creditors.filter(c => c.balance > 0).sort((a,b) => b.balance - a.balance).slice(0, 15);
+  result.totalOutstanding = result.debtors.reduce((a, r) => a + r.balance, 0);
+  result.supplierDues     = result.creditors.reduce((a, r) => a + r.balance, 0);
 
-    // Recent vouchers (current month)
-    try {
-      const vXml = await tallyCollection('RecentVouchers', `
+  try {
+    const vXml = await tallyCollection('RecentVouchers', `
 <COLLECTION NAME="RecentVouchers" ISMODIFY="No">
   <TYPE>Voucher</TYPE>
   <FETCH>Date,VoucherNumber,VoucherTypeName,PartyLedgerName,Amount</FETCH>
 </COLLECTION>`, { fromDate: `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}-01`, toDate: todayStr() });
 
-      result.recentVouchers = blocks(vXml, 'VOUCHER').slice(0, 25).map(v => ({
-        date:  formatTallyDate(stripXml(getTag(v, 'DATE'))),
-        type:  stripXml(getTag(v, 'VOUCHERTYPENAME')) || attr(v, 'VCHTYPE') || '—',
-        num:   stripXml(getTag(v, 'VOUCHERNUMBER')) || '—',
-        party: stripXml(getTag(v, 'PARTYLEDGERNAME')) || '—',
-        amt:   Math.abs(parseTallyAmount(getTag(v, 'AMOUNT')))
-      })).filter(v => v.date !== '—' && v.type !== '—');
-    } catch(_) {}
+    result.recentVouchers = blocks(vXml, 'VOUCHER').slice(0, 25).map(v => ({
+      date:  formatTallyDate(stripXml(getTag(v, 'DATE'))),
+      type:  stripXml(getTag(v, 'VOUCHERTYPENAME')) || attr(v, 'VCHTYPE') || '—',
+      num:   stripXml(getTag(v, 'VOUCHERNUMBER')) || '—',
+      party: stripXml(getTag(v, 'PARTYLEDGERNAME')) || '—',
+      amt:   Math.abs(parseTallyAmount(getTag(v, 'AMOUNT')))
+    })).filter(v => v.date !== '—' && v.type !== '—');
+  } catch(_) {}
 
+  return result;
+}
+
+app.get('/tally', async (req, res) => {
+  const c = await common();
+  let result;
+  let fromCache = false;
+  let syncedAt  = null;
+
+  try {
+    result = await fetchLiveTallyData();
   } catch(e) {
-    result.connected = false;
-    result.error = (e.cause?.code === 'ECONNREFUSED' || e.message.includes('ECONNREFUSED') || e.name === 'AbortError')
-      ? `Cannot reach Tally at ${TALLY_BASE} — open TallyPrime and enable HTTP server (F12 → Advanced Config → port 9000)`
-      : e.message;
+    result = {
+      connected: false, company: TALLY_COMPANY || '',
+      error: (e.cause?.code === 'ECONNREFUSED' || e.message.includes('ECONNREFUSED') || e.name === 'AbortError')
+        ? `Cannot reach Tally at ${TALLY_BASE} — open TallyPrime and enable HTTP server (F12 → Advanced Config → port 9000)`
+        : e.message,
+      tallyUrl: TALLY_BASE,
+      totalSales: 0, totalPurchases: 0, totalExpenses: 0, totalOutstanding: 0,
+      cashBalance: 0, bankBalance: 0, supplierDues: 0,
+      debtors: [], creditors: [], recentVouchers: []
+    };
+    // Try to load cached data from MongoDB
+    const snapshot = await loadTallySnapshot();
+    if (snapshot) {
+      fromCache = true;
+      syncedAt  = snapshot.syncedAt;
+      result = { ...result, ...snapshot,
+        connected: false, error: result.error,
+        _id: undefined, syncedAt: undefined
+      };
+    }
   }
 
-  res.render('tally', { ...c, active: 'tally', ...result });
+  // Auto-save to MongoDB whenever Tally is live (no second request needed)
+  if (result.connected) {
+    saveTallySnapshot(result).catch(e => console.error('Mongo save:', e.message));
+    syncedAt = new Date();
+  }
+
+  res.render('tally', { ...c, active: 'tally', ...result, fromCache, syncedAt });
+});
+
+// Sync button API — just re-render (data was already saved on page load)
+app.post('/api/tally/sync', async (req, res) => {
+  try {
+    const data = await fetchLiveTallyData();
+    await saveTallySnapshot(data);
+    res.json({ ok: true, syncedAt: new Date() });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ════════════════════════════════════════════════════════
