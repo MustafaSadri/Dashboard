@@ -715,14 +715,67 @@ app.get('/salesman', async (req, res) => {
       return map;
     });
 
-    // Fetch customerOrders for the period — owner is the salesman, sum is revenue.
-    // This matches what MoySklad's Sales Orders page shows exactly.
+    // Fetch customerOrders and demands for the period in parallel.
+    // Demands filter uses the same start but extends the end by 45 days to catch
+    // shipments created shortly after the period (e.g. order Jan 31, shipped Feb 2).
     const ordUrl = `/entity/customerorder?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent&order=moment,desc`;
-    const { rows: orders } = await msAll(ordUrl);
+    const demParts = [];
+    if (momentFrom) demParts.push(`moment>${momentFrom}`);
+    if (momentTo) {
+      const bufDate = new Date(momentTo.slice(0, 10));
+      bufDate.setDate(bufDate.getDate() + 45);
+      demParts.push(`moment<${localDateStr(bufDate)} 00:00:00`);
+    }
+    const demFilterStr = demParts.join(';');
+    const demUrl = `/entity/demand?${demFilterStr ? 'filter='+enc(demFilterStr)+'&' : ''}order=moment,desc`;
+
+    const [{ rows: orders }, { rows: demands }] = await Promise.all([
+      msAll(ordUrl),
+      msAll(demUrl)
+    ]);
+
+    // Build a Set of customerOrder IDs that have at least one demand (shipment created).
+    const shippedOrderIds = new Set();
+    demands.forEach(d => {
+      const href = d.customerOrder?.meta?.href || '';
+      if (!href) return;
+      const oid = href.split('/').pop().split('?')[0];
+      if (oid) shippedOrderIds.add(oid);
+    });
+
+    // Only count orders where a shipment has actually been created.
+    const shippedOrders   = orders.filter(o =>  shippedOrderIds.has(o.id));
+    const unshippedRaw    = orders.filter(o => !shippedOrderIds.has(o.id));
+
+    // Fetch positions for each unshipped order (batches of 20) to get PCS count.
+    const UBATCH = 20;
+    const unshippedOrders = [];
+    for (let i = 0; i < unshippedRaw.length; i += UBATCH) {
+      const slice = unshippedRaw.slice(i, i + UBATCH);
+      const posResults = await Promise.allSettled(
+        slice.map(o => ms(`/entity/customerorder/${o.id}/positions?limit=200`))
+      );
+      slice.forEach((o, j) => {
+        const ownerUUID = (o.owner?.meta?.href || '').split('/').pop().split('?')[0];
+        const salesman  = ownerUUID ? (empMap[ownerUUID] || 'Unassigned') : 'Unassigned';
+        const posRows   = posResults[j]?.status === 'fulfilled' ? (posResults[j].value.rows || []) : [];
+        const pcs       = Math.round(posRows.reduce((a, p) => a + (p.quantity || 0), 0));
+        unshippedOrders.push({
+          name:     o.name || '—',
+          date:     (o.moment || '').slice(0, 10),
+          customer: o.agent?.name || '—',
+          salesman,
+          state:    o.state?.name || '—',
+          val:      (o.sum || 0) / 100,
+          pcs
+        });
+      });
+    }
+    unshippedOrders.sort((a, b) => b.val - a.val);
 
     // Aggregate by salesman (customerOrder.owner)
     const smMap = {};
-    orders.forEach(order => {
+    shippedOrders.forEach(order => {
       const ownerUUID = (order.owner?.meta?.href || '').split('/').pop().split('?')[0];
       const name      = ownerUUID ? (empMap[ownerUUID] || 'Unassigned') : 'Unassigned';
       const val       = (order.sum || 0) / 100;
@@ -752,12 +805,14 @@ app.get('/salesman', async (req, res) => {
     res.render('salesman', {
       ...c, active: 'salesman',
       salesmen, period, months,
-      totalOrders: orders.length,
+      totalOrders: shippedOrders.length,
       chartLabels:    JSON.stringify(chartTop.map(s => s.name)),
-      chartValueData: JSON.stringify(chartTop.map(s => Math.round(s.totalVal))),
-      chartOrderData: JSON.stringify(chartTop.map(s => s.orders)),
-      chartQtyData:   JSON.stringify(chartTop.map(s => s.orders)),
-      salesmenJSON:   JSON.stringify(salesmen)
+      chartValueData:  JSON.stringify(chartTop.map(s => Math.round(s.totalVal))),
+      chartOrderData:  JSON.stringify(chartTop.map(s => s.orders)),
+      chartQtyData:    JSON.stringify(chartTop.map(s => s.orders)),
+      salesmenJSON:    JSON.stringify(salesmen),
+      unshippedJSON:   JSON.stringify(unshippedOrders),
+      unshippedCount:  unshippedOrders.length
     });
   } catch(e) { res.status(500).render('error', { message: e.message }); }
 });

@@ -46,6 +46,13 @@
         <% }) %>
       </select>
       <span style="margin-left:auto;font-size:12px;color:var(--text2)"><%- salesmen.length %> salesmen · sorted by revenue</span>
+      <% if(unshippedCount > 0){ %>
+      <button onclick="openUnshipped()"
+        style="display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;border:none;background:#ffa94d;color:#fff;font-size:12px;font-weight:600;cursor:pointer">
+        <i class="fas fa-exclamation-triangle"></i>
+        Unshipped Orders (<%= unshippedCount %>)
+      </button>
+      <% } %>
     </div>
 
     <!-- Chart + Table -->
@@ -160,11 +167,66 @@
   </div>
 </div>
 
+<!-- ── Unshipped Orders Modal ─────────────────────────── -->
+<div id="unshippedModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.78);backdrop-filter:blur(4px);padding:24px;box-sizing:border-box;overflow-y:auto">
+  <div style="max-width:1000px;margin:0 auto;background:var(--bg2);border-radius:16px;border:1px solid var(--border);overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)">
+    <!-- Modal header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid var(--border);background:rgba(255,169,77,.08)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <i class="fas fa-exclamation-triangle" style="color:#ffa94d;font-size:16px"></i>
+        <div>
+          <div style="font-weight:700;font-size:15px">Unshipped Orders</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:1px">Orders in MoySklad with no shipment created yet</div>
+        </div>
+        <span id="unshippedBadge" style="margin-left:8px;background:#ffa94d;color:#fff;border-radius:20px;padding:2px 10px;font-size:12px;font-weight:700"></span>
+      </div>
+      <button onclick="closeUnshipped()"
+        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 14px;cursor:pointer;font-size:13px">
+        <i class="fas fa-times"></i> Close
+      </button>
+    </div>
+    <!-- Search + summary -->
+    <div style="padding:14px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="position:relative;flex:1;min-width:200px;max-width:320px">
+        <i class="fas fa-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text2);pointer-events:none"></i>
+        <input id="unshippedSearch" type="text" placeholder="Search order, customer, salesman…"
+          oninput="filterUnshipped(this.value)"
+          style="width:100%;box-sizing:border-box;padding:7px 10px 7px 30px;font-size:12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);outline:none">
+      </div>
+      <div style="margin-left:auto;font-size:12px;color:var(--text2)" id="unshippedSummary"></div>
+    </div>
+    <!-- Table -->
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse" id="unshippedTable">
+        <thead>
+          <tr style="background:var(--bg2)">
+            <th style="padding:10px 14px;font-size:11px;text-align:left;color:var(--text2);font-weight:600;white-space:nowrap">#</th>
+            <th style="padding:10px 14px;font-size:11px;text-align:left;color:var(--text2);font-weight:600;white-space:nowrap">Order No.</th>
+            <th style="padding:10px 14px;font-size:11px;text-align:left;color:var(--text2);font-weight:600;white-space:nowrap">Date</th>
+            <th style="padding:10px 14px;font-size:11px;text-align:left;color:var(--text2);font-weight:600;white-space:nowrap">Customer</th>
+            <th style="padding:10px 14px;font-size:11px;text-align:left;color:var(--text2);font-weight:600;white-space:nowrap">Salesman</th>
+            <th style="padding:10px 14px;font-size:11px;text-align:left;color:var(--text2);font-weight:600;white-space:nowrap">State</th>
+            <th style="padding:10px 14px;font-size:11px;text-align:right;color:var(--text2);font-weight:600;white-space:nowrap">PCS</th>
+            <th style="padding:10px 14px;font-size:11px;text-align:right;color:var(--text2);font-weight:600;white-space:nowrap">Value</th>
+          </tr>
+        </thead>
+        <tbody id="unshippedBody"></tbody>
+      </table>
+    </div>
+    <!-- Totals footer -->
+    <div style="padding:12px 24px;border-top:1px solid var(--border);display:flex;gap:24px;background:var(--bg2)">
+      <div style="font-size:12px;color:var(--text2)">Total PCS: <strong id="totalPcs" style="color:var(--text)">—</strong></div>
+      <div style="font-size:12px;color:var(--text2)">Total Value: <strong id="totalVal" style="color:#ffa94d">—</strong></div>
+    </div>
+  </div>
+</div>
+
 <script type="application/json" id="chartLabels"><%- chartLabels %></script>
 <script type="application/json" id="chartValueData"><%- chartValueData %></script>
 <script type="application/json" id="chartOrderData"><%- chartOrderData %></script>
 <script type="application/json" id="chartQtyData"><%- chartQtyData %></script>
 <script type="application/json" id="salesmenData"><%- salesmenJSON %></script>
+<script type="application/json" id="unshippedData"><%- unshippedJSON %></script>
 
 <script>
 const LABELS   = JSON.parse(document.getElementById('chartLabels').textContent);
@@ -265,6 +327,72 @@ function filterOrders(idx, query) {
     r.style.display = (!q || text.includes(q)) ? '' : 'none';
   });
 }
+
+// ── Unshipped Orders Modal ────────────────────────────────
+var UNSHIPPED = JSON.parse(document.getElementById('unshippedData').textContent);
+
+function fmtVal(n) {
+  if (!n && n !== 0) return '—';
+  var a = Math.abs(n);
+  if (a >= 1e6) return '₽' + (n/1e6).toFixed(2) + ' M';
+  if (a >= 1e3) return '₽' + Math.round(n/1e3) + 'K';
+  return '₽' + Math.round(n).toLocaleString('en-US');
+}
+
+function renderUnshippedTable(rows) {
+  var tbody = document.getElementById('unshippedBody');
+  var totalPcs = 0, totalVal = 0;
+  tbody.innerHTML = rows.map(function(o, i) {
+    totalPcs += o.pcs || 0;
+    totalVal += o.val || 0;
+    return '<tr class="u-row" style="border-bottom:1px solid rgba(108,99,255,.07);background:var(--card);transition:background .15s"' +
+      ' onmouseover="this.style.background=\'rgba(255,169,77,.08)\'" onmouseout="this.style.background=\'var(--card)\'">' +
+      '<td style="padding:9px 14px;font-size:12px;color:var(--text2)">' + (i+1) + '</td>' +
+      '<td style="padding:9px 14px;font-size:13px;font-weight:700;color:var(--text)">' + o.name + '</td>' +
+      '<td style="padding:9px 14px;font-size:12px;color:var(--text2)">' + (o.date || '—') + '</td>' +
+      '<td style="padding:9px 14px;font-size:12px;color:var(--text)">' + o.customer + '</td>' +
+      '<td style="padding:9px 14px;font-size:12px">' +
+        '<span style="display:inline-flex;align-items:center;gap:5px">' +
+        '<span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff">' +
+        (o.salesman && o.salesman !== 'Unassigned' ? o.salesman.charAt(0).toUpperCase() : '?') +
+        '</span>' + o.salesman + '</span></td>' +
+      '<td style="padding:9px 14px;font-size:11px"><span style="background:rgba(255,169,77,.15);color:#ffa94d;border-radius:5px;padding:2px 8px">' + (o.state || '—') + '</span></td>' +
+      '<td style="padding:9px 14px;font-size:12px;text-align:right;font-weight:600">' + (o.pcs || 0).toLocaleString('en-US') + '</td>' +
+      '<td style="padding:9px 14px;font-size:12px;text-align:right;font-weight:700;color:#ffa94d">' + fmtVal(o.val) + '</td>' +
+      '</tr>';
+  }).join('');
+  document.getElementById('totalPcs').textContent = totalPcs.toLocaleString('en-US');
+  document.getElementById('totalVal').textContent  = fmtVal(totalVal);
+  document.getElementById('unshippedSummary').textContent = rows.length + ' orders shown';
+}
+
+function filterUnshipped(q) {
+  var query = q.toLowerCase().trim();
+  var filtered = query
+    ? UNSHIPPED.filter(function(o) {
+        return (o.name + o.customer + o.salesman + o.state).toLowerCase().includes(query);
+      })
+    : UNSHIPPED;
+  renderUnshippedTable(filtered);
+}
+
+function openUnshipped() {
+  document.getElementById('unshippedModal').style.display = 'block';
+  document.getElementById('unshippedBadge').textContent = UNSHIPPED.length;
+  document.getElementById('unshippedSearch').value = '';
+  renderUnshippedTable(UNSHIPPED);
+  document.body.style.overflow = 'hidden';
+}
+
+function closeUnshipped() {
+  document.getElementById('unshippedModal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Close modal on backdrop click
+document.getElementById('unshippedModal').addEventListener('click', function(e) {
+  if (e.target === this) closeUnshipped();
+});
 </script>
 
 <%- include('partials/foot') %>
