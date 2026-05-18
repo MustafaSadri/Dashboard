@@ -380,11 +380,14 @@ const agentName   = r => (r.agent?.name || r.counterparty?.name || '—');
 
 // Fetch customerorder state metadata → map of { id → name }
 async function getOrderStateMap() {
-  return cached('stateMap', 15 * 60 * 1000, async () => {
+  // cache key bumped to v2 to bust any previously cached empty map
+  return cached('stateMap_v2', 15 * 60 * 1000, async () => {
     try {
       const meta = await ms('/entity/customerorder/metadata');
       const map = {};
-      (meta.states || []).forEach(s => { map[s.id] = s.name; });
+      // MoySklad returns states as a collection {rows:[]} not a plain array
+      const statesArr = Array.isArray(meta.states) ? meta.states : (meta.states?.rows || []);
+      statesArr.forEach(s => { if (s.id && s.name) map[s.id] = s.name; });
       return map;
     } catch(_) { return {}; }
   });
@@ -431,10 +434,10 @@ app.get('/', async (req, res) => {
     const salesToday     = todayShipments.reduce((a, r) => a + (r.sum||0), 0);
     const shipmentsToday = todayShipments.length;
 
-    // Pending orders: has a state, not dispatched, not draft
+    // Pending orders: has a state, not dispatched (English or Russian), not draft
     const pendingOrders = orders.filter(r => {
       const s = resolveState(r, stateMap).toLowerCase();
-      return s && s !== 'dispatched' && s !== 'draft';
+      return s && !/dispatch|отгруз/i.test(s) && !/draft|черновик/i.test(s);
     });
     const pending = pendingOrders.length;
 
