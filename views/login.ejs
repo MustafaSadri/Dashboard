@@ -207,14 +207,24 @@
         </button>
       </div>
 
-      <button type="submit" class="btn-login">
-        <i class="fas fa-right-to-bracket" style="margin-right:7px"></i>Enter
+      <button type="submit" class="btn-login" id="loginBtn">
+        <i class="fas fa-right-to-bracket" style="margin-right:7px" id="loginIcon"></i><span id="loginText">Enter</span>
       </button>
     </form>
   </div>
 </div>
 
 <script>
+  document.querySelector('form').addEventListener('submit', function() {
+    var btn  = document.getElementById('loginBtn');
+    var icon = document.getElementById('loginIcon');
+    var txt  = document.getElementById('loginText');
+    btn.disabled = true;
+    btn.style.opacity = '.85';
+    icon.className = 'fas fa-spinner fa-spin';
+    txt.textContent = 'Please wait…';
+  });
+
   function togglePw() {
     var inp = document.getElementById('passcode');
     var eye = document.getElementById('pwEye');

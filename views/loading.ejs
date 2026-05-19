@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PLATINA — Loading</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <script>
+    var LIGHT_VARS = {
+      '--bg':'#f0f2fa','--bg2':'#ffffff','--bg3':'#e4e7f5',
+      '--text':'#1a1d2e','--text2':'#5a6180',
+      '--border':'rgba(108,99,255,.22)','--card-shadow':'0 4px 20px rgba(108,99,255,.09)'
+    };
+    var DARK_VARS = {
+      '--bg':'#0f1117','--bg2':'#1a1d2e','--bg3':'#252840',
+      '--text':'#e8eaf6','--text2':'#8891b5',
+      '--border':'rgba(108,99,255,.18)','--card-shadow':'0 4px 24px rgba(0,0,0,.4)'
+    };
+    function _applyVars(v){var r=document.documentElement;for(var k in v)r.style.setProperty(k,v[k]);}
+    (localStorage.getItem('platina_theme')==='dark')?_applyVars(DARK_VARS):(_applyVars(LIGHT_VARS),localStorage.setItem('platina_theme','light'));
+  </script>
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: var(--bg);
+    }
+    .wrap {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+    .logo-icon {
+      width: 56px; height: 56px;
+      background: linear-gradient(135deg, #6c63ff, #00d4aa);
+      border-radius: 16px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px; color: #fff; font-weight: 700;
+      box-shadow: 0 6px 24px rgba(108,99,255,.3);
+    }
+    .logo-text  { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: .3px; }
+    .logo-sub   { font-size: 11px; color: var(--text2); letter-spacing: 1.2px; text-transform: uppercase; margin-top: 2px; }
+    .spinner {
+      width: 44px; height: 44px;
+      border: 3px solid var(--border);
+      border-top-color: #6c63ff;
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .msg    { font-size: 15px; font-weight: 600; color: var(--text); }
+    .submsg { font-size: 12px; color: var(--text2); max-width: 260px; line-height: 1.5; }
+    .dots span {
+      display: inline-block;
+      animation: blink 1.4s infinite both;
+    }
+    .dots span:nth-child(2) { animation-delay: .2s; }
+    .dots span:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%,80%,100%{opacity:0} 40%{opacity:1} }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <div class="logo-icon">P</div>
+    <div class="logo-text" style="margin-top:10px">PLATINA</div>
+    <div class="logo-sub">Warehouse Intelligence</div>
+  </div>
+
+  <div class="spinner" id="spinner"></div>
+
+  <div>
+    <div class="msg">Preparing your dashboard<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+    <div class="submsg" id="submsg" style="margin-top:6px">Connecting to MoySklad and loading data</div>
+  </div>
+</div>
+
+<script>
+(async function() {
+  const sub = document.getElementById('submsg');
+  const spin = document.getElementById('spinner');
+
+  // Fallback redirect after 20 seconds regardless
+  const fallback = setTimeout(() => { window.location = '/'; }, 20000);
+
+  try {
+    const r = await fetch('/api/warm');
+    const d = await r.json();
+    clearTimeout(fallback);
+    if (d.ok) {
+      sub.textContent = 'Ready! Redirecting...';
+      spin.style.borderTopColor = '#00d4aa';
+      setTimeout(() => { window.location = '/'; }, 400);
+    } else {
+      window.location = '/';
+    }
+  } catch(e) {
+    clearTimeout(fallback);
+    sub.textContent = 'Taking longer than usual, redirecting...';
+    setTimeout(() => { window.location = '/'; }, 1500);
+  }
+})();
+</script>
+</body>
+</html>

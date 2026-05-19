@@ -21,9 +21,19 @@ async function saveTallySnapshot(data) {
   try {
     const db = await getMongoDb();
     if (!db) return;
+    const now = new Date();
+    const dateKey = now.toISOString().slice(0, 10); // 'YYYY-MM-DD'
+    const doc = { ...data, syncedAt: now };
+    // Keep 'main' for fallback reads
     await db.collection('tally_snapshots').replaceOne(
       { _id: 'main' },
-      { _id: 'main', ...data, syncedAt: new Date() },
+      { _id: 'main', ...doc },
+      { upsert: true }
+    );
+    // Save a dated daily record so history builds up
+    await db.collection('tally_snapshots').replaceOne(
+      { _id: dateKey },
+      { _id: dateKey, date: dateKey, ...doc },
       { upsert: true }
     );
   } catch(e) { console.error('Mongo save error:', e.message); }
@@ -34,6 +44,95 @@ async function loadTallySnapshot() {
     if (!db) return null;
     return await db.collection('tally_snapshots').findOne({ _id: 'main' });
   } catch(e) { console.error('Mongo load error:', e.message); return null; }
+}
+
+// ── Tally DB helpers (used by sync endpoint + /tally route) ──
+function parseLedgersFromXml(xml) {
+  const out = [];
+  for (const blk of blocks(xml, 'LEDGER')) {
+    const name   = attr(blk, 'NAME') || stripXml(getTag(blk, 'NAME'));
+    if (!name) continue;
+    const parent = stripXml(getTag(blk, 'PARENT'));
+    const pLow   = parent.toLowerCase();
+    const balStr = stripXml(getTag(blk, 'CLOSINGBALANCE'));
+    const bal    = parseTallyAmount(balStr);
+    const absBal = Math.abs(bal);
+    const isCr   = /\bCr\b/i.test(balStr);
+    let type = 'other';
+    if      (pLow.includes('sundry debtor'))    type = 'debtor';
+    else if (pLow.includes('sundry creditor'))  type = 'creditor';
+    else if (pLow.includes('sales account'))    type = 'sales';
+    else if (pLow.includes('purchase account')) type = 'purchase';
+    else if (pLow.includes('indirect expense')) type = 'expense';
+    else if (pLow.includes('direct expense'))   type = 'direct_expense';
+    else if (pLow.includes('bank account'))     type = 'bank';
+    else if (pLow === 'cash-in-hand' || pLow === 'cash in hand') type = 'cash';
+    let balance = isCr ? -absBal : absBal;
+    if (type === 'creditor') balance = isCr ? absBal : -absBal;
+    out.push({ _id: name, name, parent, type, balance });
+  }
+  return out;
+}
+
+function parseVouchersFromXml(xml) {
+  const out = [];
+  for (const blk of blocks(xml, 'VOUCHER')) {
+    const dateStr = formatTallyDate(stripXml(getTag(blk, 'DATE')));
+    if (!dateStr) continue;
+    const type   = stripXml(getTag(blk, 'VOUCHERTYPENAME')) || attr(blk, 'VCHTYPE');
+    if (!type)    continue;
+    const num    = stripXml(getTag(blk, 'VOUCHERNUMBER'));
+    const party  = stripXml(getTag(blk, 'PARTYLEDGERNAME'));
+    const amount = Math.abs(parseTallyAmount(getTag(blk, 'AMOUNT')));
+    const raw    = `${dateStr}|${type}|${num || (party + '|' + amount)}`;
+    const _id    = raw.replace(/[^a-zA-Z0-9|._-]/g, '_').slice(0, 120);
+    out.push({ _id, dateStr, date: new Date(dateStr), month: dateStr.slice(0,7),
+               type, voucherNumber: num, party, amount,
+               narration: stripXml(getTag(blk, 'NARRATION')) });
+  }
+  return out;
+}
+
+async function updateLastPaymentDates(db) {
+  // Journal = money received in this business (no Receipt voucher type used)
+  const receipts = await db.collection('tally_vouchers').aggregate([
+    { $match: { type: { $in: ['Receipt', 'Journal'] }, party: { $gt: '' } } },
+    { $sort:  { date: -1 } },
+    { $group: { _id: '$party', lastPaymentDate: { $first: '$dateStr' }, lastPaymentAmt: { $first: '$amount' } } }
+  ]).toArray();
+  for (const r of receipts) {
+    if (r._id) await db.collection('tally_ledgers').updateOne(
+      { _id: r._id }, { $set: { lastPaymentDate: r.lastPaymentDate, lastPaymentAmt: r.lastPaymentAmt } }
+    );
+  }
+  const purchases = await db.collection('tally_vouchers').aggregate([
+    { $match: { type: { $regex: /purchase/i } } },
+    { $sort:  { date: -1 } },
+    { $group: { _id: '$party', lastPurchaseDate: { $first: '$dateStr' }, lastPurchaseAmt: { $first: '$amount' } } }
+  ]).toArray();
+  for (const p of purchases) {
+    if (p._id) await db.collection('tally_ledgers').updateOne(
+      { _id: p._id }, { $set: { lastPurchaseDate: p.lastPurchaseDate, lastPurchaseAmt: p.lastPurchaseAmt } }
+    );
+  }
+}
+
+async function fetchTallyStock() {
+  const xml = await tallyCollection('StockItems', `
+<COLLECTION NAME="StockItems" ISMODIFY="No">
+  <TYPE>Stock Item</TYPE>
+  <FETCH>Name,Parent,ClosingBalance,ClosingValue</FETCH>
+</COLLECTION>`);
+  const items = [];
+  for (const blk of blocks(xml, 'STOCKITEM')) {
+    const name  = attr(blk, 'NAME') || stripXml(getTag(blk, 'NAME'));
+    if (!name) continue;
+    const qty   = Math.abs(parseTallyAmount(stripXml(getTag(blk, 'CLOSINGBALANCE'))));
+    const value = Math.abs(parseTallyAmount(stripXml(getTag(blk, 'CLOSINGVALUE'))));
+    if (qty > 0 || value > 0)
+      items.push({ _id: name, name, parent: stripXml(getTag(blk, 'PARENT')), qty, value, updatedAt: new Date() });
+  }
+  return items;
 }
 
 // ── Auth credentials ─────────────────────────────────────
@@ -69,9 +168,33 @@ app.get('/login', (req, res) => {
 app.post('/login', (req, res) => {
   if (req.body.passcode === PASSCODE) {
     req.session.loggedIn = true;
-    return res.redirect('/');
+    return res.redirect('/loading');
   }
   res.render('login', { error: 'Incorrect passcode. Try again.' });
+});
+
+app.get('/loading', (req, res) => {
+  if (!req.session.loggedIn) return res.redirect('/login');
+  res.render('loading');
+});
+
+// Pre-warm all caches so the dashboard loads instantly after login
+app.get('/api/warm', async (req, res) => {
+  if (!req.session.loggedIn) return res.status(401).json({ ok: false });
+  try {
+    await Promise.allSettled([
+      common(),
+      getStock(),
+      getAllOrders(),
+      getRecentDemands(),
+      getOrderStateMap(),
+      getProfitByProduct(monthStart()),
+      getProfitByCounterparty(monthStart()),
+    ]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: true, warn: e.message });
+  }
 });
 
 app.get('/logout', (req, res) => {
@@ -108,15 +231,21 @@ app.use((req, res, next) => {
 });
 
 // ── Moysklad API helper ──────────────────────────────────
-async function ms(path) {
-  const r = await fetch(MS_BASE + path, {
-    headers: {
-      'Authorization': 'Bearer ' + TOKEN,
-      'Accept': 'application/json;charset=utf-8'
+async function ms(path, _retries = 3) {
+  for (let attempt = 0; attempt <= _retries; attempt++) {
+    const r = await fetch(MS_BASE + path, {
+      headers: {
+        'Authorization': 'Bearer ' + TOKEN,
+        'Accept': 'application/json;charset=utf-8'
+      }
+    });
+    if (r.status === 429 && attempt < _retries) {
+      await new Promise(res => setTimeout(res, Math.pow(2, attempt) * 1000));
+      continue;
     }
-  });
-  if (!r.ok) throw new Error('MS API ' + r.status + ' ' + path);
-  return r.json();
+    if (!r.ok) throw new Error('MS API ' + r.status + ' ' + path);
+    return r.json();
+  }
 }
 
 // Fetch all pages from a Moysklad list endpoint (handles pagination automatically)
@@ -321,10 +450,16 @@ function tallyDate(s) {
 
 // ── In-memory TTL cache ───────────────────────────────────
 const _cache = new Map();
+const _inflight = new Map();
 function cached(key, ttlMs, fn) {
   const hit = _cache.get(key);
   if (hit && Date.now() - hit.t < ttlMs) return Promise.resolve(hit.v);
-  return fn().then(v => { _cache.set(key, { v, t: Date.now() }); return v; });
+  if (_inflight.has(key)) return _inflight.get(key);
+  const p = fn()
+    .then(v => { _cache.set(key, { v, t: Date.now() }); _inflight.delete(key); return v; })
+    .catch(e => { _inflight.delete(key); throw e; });
+  _inflight.set(key, p);
+  return p;
 }
 
 // ── Common data (employee, date, global stock alerts) ────
@@ -374,7 +509,7 @@ const getRecentDemands = () =>
   cached('demands_200', 90*1000, () => ms('/entity/demand?limit=200&order=moment,desc').then(r => r.rows || []));
 
 const getAllOrders = () =>
-  cached('orders_all', 2*60*1000, () => ms('/entity/customerorder?limit=1000&order=moment,desc&expand=state').then(r => r.rows || []));
+  cached('orders_all_v2', 2*60*1000, () => ms('/entity/customerorder?limit=1000&order=moment,desc').then(r => r.rows || []));
 
 const getOrdersFromDec25 = () =>
   cached('orders_dec25', 5*60*1000, () =>
@@ -466,10 +601,10 @@ app.get('/', async (req, res) => {
     const salesToday     = todayShipments.reduce((a, r) => a + (r.sum||0), 0);
     const shipmentsToday = todayShipments.length;
 
-    // Pending orders: has a state, not dispatched (English or Russian), not draft
+    // Pending = everything that is NOT dispatched (includes draft, new, accepted, ready)
     const pendingOrders = orders.filter(r => {
       const s = resolveState(r, stateMap).toLowerCase();
-      return s && !/dispatch|отгруз/i.test(s) && !/draft|черновик/i.test(s);
+      return !/dispatch|отгруз/i.test(s);
     });
     const pending = pendingOrders.length;
 
@@ -538,7 +673,7 @@ app.get('/orders-status', async (req, res) => {
     const ordKey = `orders_6mo_${localDateStr(sixAgo)}`;
     const demKey = `demands_6mo_${localDateStr(sixAgo)}`;
     const [rawOrders, demands, stateMap] = await Promise.all([
-      cached(ordKey, 2*60*1000, () => msAll(`/entity/customerorder?filter=${enc(df)}&order=moment,desc&expand=agent,store,state`).then(r => r.rows || [])),
+      cached(ordKey, 2*60*1000, () => msAll(`/entity/customerorder?filter=${enc(df)}&order=moment,desc&expand=agent,store`).then(r => r.rows || [])),
       cached(demKey, 2*60*1000, () => msAll(`/entity/demand?filter=${enc(df)}&order=moment,desc`).then(r => r.rows || [])),
       getOrderStateMap(),
     ]);
@@ -596,7 +731,8 @@ app.get('/orders-status', async (req, res) => {
         id: r.id, name: r.name || '—',
         customer: r.agent?.name || '—',
         salesman,
-        state: state || 'Draft', stateL,
+        state: state || (r.state ? '—' : 'Draft'), stateL,
+        hasState: !!r.state,
         dispatched, daysSince,
         sum: (r.sum || 0) / 100,
         createdDate, expDate,
@@ -612,7 +748,7 @@ app.get('/orders-status', async (req, res) => {
     const accCount   = orders.filter(o => /accept|принят|подтверж/i.test(o.stateL)).length;
     const readyCount = orders.filter(o => /ready|готов/i.test(o.stateL)).length;
     const dispCount  = orders.filter(o => o.dispatched || /dispatch|отгруз/i.test(o.stateL)).length;
-    const draftCount = orders.filter(o => !o.stateL || /draft|черновик/i.test(o.stateL)).length;
+    const draftCount = orders.filter(o => !o.hasState || /^draft$|черновик/i.test(o.stateL)).length;
     const delayCount = orders.filter(o => o.delayDays > 0).length;
     const withTime   = orders.filter(o => o.dispatchTime !== null);
     const avgDispatch = withTime.length > 0
@@ -2324,13 +2460,51 @@ async function fetchLiveTallyData() {
 }
 
 app.get('/tally', async (req, res) => {
-  const c = await common();
+  const c   = await common();
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+
+  // ── Discover which months actually have data in MongoDB ──────
+  let monthsWithData = [];
+  const dbEarly = await getMongoDb();
+  if (dbEarly) {
+    monthsWithData = (await dbEarly.collection('tally_vouchers').distinct('month')).sort();
+  }
+
+  // Build dropdown: only months with data + current month (always shown for syncing)
+  let dropdownMonths = [...new Set([...monthsWithData, currentMonth])].sort().reverse();
+  if (dropdownMonths.length === 0) {
+    // Fallback: show last 12 months so user can still sync
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      dropdownMonths.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+    }
+  }
+  const monthOpts = dropdownMonths.map(v => {
+    const d = new Date(v + '-02');
+    return { value: v, label: d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) };
+  });
+
+  // Default to latest month with data (not current month if it has no data)
+  const latestWithData = monthsWithData.length > 0 ? monthsWithData[monthsWithData.length - 1] : currentMonth;
+  const requestedMonth = (req.query.month || '').slice(0, 7);
+  let selMonth;
+  if (requestedMonth) {
+    selMonth = requestedMonth; // user explicitly chose a month — honour it
+  } else {
+    selMonth = latestWithData; // default: latest month with real data
+  }
+
+  // ── Live Tally data (balances) ──────────────────────────────
   let result;
   let fromCache = false;
   let syncedAt  = null;
-
   try {
     result = await fetchLiveTallyData();
+    if (result.connected) {
+      saveTallySnapshot(result).catch(e => console.error('Mongo save:', e.message));
+      syncedAt = now;
+    }
   } catch(e) {
     result = {
       connected: false, company: TALLY_COMPANY || '',
@@ -2342,33 +2516,228 @@ app.get('/tally', async (req, res) => {
       cashBalance: 0, bankBalance: 0, supplierDues: 0,
       debtors: [], creditors: [], recentVouchers: []
     };
-    // Try to load cached data from MongoDB
     const snapshot = await loadTallySnapshot();
     if (snapshot) {
       fromCache = true;
       syncedAt  = snapshot.syncedAt;
-      result = { ...result, ...snapshot,
-        connected: false, error: result.error,
-        _id: undefined, syncedAt: undefined
-      };
+      result    = { ...result, ...snapshot, connected: false, error: result.error, _id: undefined, syncedAt: undefined };
+    } else {
+      // No snapshot yet — try to read syncedAt from MongoDB metadata
+      try {
+        const dbMeta = await getMongoDb();
+        if (dbMeta) {
+          const meta = await dbMeta.collection('tally_snapshots').findOne({ _id: 'main' });
+          if (meta?.syncedAt) { fromCache = true; syncedAt = meta.syncedAt; }
+        }
+      } catch(_) {}
     }
   }
 
-  // Auto-save to MongoDB whenever Tally is live (no second request needed)
-  if (result.connected) {
-    saveTallySnapshot(result).catch(e => console.error('Mongo save:', e.message));
-    syncedAt = new Date();
+  // ── MongoDB: period + enhanced data ────────────────────────
+  let periodSales = 0, periodPurchases = 0, periodCollections = 0, periodPayments = 0;
+  let periodVouchers   = [];
+  let monthlyTrend     = [];
+  let debtors          = result.debtors   || [];
+  let creditors        = result.creditors || [];
+  let expenseBreakdown = [];
+  let topCustSales     = [];
+  let topSuppPurchase  = [];
+  let stockItems       = [];
+  let totalStockValue  = 0;
+  let hasDbData        = false;
+
+  const db = await getMongoDb();
+  if (db) {
+    hasDbData = true;
+
+    // Period vouchers (selected month)
+    const pv = await db.collection('tally_vouchers').find({ month: selMonth }).sort({ date: -1 }).toArray();
+    periodVouchers    = pv.slice(0, 100);
+    const isCollection = v => (v.type === 'Journal' || /receipt/i.test(v.type)) && !/stock journal/i.test(v.type);
+    periodSales       = pv.filter(v => /sales/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
+    periodPurchases   = pv.filter(v => /purchase/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
+    periodCollections = pv.filter(isCollection).reduce((s,v) => s + (v.amount||0), 0);
+    periodPayments    = pv.filter(v => /payment/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
+
+    // Monthly trend — last 6 months
+    const sixAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    const trend  = await db.collection('tally_vouchers').aggregate([
+      { $match: { date: { $gte: sixAgo } } },
+      { $group: { _id: { month: '$month', type: '$type' }, total: { $sum: '$amount' } } }
+    ]).toArray();
+    const tMap = {};
+    trend.forEach(row => {
+      const m = row._id.month;
+      if (!tMap[m]) tMap[m] = { month: m, sales: 0, collections: 0, purchases: 0, payments: 0 };
+      if (/sales/i.test(row._id.type))    tMap[m].sales       += row.total;
+      if (row._id.type === 'Journal' || /receipt/i.test(row._id.type)) tMap[m].collections += row.total;
+      if (/purchase/i.test(row._id.type)) tMap[m].purchases   += row.total;
+      if (/payment/i.test(row._id.type))  tMap[m].payments    += row.total;
+    });
+    monthlyTrend = Object.values(tMap).sort((a,b) => a.month.localeCompare(b.month));
+
+    // Debtors + creditors with last payment dates from tally_ledgers
+    const allLedgers = await db.collection('tally_ledgers')
+      .find({ type: { $in: ['debtor','creditor'] } }).toArray();
+    const dbDebtors   = allLedgers.filter(l => l.type === 'debtor'   && l.balance > 0).sort((a,b) => b.balance - a.balance);
+    const dbCreditors = allLedgers.filter(l => l.type === 'creditor' && l.balance > 0).sort((a,b) => b.balance - a.balance);
+    if (dbDebtors.length)   debtors   = dbDebtors;
+    if (dbCreditors.length) creditors = dbCreditors;
+
+    // Expense breakdown (YTD ledger balances)
+    expenseBreakdown = await db.collection('tally_ledgers')
+      .find({ type: 'expense', balance: { $gt: 0 } }).sort({ balance: -1 }).toArray();
+
+    // Top customers by collections this period (Journal = money received)
+    topCustSales = await db.collection('tally_vouchers').aggregate([
+      { $match: { month: selMonth, type: { $in: ['Sales', 'Journal', 'Receipt'] }, party: { $gt: '' } } },
+      { $group: { _id: '$party', total: { $sum: '$amount' } } },
+      { $sort: { total: -1 } }, { $limit: 10 }
+    ]).toArray();
+
+    // Top suppliers by purchases this period
+    topSuppPurchase = await db.collection('tally_vouchers').aggregate([
+      { $match: { month: selMonth, type: { $regex: /purchase/i }, party: { $gt: '' } } },
+      { $group: { _id: '$party', total: { $sum: '$amount' } } },
+      { $sort: { total: -1 } }, { $limit: 10 }
+    ]).toArray();
+
+    // Stock from tally_stock collection
+    stockItems      = await db.collection('tally_stock').find({}).sort({ value: -1 }).limit(25).toArray();
+    totalStockValue = stockItems.reduce((s, i) => s + (i.value || 0), 0);
+
+    hasDbData = monthsWithData.length > 0;
+
+    // YTD fallback: if Tally is offline and snapshot has no totals, compute from MongoDB
+    if (!result.connected && (!result.totalSales || result.totalSales === 0)) {
+      const fyStart = now.getMonth() >= 3
+        ? `${now.getFullYear()}-04-01`
+        : `${now.getFullYear() - 1}-04-01`;
+      const ytd = await db.collection('tally_vouchers')
+        .find({ dateStr: { $gte: fyStart } }).toArray();
+      if (ytd.length > 0) {
+        result.totalSales     = ytd.filter(v => /sales/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
+        result.totalPurchases = ytd.filter(v => /purchase/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
+        result.totalExpenses  = ytd.filter(v => /expense/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
+      }
+    }
   }
 
-  res.render('tally', { ...c, active: 'tally', ...result, fromCache, syncedAt });
+  const totalOutstanding = debtors.reduce((s,d) => s + (d.balance||0), 0);
+  const supplierDues     = creditors.reduce((s,c) => s + (c.balance||0), 0);
+
+  // Receivables aging buckets (from lastPaymentDate as proxy)
+  const aging = { a0:{count:0,amt:0}, a30:{count:0,amt:0}, a60:{count:0,amt:0}, a90:{count:0,amt:0} };
+  debtors.forEach(d => {
+    const ds = d.lastPaymentDate
+      ? Math.floor((Date.now() - new Date(d.lastPaymentDate).getTime()) / 86400000)
+      : 999;
+    const key = ds <= 30 ? 'a0' : ds <= 60 ? 'a30' : ds <= 90 ? 'a60' : 'a90';
+    aging[key].count++;
+    aging[key].amt += d.balance || 0;
+  });
+
+  res.render('tally', {
+    ...c, active: 'tally', ...result,
+    fromCache, syncedAt, selMonth, monthOpts,
+    periodSales, periodPurchases, periodCollections, periodPayments,
+    periodVouchers, monthlyTrend,
+    debtors, creditors, totalOutstanding, supplierDues,
+    expenseBreakdown, topCustSales, topSuppPurchase,
+    stockItems, totalStockValue, aging, hasDbData,
+    monthsWithData
+  });
 });
 
-// Sync button API — just re-render (data was already saved on page load)
+// Diagnostic — show all voucher types in DB so we can tune filters
+app.get('/api/tally/voucher-types', async (req, res) => {
+  const db = await getMongoDb();
+  if (!db) return res.json({ error: 'No DB' });
+  const types = await db.collection('tally_vouchers').aggregate([
+    { $group: { _id: '$type', count: { $sum: 1 }, total: { $sum: '$amount' } } },
+    { $sort: { count: -1 } }
+  ]).toArray();
+  res.json(types);
+});
+
+// Sync button — full save: snapshot + ledgers + current+prev month vouchers + stock
 app.post('/api/tally/sync', async (req, res) => {
   try {
+    const syncedAt = new Date();
+    const today    = syncedAt.toISOString().slice(0, 10);
+
+    // Current month start
+    const curMonthStart = `${syncedAt.getFullYear()}-${String(syncedAt.getMonth()+1).padStart(2,'0')}-01`;
+    // Previous month start (for catching late/backdated entries)
+    const prevD = new Date(syncedAt.getFullYear(), syncedAt.getMonth() - 1, 1);
+    const prevMonthStart = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}-01`;
+    const prevMonthEnd   = new Date(syncedAt.getFullYear(), syncedAt.getMonth(), 0).toISOString().slice(0,10);
+
+    // ── 1. Live Tally summary snapshot ────────────────────────
     const data = await fetchLiveTallyData();
-    await saveTallySnapshot(data);
-    res.json({ ok: true, syncedAt: new Date() });
+    await saveTallySnapshot({ ...data, syncedAt });
+
+    const db = await getMongoDb();
+    if (db) {
+      // ── 2. All ledgers (current balances) ───────────────────
+      const ledXml = await tallyCollection('SyncLedgers', `
+<COLLECTION NAME="SyncLedgers" ISMODIFY="No">
+  <TYPE>Ledger</TYPE>
+  <FETCH>Name,Parent,ClosingBalance</FETCH>
+</COLLECTION>`);
+      const ledgers = parseLedgersFromXml(ledXml);
+      if (ledgers.length > 0) {
+        const ops = ledgers.map(l => ({ replaceOne: { filter: { _id: l._id }, replacement: { ...l, updatedAt: syncedAt }, upsert: true } }));
+        await db.collection('tally_ledgers').bulkWrite(ops, { ordered: false });
+      }
+
+      // ── 3. Current month vouchers (full, not just today) ────
+      const vXmlCur = await tallyCollection('SyncVouchersCur', `
+<COLLECTION NAME="SyncVouchersCur" ISMODIFY="No">
+  <TYPE>Voucher</TYPE>
+  <FETCH>Date,VoucherNumber,VoucherTypeName,PartyLedgerName,Amount,Narration</FETCH>
+</COLLECTION>`, { fromDate: curMonthStart, toDate: today });
+      const vCur = parseVouchersFromXml(vXmlCur);
+
+      // ── 4. Previous month vouchers (catches late entries) ───
+      const vXmlPrev = await tallyCollection('SyncVouchersPrev', `
+<COLLECTION NAME="SyncVouchersPrev" ISMODIFY="No">
+  <TYPE>Voucher</TYPE>
+  <FETCH>Date,VoucherNumber,VoucherTypeName,PartyLedgerName,Amount,Narration</FETCH>
+</COLLECTION>`, { fromDate: prevMonthStart, toDate: prevMonthEnd });
+      const vPrev = parseVouchersFromXml(vXmlPrev);
+
+      const allVouchers = [...vCur, ...vPrev];
+      if (allVouchers.length > 0) {
+        const ops = allVouchers.map(v => ({ replaceOne: { filter: { _id: v._id }, replacement: v, upsert: true } }));
+        await db.collection('tally_vouchers').bulkWrite(ops, { ordered: false });
+      }
+
+      // ── 5. Update last payment dates ────────────────────────
+      await updateLastPaymentDates(db);
+
+      // ── 6. Stock items ───────────────────────────────────────
+      try {
+        const stockItems = await fetchTallyStock();
+        if (stockItems.length > 0) {
+          const ops = stockItems.map(s => ({ replaceOne: { filter: { _id: s._id }, replacement: s, upsert: true } }));
+          await db.collection('tally_stock').bulkWrite(ops, { ordered: false });
+        }
+      } catch(e) { console.error('Stock sync error:', e.message); }
+
+      // ── 7. Save sync metadata so offline mode knows last sync time
+      await db.collection('tally_snapshots').updateOne(
+        { _id: 'main' },
+        { $set: { syncedAt, ledgerCount: ledgers.length, voucherCount: allVouchers.length } },
+        { upsert: true }
+      );
+    }
+
+    res.json({
+      ok: true, syncedAt,
+      dateKey: today,
+      label: syncedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+    });
   } catch(e) {
     res.status(500).json({ ok: false, error: e.message });
   }
