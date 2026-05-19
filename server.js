@@ -509,7 +509,7 @@ const getRecentDemands = () =>
   cached('demands_200', 90*1000, () => ms('/entity/demand?limit=200&order=moment,desc').then(r => r.rows || []));
 
 const getAllOrders = () =>
-  cached('orders_all_v2', 2*60*1000, () => ms('/entity/customerorder?limit=1000&order=moment,desc').then(r => r.rows || []));
+  cached('orders_all_v3', 2*60*1000, () => ms('/entity/customerorder?limit=1000&order=moment,desc&expand=state').then(r => r.rows || []));
 
 const getOrdersFromDec25 = () =>
   cached('orders_dec25', 5*60*1000, () =>
@@ -2480,9 +2480,14 @@ app.get('/tally', async (req, res) => {
       dropdownMonths.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
     }
   }
+  // Helper: Indian FY label for a YYYY-MM string
+  const fyLabel = v => {
+    const [y, m] = v.split('-').map(Number);
+    return m >= 4 ? `FY ${y}-${String(y+1).slice(2)}` : `FY ${y-1}-${String(y).slice(2)}`;
+  };
   const monthOpts = dropdownMonths.map(v => {
     const d = new Date(v + '-02');
-    return { value: v, label: d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) };
+    return { value: v, label: d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }), fy: fyLabel(v) };
   });
 
   // Default to latest month with data (not current month if it has no data)
@@ -2540,6 +2545,7 @@ app.get('/tally', async (req, res) => {
   let debtors          = result.debtors   || [];
   let creditors        = result.creditors || [];
   let expenseBreakdown = [];
+  let openingStock = 0, closingStock = 0;
   let topCustSales     = [];
   let topSuppPurchase  = [];
   let stockItems       = [];
@@ -2606,6 +2612,20 @@ app.get('/tally', async (req, res) => {
     stockItems      = await db.collection('tally_stock').find({}).sort({ value: -1 }).limit(25).toArray();
     totalStockValue = stockItems.reduce((s, i) => s + (i.value || 0), 0);
 
+    // Opening & closing stock for selected month (from daily history snapshots)
+    const monthEnd   = selMonth + '-31'; // past end of month, fine for lte
+    const monthStart2 = selMonth + '-01';
+    const [closingSnap, openingSnap] = await Promise.all([
+      // Closing = latest snapshot on or before end of selected month
+      db.collection('tally_stock_history')
+        .find({ _id: { $lte: monthEnd } }).sort({ _id: -1 }).limit(1).toArray(),
+      // Opening = latest snapshot strictly before the 1st of selected month
+      db.collection('tally_stock_history')
+        .find({ _id: { $lt: monthStart2 } }).sort({ _id: -1 }).limit(1).toArray(),
+    ]);
+    closingStock = closingSnap[0]?.totalValue ?? totalStockValue;
+    openingStock = openingSnap[0]?.totalValue ?? 0;
+
     hasDbData = monthsWithData.length > 0;
 
     // YTD fallback: if Tally is offline and snapshot has no totals, compute from MongoDB
@@ -2644,7 +2664,7 @@ app.get('/tally', async (req, res) => {
     periodVouchers, monthlyTrend,
     debtors, creditors, totalOutstanding, supplierDues,
     expenseBreakdown, topCustSales, topSuppPurchase,
-    stockItems, totalStockValue, aging, hasDbData,
+    stockItems, totalStockValue, openingStock, closingStock, aging, hasDbData,
     monthsWithData
   });
 });
@@ -2716,12 +2736,19 @@ app.post('/api/tally/sync', async (req, res) => {
       // ── 5. Update last payment dates ────────────────────────
       await updateLastPaymentDates(db);
 
-      // ── 6. Stock items ───────────────────────────────────────
+      // ── 6. Stock items + save daily stock value snapshot ────
       try {
         const stockItems = await fetchTallyStock();
         if (stockItems.length > 0) {
           const ops = stockItems.map(s => ({ replaceOne: { filter: { _id: s._id }, replacement: s, upsert: true } }));
           await db.collection('tally_stock').bulkWrite(ops, { ordered: false });
+          // Save daily stock value so we can compute opening/closing stock per month
+          const totalValue = stockItems.reduce((s, i) => s + (i.value || 0), 0);
+          await db.collection('tally_stock_history').replaceOne(
+            { _id: today },
+            { _id: today, date: syncedAt, month: today.slice(0, 7), totalValue },
+            { upsert: true }
+          );
         }
       } catch(e) { console.error('Stock sync error:', e.message); }
 

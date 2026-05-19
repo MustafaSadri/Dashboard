@@ -150,18 +150,16 @@ async function fetchLedgers() {
   return rows;
 }
 
-async function fetchVouchers(fromDate, toDate) {
-  process.stdout.write(`  Vouchers  ${fromDate} → ${toDate} ... `);
-  const from8 = toTallyDate(fromDate);
-  const to8   = toTallyDate(toDate);
+async function fetchVouchers() {
+  process.stdout.write(`  Fetching all vouchers ... `);
+  // Note: SVFROMDATE/SVTODATE is ignored by this TallyPrime instance — fetch all and let
+  // MongoDB upsert handle deduplication across runs.
   const xml = await tallyPost(envelope('SyncVouchers', `
 <COLLECTION NAME="SyncVouchers" ISMODIFY="No">
   <TYPE>Voucher</TYPE>
   <FETCH>Date,VoucherNumber,VoucherTypeName,PartyLedgerName,Amount,Narration</FETCH>
-  <FILTER>VchDateRange</FILTER>
-</COLLECTION>
-<SYSTEM TYPE="Formulae" NAME="VchDateRange">$$IsWithinPeriod:$Date:${from8}:${to8}</SYSTEM>`, fromDate, toDate));
-  const rows = parseVouchers(xml).filter(v => v.dateStr >= fromDate && v.dateStr <= toDate);
+</COLLECTION>`));
+  const rows = parseVouchers(xml);
   console.log(`${rows.length} vouchers`);
   return rows;
 }
@@ -231,27 +229,21 @@ async function main() {
     console.log(`           ✓  ${r.upsertedCount} new · ${r.modifiedCount} updated\n`);
   }
 
-  // 5. Sync vouchers — 3 financial years in batches
-  //    India FY starts 1 April.  Today = May 2026 → FY 2026-27 in progress.
+  // 5. Sync vouchers — fetch all at once (SVFROMDATE/SVTODATE ignored by this TallyPrime)
   console.log('[ 2 / 4 ]  Syncing vouchers ...');
-  const today   = todayISO();
-  const periods = [
-    { from: '2024-01-01', to: '2024-03-31', label: 'Jan–Mar 2024' },
-    { from: '2024-04-01', to: '2025-03-31', label: 'FY 2024-25' },
-    { from: '2025-04-01', to: '2026-03-31', label: 'FY 2025-26' },
-    { from: '2026-04-01', to: today,        label: 'FY 2026-27 (current)' },
-  ].filter(p => p.from <= today);
-
-  let totalV = 0;
-  for (const p of periods) {
-    console.log(`           Period: ${p.label}`);
-    const vouchers = await fetchVouchers(p.from, p.to <= today ? p.to : today);
-    if (vouchers.length > 0) {
-      const ops = vouchers.map(v => ({ replaceOne: { filter: { _id: v._id }, replacement: v, upsert: true } }));
-      await db.collection('tally_vouchers').bulkWrite(ops, { ordered: false });
-      totalV += vouchers.length;
+  const vouchers = await fetchVouchers();
+  if (vouchers.length > 0) {
+    const ops = vouchers.map(v => ({ replaceOne: { filter: { _id: v._id }, replacement: v, upsert: true } }));
+    const BATCH = 500;
+    for (let i = 0; i < ops.length; i += BATCH) {
+      await db.collection('tally_vouchers').bulkWrite(ops.slice(i, i + BATCH), { ordered: false });
     }
   }
+  const totalV = vouchers.length;
+  // Show breakdown by month
+  const byMonth = {};
+  vouchers.forEach(v => { byMonth[v.month] = (byMonth[v.month] || 0) + 1; });
+  Object.keys(byMonth).sort().forEach(m => console.log(`           ${m}: ${byMonth[m]} vouchers`));
   console.log(`           ✓  ${totalV} total vouchers saved\n`);
 
   // 6. Compute last payment / purchase dates from vouchers

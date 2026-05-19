@@ -13,7 +13,7 @@
       var d = new Date(selMonth + '-02');
       return d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
     })();
-    var grossProfit = periodSales - periodPurchases;
+    var grossProfit = periodSales - periodPurchases - openingStock + closingStock;
     var ytdProfit   = totalSales - totalPurchases - totalExpenses;
     var grossMargin = periodSales > 0 ? Math.round(grossProfit / periodSales * 100) : 0;
   %>
@@ -41,9 +41,14 @@
           <i class="fas fa-calendar-days" style="font-size:11px"></i>
           <select onchange="window.location='/tally?month='+this.value"
             style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:5px 10px;font-size:12px;cursor:pointer;outline:none">
-            <% monthOpts.forEach(function(m){ %>
-            <option value="<%- m.value %>" <%- m.value===selMonth?'selected':'' %>><%- m.label %></option>
-            <% }) %>
+            <%
+              var lastFy = null;
+              monthOpts.forEach(function(m) {
+                if (m.fy !== lastFy) { lastFy = m.fy; %>
+                  <optgroup label="── <%- m.fy %> ──" style="color:var(--text2);font-size:11px">
+                <% } %>
+                <option value="<%- m.value %>" <%- m.value===selMonth?'selected':'' %>><%- m.label %></option>
+            <% }); %>
           </select>
         </div>
         <% if(connected){ %>
@@ -97,7 +102,12 @@
     <div class="stat-card <%- grossProfit>=0?'success':'danger' %>">
       <div class="stat-label">Gross Profit</div>
       <div class="stat-value"><%- fmtShort(Math.abs(grossProfit)) %></div>
-      <div class="stat-sub">Margin <%- grossMargin %>%</div>
+      <div class="stat-sub" title="Sales − Purchases − Opening Stock + Closing Stock">
+        Margin <%- grossMargin %>%
+        <% if(openingStock > 0 || closingStock > 0){ %>
+        · OS <%- fmtShort(openingStock) %> / CS <%- fmtShort(closingStock) %>
+        <% } %>
+      </div>
       <i class="fas fa-chart-pie stat-icon"></i>
     </div>
     <div class="stat-card" onclick="document.getElementById('voucherSection').scrollIntoView({behavior:'smooth'});setTimeout(function(){filterV('receipt');},400);" style="cursor:pointer" title="Click to view collection entries">
