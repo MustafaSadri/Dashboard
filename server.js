@@ -1569,515 +1569,360 @@ app.get('/stock-alerts', (req, res) => res.redirect('/inventory'));
 const Anthropic = require('@anthropic-ai/sdk');
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// ── MongoDB period parser (returns YYYY-MM-DD strings) ────────────────────
+function parsePeriodMongo(period) {
+  const now = new Date();
+  if (!period || period === 'this_month') {
+    return { from: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`, to: todayStr() };
+  }
+  if (period === 'today')  return { from: todayStr(), to: todayStr() };
+  if (period === 'this_year') return { from: `${now.getFullYear()}-01-01`, to: todayStr() };
+  if (period === 'all')    return { from: '2024-12-01', to: todayStr() };
+  if (period === 'last_month') {
+    const p = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const l = new Date(now.getFullYear(), now.getMonth(), 0);
+    return { from: `${p.getFullYear()}-${String(p.getMonth()+1).padStart(2,'0')}-01`, to: localDateStr(l) };
+  }
+  const ym = period.match(/^(\d{4})-(\d{2})$/);
+  if (ym) {
+    const [, yr, mo] = ym;
+    return { from: `${yr}-${mo}-01`, to: localDateStr(new Date(+yr, +mo, 0)) };
+  }
+  const rng = period.match(/^(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})$/);
+  if (rng) return { from: rng[1], to: rng[2] };
+  return { from: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`, to: todayStr() };
+}
+
+// ── Chatbot tool: query MoySklad data from MongoDB ────────────────────────
+async function toolQueryMoysklad({ data_type = 'demands', period = 'this_month', group_by = 'product', filter, top_n = 15, sort_by = 'revenue' } = {}) {
+  try {
+    const db = await getMongoDb();
+    if (!db) return JSON.stringify({ error: 'MongoDB not connected' });
+    const { from, to } = parsePeriodMongo(period);
+    const N  = Math.min(+top_n || 15, 200);
+    const sf = sort_by === 'quantity' ? 'qty' : sort_by === 'orders' ? 'orders' : 'revenue';
+
+    // ── STOCK ──
+    if (data_type === 'stock') {
+      let q = {};
+      if (filter?.startsWith('status:'))  q.status = filter.slice(7);
+      else if (filter?.startsWith('product:')) q.name = { $regex: filter.slice(8), $options: 'i' };
+      else if (filter) q.name = { $regex: filter, $options: 'i' };
+      const items = await db.collection('ms_stock').find(q).sort({ quantity: -1 }).limit(300).toArray();
+      return JSON.stringify({
+        data_type: 'stock', syncNote: 'Stock snapshot from last sync',
+        summary: { total: items.length, out: items.filter(s=>s.status==='out').length, low: items.filter(s=>s.status==='low').length, ok: items.filter(s=>s.status==='ok').length },
+        items: items.slice(0, 100).map(s => ({ name: s.name, qty: s.quantity, status: s.status, price: Math.round(s.price) }))
+      });
+    }
+
+    // ── CUSTOMERS LIST ──
+    if (data_type === 'customers') {
+      const q = filter ? { name: { $regex: filter, $options: 'i' } } : {};
+      const rows = await db.collection('ms_customers').find(q).limit(N).toArray();
+      return JSON.stringify({ data_type: 'customers', count: rows.length, customers: rows.map(r => ({ name: r.name, code: r.code, phone: r.phone, email: r.email })) });
+    }
+
+    // ── ORDERS ──
+    if (data_type === 'orders') {
+      const match = { date: { $gte: from, $lte: to } };
+      if (filter?.startsWith('customer:')) match.customerName = { $regex: filter.slice(9), $options: 'i' };
+      const orders = await db.collection('ms_orders').find(match).sort({ date: -1 }).limit(N).toArray();
+      const agg = await db.collection('ms_orders').aggregate([{ $match: match }, { $group: { _id: null, revenue: { $sum: '$amountRub' }, count: { $sum: 1 } } }]).toArray();
+      return JSON.stringify({ period, data_type: 'orders', total: agg[0] || {}, orders: orders.map(o => ({ name: o.name, date: o.date, customer: o.customerName, amount: Math.round(o.amountRub), state: o.stateName })) });
+    }
+
+    // ── DEMANDS — aggregations ──
+    const dateMatch = { date: { $gte: from, $lte: to } };
+    if (filter?.startsWith('customer:')) dateMatch.customerName = { $regex: filter.slice(9), $options: 'i' };
+    const productFilter = filter?.startsWith('product:') ? filter.slice(8) : (!filter?.includes(':') && filter ? filter : null);
+
+    if (group_by === 'none' || group_by === 'total') {
+      const r = await db.collection('ms_demands').aggregate([{ $match: dateMatch }, { $group: { _id: null, revenue: { $sum: '$amountRub' }, shipments: { $sum: 1 } } }]).toArray();
+      return JSON.stringify({ period, from, to, revenue: Math.round(r[0]?.revenue || 0), shipments: r[0]?.shipments || 0 });
+    }
+    if (group_by === 'customer') {
+      const rows = await db.collection('ms_demands').aggregate([
+        { $match: dateMatch },
+        { $group: { _id: '$customerName', revenue: { $sum: '$amountRub' }, orders: { $sum: 1 } } },
+        { $sort: { [sf === 'orders' ? 'orders' : 'revenue']: -1 } }, { $limit: N }
+      ]).toArray();
+      return JSON.stringify({ period, group_by: 'customer', results: rows.map(r => ({ customer: r._id || '—', revenue: Math.round(r.revenue), orders: r.orders })) });
+    }
+    if (group_by === 'day') {
+      const rows = await db.collection('ms_demands').aggregate([
+        { $match: dateMatch },
+        { $group: { _id: '$date', revenue: { $sum: '$amountRub' }, shipments: { $sum: 1 } } },
+        { $sort: { _id: 1 } }
+      ]).toArray();
+      return JSON.stringify({ period, group_by: 'day', results: rows.map(r => ({ date: r._id, revenue: Math.round(r.revenue), shipments: r.shipments })) });
+    }
+    if (group_by === 'month') {
+      const rows = await db.collection('ms_demands').aggregate([
+        { $match: { date: { $gte: '2024-12-01' } } },
+        { $group: { _id: { $substr: ['$date', 0, 7] }, revenue: { $sum: '$amountRub' }, shipments: { $sum: 1 } } },
+        { $sort: { _id: 1 } }
+      ]).toArray();
+      return JSON.stringify({ group_by: 'month', results: rows.map(r => ({ month: r._id, revenue: Math.round(r.revenue), shipments: r.shipments })) });
+    }
+    // SKU / variant breakdown — unwind positions
+    if (group_by === 'sku') {
+      const pipeline = [
+        { $match: dateMatch }, { $unwind: '$positions' },
+        ...(productFilter ? [{ $match: { 'positions.baseName': { $regex: productFilter, $options: 'i' } } }] : []),
+        { $group: { _id: '$positions.productName', baseName: { $first: '$positions.baseName' }, variant: { $first: '$positions.variantName' }, qty: { $sum: '$positions.quantity' }, revenue: { $sum: '$positions.amountRub' } } },
+        { $sort: { [sf]: -1 } }, { $limit: N }
+      ];
+      const rows = await db.collection('ms_demands').aggregate(pipeline).toArray();
+      const totalQty = rows.reduce((a, r) => a + r.qty, 0);
+      return JSON.stringify({ period, group_by: 'sku', total_pcs: Math.round(totalQty), results: rows.map(r => ({ sku: r._id, product: r.baseName, variant: r.variant || '', qty: Math.round(r.qty), revenue: Math.round(r.revenue) })) });
+    }
+    // Default: product-level (unwind positions, group by baseName)
+    const pipeline = [
+      { $match: dateMatch }, { $unwind: '$positions' },
+      ...(productFilter ? [{ $match: { 'positions.baseName': { $regex: productFilter, $options: 'i' } } }] : []),
+      { $group: { _id: '$positions.baseName', qty: { $sum: '$positions.quantity' }, revenue: { $sum: '$positions.amountRub' } } },
+      { $sort: { [sf]: -1 } }, { $limit: N }
+    ];
+    const rows = await db.collection('ms_demands').aggregate(pipeline).toArray();
+    return JSON.stringify({ period, group_by: 'product', total_revenue: Math.round(rows.reduce((a,r)=>a+r.revenue,0)), total_pcs: Math.round(rows.reduce((a,r)=>a+r.qty,0)), results: rows.map(r => ({ product: r._id || '—', qty: Math.round(r.qty), revenue: Math.round(r.revenue) })) });
+  } catch (e) { return JSON.stringify({ error: e.message }); }
+}
+
+// ── Chatbot tool: query Tally data from MongoDB ───────────────────────────
+async function toolQueryTally({ data_type = 'snapshot', period, filter } = {}) {
+  try {
+    if (data_type === 'snapshot' || data_type === 'debtors' || data_type === 'creditors') {
+      const snap = await loadTallySnapshot();
+      if (!snap) return JSON.stringify({ error: 'No Tally data. Open Financial Dashboard with Tally running to sync.' });
+      if (data_type === 'debtors')   return JSON.stringify({ total: Math.round(snap.totalOutstanding||0), debtors: (snap.debtors||[]).map(d=>({ name:d.name, balance:Math.round(d.balance) })) });
+      if (data_type === 'creditors') return JSON.stringify({ total: Math.round(snap.supplierDues||0), creditors: (snap.creditors||[]).map(c=>({ name:c.name, balance:Math.round(c.balance) })) });
+      return JSON.stringify({
+        syncedAt: snap.syncedAt,
+        totalSales:       Math.round(snap.totalSales||0),
+        totalPurchases:   Math.round(snap.totalPurchases||0),
+        totalExpenses:    Math.round(snap.totalExpenses||0),
+        netProfit:        Math.round((snap.totalSales-snap.totalPurchases-snap.totalExpenses)||0),
+        totalOutstanding: Math.round(snap.totalOutstanding||0),
+        supplierDues:     Math.round(snap.supplierDues||0),
+        cashBalance:      Math.round(snap.cashBalance||0),
+        bankBalance:      Math.round(snap.bankBalance||0),
+        debtors:   (snap.debtors||[]).slice(0,15).map(d=>({ name:d.name, balance:Math.round(d.balance) })),
+        creditors: (snap.creditors||[]).slice(0,15).map(c=>({ name:c.name, balance:Math.round(c.balance) })),
+      });
+    }
+    const db = await getMongoDb();
+    if (!db) return JSON.stringify({ error: 'MongoDB not connected' });
+    if (data_type === 'vouchers') {
+      const { from, to } = parsePeriodMongo(period || 'this_month');
+      const q = { dateStr: { $gte: from.slice(0,10), $lte: to.slice(0,10) } };
+      if (filter) q.$or = [{ party: { $regex: filter, $options:'i' } }, { type: { $regex: filter, $options:'i' } }];
+      const [vouchers, summary] = await Promise.all([
+        db.collection('tally_vouchers').find(q).sort({ dateStr:-1 }).limit(100).toArray(),
+        db.collection('tally_vouchers').aggregate([{ $match: q }, { $group: { _id:'$type', count:{ $sum:1 }, total:{ $sum:'$amount' } } }]).toArray()
+      ]);
+      return JSON.stringify({ period, from: from.slice(0,10), to: to.slice(0,10), count: vouchers.length, vouchers: vouchers.map(v=>({ date:v.dateStr, type:v.type, party:v.party, amount:Math.round(v.amount||0), narration:v.narration })), summary });
+    }
+    if (data_type === 'ledgers') {
+      const q = filter ? { name:{ $regex:filter, $options:'i' } } : {};
+      const ledgers = await db.collection('tally_ledgers').find(q).sort({ balance:-1 }).limit(50).toArray();
+      return JSON.stringify({ ledgers: ledgers.map(l=>({ name:l.name, type:l.type, balance:Math.round(l.balance||0), lastPayment:l.lastPaymentDate })) });
+    }
+    return JSON.stringify({ error: `Unknown data_type: ${data_type}` });
+  } catch (e) { return JSON.stringify({ error: e.message }); }
+}
+
+// ── Chatbot tool: compare Tally vs MoySklad ───────────────────────────────
+async function toolCompareSources({ comparison_type = 'sales_total', period } = {}) {
+  try {
+    const db = await getMongoDb();
+    if (!db) return JSON.stringify({ error: 'MongoDB not connected' });
+
+    if (comparison_type === 'sales_total') {
+      const { from, to } = parsePeriodMongo(period || 'this_month');
+      const [msAgg, tallySnap] = await Promise.all([
+        db.collection('ms_demands').aggregate([{ $match: { date:{ $gte:from, $lte:to } } }, { $group:{ _id:null, revenue:{ $sum:'$amountRub' }, shipments:{ $sum:1 } } }]).toArray(),
+        loadTallySnapshot()
+      ]);
+      const msRev     = Math.round(msAgg[0]?.revenue || 0);
+      const tallySales= Math.round(tallySnap?.totalSales || 0);
+      const diff      = msRev - tallySales;
+      return JSON.stringify({
+        period, from, to,
+        moysklad: { revenue: msRev, shipments: msAgg[0]?.shipments||0 },
+        tally:    { sales: tallySales, syncedAt: tallySnap?.syncedAt },
+        difference: { amount: diff, note: diff > 0 ? 'MoySklad higher' : diff < 0 ? 'Tally higher' : 'Match' }
+      });
+    }
+    if (comparison_type === 'customer_outstanding') {
+      const [tallySnap, msPending] = await Promise.all([
+        loadTallySnapshot(),
+        db.collection('ms_orders').aggregate([
+          { $match: { stateName: { $not: /dispatched|отгружен/i } } },
+          { $group: { _id:'$customerName', pendingValue:{ $sum:'$amountRub' }, count:{ $sum:1 } } },
+          { $sort: { pendingValue:-1 } }, { $limit:20 }
+        ]).toArray()
+      ]);
+      return JSON.stringify({
+        tally_outstanding: { total: Math.round(tallySnap?.totalOutstanding||0), top_debtors: (tallySnap?.debtors||[]).slice(0,10).map(d=>({ name:d.name, balance:Math.round(d.balance) })) },
+        moysklad_pending:  { customers: msPending.map(r=>({ customer:r._id, pendingOrders:Math.round(r.pendingValue), count:r.count })) },
+        note: 'Tally outstanding = unpaid invoices. MoySklad pending = orders not yet dispatched.'
+      });
+    }
+    if (comparison_type === 'monthly_trend') {
+      const [msMonthly, tallyMonthly] = await Promise.all([
+        db.collection('ms_demands').aggregate([
+          { $match:{ date:{ $gte:'2024-12-01' } } },
+          { $group:{ _id:{ $substr:['$date',0,7] }, revenue:{ $sum:'$amountRub' }, orders:{ $sum:1 } } },
+          { $sort:{ _id:1 } }
+        ]).toArray(),
+        db.collection('tally_vouchers').aggregate([
+          { $match:{ type:{ $regex:'sales', $options:'i' } } },
+          { $group:{ _id:'$month', total:{ $sum:'$amount' }, count:{ $sum:1 } } },
+          { $sort:{ _id:1 } }
+        ]).toArray().catch(()=>[])
+      ]);
+      return JSON.stringify({
+        moysklad_monthly: msMonthly.map(m=>({ month:m._id, revenue:Math.round(m.revenue), shipments:m.orders })),
+        tally_monthly:    tallyMonthly.map(m=>({ month:m._id, sales:Math.round(m.total), vouchers:m.count })),
+        note: 'MoySklad = shipment revenue. Tally = sales ledger entries.'
+      });
+    }
+    return JSON.stringify({ error: `Unknown comparison_type: ${comparison_type}` });
+  } catch(e) { return JSON.stringify({ error: e.message }); }
+}
+
+// ── Build chatbot context from MongoDB (no live API calls) ────────────────
 async function buildChatContext() {
   return cached('chatCtx', 15 * 60 * 1000, async () => {
-    const now           = new Date();
+    const now = new Date();
     const daysIntoMonth = now.getDate();
     const today         = todayStr();
 
     // ── Date boundaries ──────────────────────────────────
-    const curMonthStart = monthStart(); // e.g. "2026-05-01 00:00:00"
     const prevD         = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const prevMonthStart= `${localDateStr(prevD)} 00:00:00`;
-    const prevMonthEnd  = `${localDateStr(new Date(now.getFullYear(), now.getMonth(), 0))} 23:59:59`;
-    const threeMonthsAgo= new Date(now); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-    const from3mo       = `${localDateStr(threeMonthsAgo)} 00:00:00`;
-
     const curMonthName  = now.toLocaleString('en', { month: 'long', year: 'numeric' });
     const prevMonthName = prevD.toLocaleString('en', { month: 'long', year: 'numeric' });
-    const dateStr       = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+    const curStart      = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+    const prevStart     = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}-01`;
+    const prevEnd       = localDateStr(new Date(now.getFullYear(), now.getMonth(), 0));
 
-    // ── Parallel fetch — every relevant MoySklad endpoint ──
-    const [
-      stkRes,        // stock levels
-      demCurRes,     // this month shipments (with agent)
-      demPrevRes,    // last month shipments
-      prodCurRes,    // this month profit by product
-      prodPrevRes,   // last month profit by product
-      custCurRes,    // this month profit by counterparty  ← correct customer source
-      custPrevRes,   // last month profit by counterparty
-      ordAllRes,     // last 3 months orders (for pending/delayed)
-      stateMapRes,   // order state names
-    ] = await Promise.allSettled([
-      ms('/report/stock/all?limit=1000'),
-      ms(`/entity/demand?filter=${enc('moment>='+curMonthStart)}&limit=1000&expand=agent&order=moment,desc`),
-      ms(`/entity/demand?filter=${enc('moment>='+prevMonthStart+';moment<='+prevMonthEnd)}&limit=1000&expand=agent&order=moment,desc`),
-      ms(`/report/profit/byproduct?momentFrom=${enc(curMonthStart)}&limit=1000`),
-      ms(`/report/profit/byproduct?momentFrom=${enc(prevMonthStart)}&momentTo=${enc(prevMonthEnd)}&limit=1000`),
-      ms(`/report/profit/bycounterparty?momentFrom=${enc(curMonthStart)}&limit=500`),
-      ms(`/report/profit/bycounterparty?momentFrom=${enc(prevMonthStart)}&momentTo=${enc(prevMonthEnd)}&limit=500`),
-      ms(`/entity/customerorder?filter=${enc('moment>'+from3mo)}&limit=1000&expand=agent,state&order=moment,desc`),
-      getOrderStateMap(),
-    ]);
+    const fmtS = n => { if(!n)return '₽0'; const a=Math.abs(n); if(a>=1e9)return `₽${(n/1e9).toFixed(2)}B`; if(a>=1e6)return `₽${(n/1e6).toFixed(2)}M`; if(a>=1e3)return `₽${Math.round(n/1e3)}K`; return `₽${Math.round(n).toLocaleString()}`; };
+    const pct  = (a,b) => b>0 ? ((a-b)/b*100).toFixed(1)+'%' : 'N/A';
 
-    // ── Parse all responses ──────────────────────────────
-    const stock     = stkRes.status      === 'fulfilled' ? (stkRes.value.rows     || []) : [];
-    const demCur    = demCurRes.status   === 'fulfilled' ? (demCurRes.value.rows  || []) : [];
-    const demPrev   = demPrevRes.status  === 'fulfilled' ? (demPrevRes.value.rows || []) : [];
-    const prodCur   = prodCurRes.status  === 'fulfilled' ? (prodCurRes.value.rows || []) : [];
-    const prodPrev  = prodPrevRes.status === 'fulfilled' ? (prodPrevRes.value.rows|| []) : [];
-    const custCur   = custCurRes.status  === 'fulfilled' ? (custCurRes.value.rows || []) : [];
-    const custPrev  = custPrevRes.status === 'fulfilled' ? (custPrevRes.value.rows|| []) : [];
-    const allOrders = ordAllRes.status   === 'fulfilled' ? (ordAllRes.value.rows  || []) : [];
-    const stateMap  = stateMapRes.status === 'fulfilled' ? stateMapRes.value : {};
+    const db       = await getMongoDb();
+    const syncMeta = db ? await db.collection('ms_sync_meta').findOne({ _id:'main' }).catch(()=>null) : null;
+    const tallySnap= await loadTallySnapshot().catch(()=>null);
 
-    // ── SKU/Flavour breakdown — hybrid approach ───────────────────────────────
-    // 1. Profit report gives correct model-level totals (same source as dashboard).
-    // 2. Demand positions give flavour/variant distribution (names from assortment map).
-    // 3. Normalise flavour quantities so each model sums to the profit-report total.
-    function buildProfitTotals(prodRows) {
-      const t = {};
-      prodRows.forEach(r => {
-        const name = r.assortment?.name;
-        const qty  = Math.round(r.sellQuantity || 0);
-        if (name && qty > 0) t[name] = (t[name] || 0) + qty;
-      });
-      return t;
+    // ── Parallel MongoDB queries ──────────────────────────
+    let stock=[], topProducts=[], topCustomers=[], monthlyHistory=[];
+    let curRevenue=0, prevRevenue=0, curShipments=0, prevShipments=0;
+    let pendingOrders=[], lowStock=[], outStock=[];
+
+    if (db) {
+      const [stkR, curR, prevR, prodR, custR, histR, ordR] = await Promise.allSettled([
+        db.collection('ms_stock').find({}).toArray(),
+        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:curStart } } }, { $group:{ _id:null, revenue:{ $sum:'$amountRub' }, count:{ $sum:1 } } }]).toArray(),
+        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:prevStart, $lte:prevEnd } } }, { $group:{ _id:null, revenue:{ $sum:'$amountRub' }, count:{ $sum:1 } } }]).toArray(),
+        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:curStart } } }, { $unwind:'$positions' }, { $group:{ _id:'$positions.baseName', qty:{ $sum:'$positions.quantity' }, revenue:{ $sum:'$positions.amountRub' } } }, { $sort:{ revenue:-1 } }, { $limit:15 }]).toArray(),
+        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:curStart } } }, { $group:{ _id:'$customerName', revenue:{ $sum:'$amountRub' }, orders:{ $sum:1 } } }, { $sort:{ revenue:-1 } }, { $limit:15 }]).toArray(),
+        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:'2024-12-01' } } }, { $group:{ _id:{ $substr:['$date',0,7] }, revenue:{ $sum:'$amountRub' }, orders:{ $sum:1 } } }, { $sort:{ _id:1 } }]).toArray(),
+        db.collection('ms_orders').find({ stateName:{ $not:/dispatched|отгружен/i } }).sort({ date:-1 }).limit(30).toArray(),
+      ]);
+      stock          = stkR.status==='fulfilled' ? stkR.value : [];
+      curRevenue     = curR.status==='fulfilled'  ? (curR.value[0]?.revenue||0)  : 0;
+      curShipments   = curR.status==='fulfilled'  ? (curR.value[0]?.count||0)    : 0;
+      prevRevenue    = prevR.status==='fulfilled' ? (prevR.value[0]?.revenue||0) : 0;
+      prevShipments  = prevR.status==='fulfilled' ? (prevR.value[0]?.count||0)   : 0;
+      topProducts    = prodR.status==='fulfilled' ? prodR.value : [];
+      topCustomers   = custR.status==='fulfilled' ? custR.value : [];
+      monthlyHistory = histR.status==='fulfilled' ? histR.value : [];
+      pendingOrders  = ordR.status==='fulfilled'  ? ordR.value  : [];
+      lowStock       = stock.filter(s=>s.status==='low').sort((a,b)=>a.quantity-b.quantity);
+      outStock       = stock.filter(s=>s.status==='out').slice(0,20);
     }
 
-    async function hybridSkuFetch(demands, profitTotals) {
-      const nameMap = await getNameMap();
-      const rawSku  = {};
-      const BATCH   = 25;
-      for (let i = 0; i < Math.min(demands.length, 800); i += BATCH) {
-        const results = await Promise.allSettled(
-          demands.slice(i, i + BATCH).map(d => fetchAllPos(d.id))
-        );
-        results.forEach(r => {
-          if (r.status !== 'fulfilled') return;
-          (r.value || []).forEach(pos => {
-            const name = nameMap[pos.assortment?.meta?.href];
-            if (!name) return;
-            rawSku[name] = (rawSku[name] || 0) + Math.round(pos.quantity || 0);
-          });
-        });
-      }
-      // Group demand flavours by base model name
-      const byModel = {};
-      Object.entries(rawSku).forEach(([fullName, qty]) => {
-        const base = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
-        if (!byModel[base]) byModel[base] = { total: 0, skus: [] };
-        byModel[base].total += qty;
-        byModel[base].skus.push({ name: fullName, qty });
-      });
-      // Scale each model's flavours to match the profit-report total
-      const map = {};
-      Object.entries(byModel).forEach(([base, data]) => {
-        const pTotal = profitTotals[base] || 0;
-        const ratio  = (pTotal > 0 && data.total > 0) ? pTotal / data.total : 1;
-        data.skus.forEach(s => { map[s.name] = Math.round(s.qty * ratio); });
-      });
-      // Models with no position data → show as single model-level entry
-      Object.entries(profitTotals).forEach(([name, total]) => {
-        if (!byModel[name]) map[name] = total;
-      });
-      return map;
-    }
-
-    function buildMF(skuMap) {
-      const mm = {};
-      Object.entries(skuMap).forEach(([fullName, pcs]) => {
-        const fm   = fullName.match(/\(([^)]+)\)\s*$/);
-        const base = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
-        const sku  = fm ? fm[1] : '—';
-        if (!mm[base]) mm[base] = { totalPCS: 0, skus: [] };
-        mm[base].totalPCS += pcs;
-        mm[base].skus.push({ sku, pcs });
-      });
-      Object.values(mm).forEach(m => m.skus.sort((a, b) => b.pcs - a.pcs));
-      return Object.entries(mm)
-        .sort((a, b) => b[1].totalPCS - a[1].totalPCS)
-        .map(([name, d]) => ({ name, ...d }));
-    }
-
-    const curProfitTotals  = buildProfitTotals(prodCur);
-    const prevProfitTotals = buildProfitTotals(prodPrev);
-
-    const [curSkuMap, prevSkuMap] = await Promise.all([
-      hybridSkuFetch(demCur,  curProfitTotals),
-      hybridSkuFetch(demPrev, prevProfitTotals)
-    ]);
-    const curMF        = buildMF(curSkuMap);
-    const prevMF       = buildMF(prevSkuMap);
-    const curTotalPCS  = Object.values(curProfitTotals).reduce((a, v) => a + v, 0);
-    const prevTotalPCS = Object.values(prevProfitTotals).reduce((a, v) => a + v, 0);
-
-    const fmt  = n => `₽${Math.round(n).toLocaleString('en-US')}`;
-    const fmtS = n => {
-      const a = Math.abs(n);
-      if (a >= 1e9) return `₽${(n/1e9).toFixed(2)} B`;
-      if (a >= 1e6) return `₽${(n/1e6).toFixed(2)} M`;
-      if (a >= 1e3) return `₽${Math.round(n/1e3)}K`;
-      return fmt(n);
-    };
-    const pct = (a, b) => b > 0 ? ((a - b) / b * 100).toFixed(1) + '%' : 'N/A';
-
-    // ── Inventory ───────────────────────────────────────
-    let outStk = 0, lowStk = 0, inStk = 0;
-    stock.forEach(r => {
-      const q = r.quantity || 0;
-      if (q <= 0) outStk++; else if (q <= 100) lowStk++; else inStk++;
-    });
-    const lowItems = stock.filter(r => (r.quantity||0) > 0 && (r.quantity||0) <= 100)
-      .sort((a, b) => a.quantity - b.quantity).slice(0, 30)
-      .map(r => `  • ${r.name}: ${r.quantity} pcs`);
-    const outItems = stock.filter(r => (r.quantity||0) <= 0).slice(0, 30)
-      .map(r => `  • ${r.name}`);
-
-    // ── Sales velocity & predictions ────────────────────
-    const velMap = {};
-    prodCur.forEach(r => {
-      if (!r.assortment?.name) return;
-      velMap[r.assortment.name] = {
-        dailyQty: (r.sellQuantity || 0) / daysIntoMonth,
-        monthQty: Math.round(r.sellQuantity || 0),
-      };
-    });
-    const runningOut = stock
-      .map(r => {
-        const v = velMap[r.name];
-        const qty = r.quantity || 0;
-        const daysLeft = v && v.dailyQty > 0 ? Math.round(qty / v.dailyQty) : null;
-        return { name: r.name, qty, daysLeft, reorder: v ? Math.round(v.dailyQty * 30) : 0 };
-      })
-      .filter(r => r.qty > 0 && r.daysLeft !== null && r.daysLeft <= 45)
-      .sort((a, b) => a.daysLeft - b.daysLeft).slice(0, 20);
-
-    const slowMoving = stock
-      .filter(r => (r.quantity||0) > 0 && (!velMap[r.name] || velMap[r.name].monthQty === 0))
-      .sort((a, b) => (b.quantity||0) - (a.quantity||0)).slice(0, 20);
-
-    // ── Pending & delayed orders ─────────────────────────
-    const pendingOrders = allOrders.filter(r => {
-      const s = resolveState(r, stateMap).toLowerCase();
-      return s && s !== 'dispatched' && s !== 'draft';
-    });
-    const delayedOrders = allOrders
-      .filter(r => {
-        const s = resolveState(r, stateMap).toLowerCase();
-        return r.deliveryPlannedMoment && s !== 'dispatched' && new Date(r.deliveryPlannedMoment) < now;
-      })
-      .map(r => ({
-        name: r.name || '—', customer: r.agent?.name || '—',
-        state: resolveState(r, stateMap) || '—',
-        planned: (r.deliveryPlannedMoment || '').slice(0, 10),
-        daysLate: Math.floor((now - new Date(r.deliveryPlannedMoment)) / 86400000),
-        val: (r.sum || 0) / 100
-      })).sort((a, b) => b.daysLate - a.daysLate);
-
-    // ── This month sales ─────────────────────────────────
-    const curRevenue   = demCur.reduce((a, r) => a + (r.sum||0), 0) / 100;
-    const prevRevenue  = demPrev.reduce((a, r) => a + (r.sum||0), 0) / 100;
-    const todayDemands = demCur.filter(r => (r.moment||'').startsWith(today));
-    const todayRevenue = todayDemands.reduce((a, r) => a + (r.sum||0), 0) / 100;
-
-    // ── Top products — current month ─────────────────────
-    const topProdCur = prodCur
-      .filter(r => r.assortment?.name)
-      .map(r => ({ name: r.assortment.name, qty: Math.round(r.sellQuantity||0), val: (r.sellSum||0)/100, margin: (r.sellSum||0) > 0 ? Math.round(((r.sellSum - (r.buySum||0)) / r.sellSum) * 100) : null }))
-      .sort((a, b) => b.val - a.val).slice(0, 15);
-    const topProdByQty = [...topProdCur].sort((a, b) => b.qty - a.qty).slice(0, 10);
-    const highMargin = topProdCur.filter(p => p.margin !== null).sort((a, b) => b.margin - a.margin).slice(0, 10);
-
-    // ── Top products — last month ────────────────────────
-    const topProdPrev = prodPrev
-      .filter(r => r.assortment?.name)
-      .map(r => ({ name: r.assortment.name, qty: Math.round(r.sellQuantity||0), val: (r.sellSum||0)/100 }))
-      .sort((a, b) => b.val - a.val).slice(0, 10);
-
-    // ── Top customers — current month (bycounterparty) ──
-    const topCustCur = custCur
-      .filter(r => r.counterparty?.name)
-      .map(r => ({ name: r.counterparty.name, orders: r.salesCount||0, val: (r.sellSum||0)/100, qty: Math.round(r.sellQuantity||0) }))
-      .sort((a, b) => b.val - a.val).slice(0, 15);
-    const topCustByOrders = [...topCustCur].sort((a, b) => b.orders - a.orders).slice(0, 10);
-
-    // ── Robust counterparty name helper ─────────────────
-    const cpName = r => r.counterparty?.name || r.agent?.name || r.name || null;
-
-    // ── Top customers — last month ───────────────────────
-    const topCustPrev = custPrev
-      .filter(r => cpName(r))
-      .map(r => ({ name: cpName(r), orders: r.salesCount||0, val: (r.sellSum||0)/100 }))
-      .sort((a, b) => b.val - a.val).slice(0, 10);
-
-    // Re-parse current month customers with robust name helper
-    const topCustCurFixed = custCur
-      .filter(r => cpName(r))
-      .map(r => ({ name: cpName(r), orders: r.salesCount||0, val: (r.sellSum||0)/100, qty: Math.round(r.sellQuantity||0) }))
-      .sort((a, b) => b.val - a.val).slice(0, 15);
-    const topCustByOrdersFixed = [...topCustCurFixed].sort((a, b) => b.orders - a.orders).slice(0, 10);
-
-    // ── Historical months: Nov 2025 → month before current ──
-    const histMonths = [];
-    {
-      let hy = 2025, hm = 11;
-      const nowY = now.getFullYear(), nowM = now.getMonth() + 1;
-      while (hy < nowY || (hy === nowY && hm < nowM)) {
-        const d    = new Date(hy, hm - 1, 1);
-        const last = new Date(hy, hm, 0);
-        // Skip months already covered as "current" or "prev" (they have full data)
-        const key = `${hy}-${String(hm).padStart(2,'0')}`;
-        const prevKey = `${prevD.getFullYear()}-${String(prevD.getMonth() + 1).padStart(2, '0')}`;
-        if (key !== prevKey) {
-          histMonths.push({
-            label: d.toLocaleString('en', { month: 'long', year: 'numeric' }),
-            from:  `${key}-01 00:00:00`,
-            to:    `${localDateStr(last)} 23:59:59`,
-          });
-        }
-        hm++; if (hm > 12) { hm = 1; hy++; }
-      }
-    }
-
-    // Fetch 3 calls per historical month in parallel: customers, products, shipment count
-    const histResults = histMonths.length > 0
-      ? await Promise.allSettled(
-          histMonths.flatMap(m => [
-            ms(`/report/profit/bycounterparty?momentFrom=${enc(m.from)}&momentTo=${enc(m.to)}&limit=50`),
-            ms(`/report/profit/byproduct?momentFrom=${enc(m.from)}&momentTo=${enc(m.to)}&limit=50`),
-            ms(`/entity/demand?filter=${enc('moment>='+m.from+';moment<='+m.to)}&limit=1`),
-          ])
-        )
-      : [];
-
-    const monthlyHistory = histMonths.map((m, i) => {
-      const cRows     = histResults[i*3]?.status === 'fulfilled' ? (histResults[i*3].value.rows || []) : [];
-      const pRows     = histResults[i*3+1]?.status === 'fulfilled' ? (histResults[i*3+1].value.rows || []) : [];
-      const demMeta   = histResults[i*3+2]?.status === 'fulfilled' ? histResults[i*3+2].value : null;
-      const shipments = demMeta?.meta?.size ?? demMeta?.rows?.length ?? null;
-      const revenue   = cRows.reduce((a, r) => a + (r.sellSum||0), 0) / 100;
-      return {
-        label: m.label,
-        revenue,
-        shipments,
-        custs: cRows.filter(r => cpName(r)).map(r => ({ name: cpName(r), val: (r.sellSum||0)/100, orders: r.salesCount||0 })).sort((a,b) => b.val-a.val).slice(0,10),
-        prods: pRows.filter(r => r.assortment?.name).map(r => ({ name: r.assortment.name, val: (r.sellSum||0)/100, qty: Math.round(r.sellQuantity||0) })).sort((a,b) => b.val-a.val).slice(0,10),
-      };
-    }).reverse(); // newest first
-
-    // ── Detect business type from product names ──────────
-    const productNames = topProdCur.map(p => p.name).join(', ');
-
-    // ── Build prompt ─────────────────────────────────────
     const L   = [];
     const sec = t => L.push('', `── ${t} ──`);
 
     L.push(
-      `You are PLATINA AI — a sharp Business Intelligence assistant for a distribution/trading company.`,
-      `Today: ${today} | Current month: ${curMonthName} | Previous month: ${prevMonthName} | ${daysIntoMonth} days elapsed this month`,
-      `Currency: Russian Rubles (₽). Format: ₽X,XXX or ₽X.XXK (thousands) or ₽X.XXM (millions) or ₽X.XXB (billions).`,
+      `You are PLATINA AI — a sharp Business Intelligence assistant.`,
+      `Today: ${today} | Month: ${curMonthName} | ${daysIntoMonth} days elapsed | Currency: ₽`,
+      `All business data is served from MongoDB (synced from MoySklad). Data available from Dec 2024.`,
+      syncMeta
+        ? `MoySklad last synced: ${new Date(syncMeta.lastSyncAt).toLocaleString('en-IN')} (${syncMeta.lastSyncType} — ${syncMeta.totalDemands||0} demands, ${syncMeta.totalStock||0} SKUs)`
+        : `⚠ MoySklad not synced yet. Run: node sync-ms-data.js`,
       ``,
-      `━━━ TOOLS — USE THESE FOR ALL DATA QUESTIONS ━━━`,
-      `You have 4 tools. ALWAYS prefer tools over guessing:`,
+      `━━━ TOOLS (USE FOR ALL DATA QUESTIONS) ━━━`,
+      `1. query_moysklad(data_type, period, group_by, filter, top_n, sort_by)`,
+      `   data_type: "demands"|"stock"|"customers"|"orders"`,
+      `   group_by:  "product"(model totals) | "sku"(FLAVOUR/VARIANT — use for "sku wise"/"flavour wise") | "customer" | "day" | "month" | "none"`,
+      `   period:    "today"|"this_month"|"last_month"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"|"all"`,
+      `   filter:    "product:NAME" | "customer:NAME" | "status:low" | "status:out"`,
       ``,
-      `1. query_sales(period, group_by, top_n, filter_product)`,
-      `   → Use for ANY sales/revenue/PCS question.`,
-      `   → period: "today" | "this_month" | "last_month" | "YYYY-MM" (e.g. "2026-01") | "YYYY-MM-DD:YYYY-MM-DD"`,
-      `   ★ group_by RULES — follow strictly:`,
-      `     "sku"     → FLAVOUR/VARIANT breakdown. MANDATORY when user says: "sku wise", "flavour wise",`,
-      `                  "variant wise", "breakdown", "which flavour", "sku of [model]".`,
-      `                  Combine with filter_product to get flavours of a specific model.`,
-      `                  Example: { period:"2026-01", group_by:"sku", filter_product:"NIC KING" }`,
-      `     "product" → model-level totals only (fast). Use for overall rankings, not flavour detail.`,
-      `     "customer"→ by buyer.   "day" → daily trend.`,
-      `   → filter_product: partial name e.g. "NIC KING" or "GH23000"`,
+      `2. query_tally(data_type, period, filter)`,
+      `   data_type: "snapshot"|"debtors"|"creditors"|"vouchers"|"ledgers"`,
       ``,
-      `2. query_inventory(filter_product, status)`,
-      `   → Use for: current stock levels, low stock, out of stock, stock of specific product`,
-      `   → status: "all" | "low" (≤100 pcs) | "out" (zero stock)`,
+      `3. compare_sources(comparison_type, period)`,
+      `   comparison_type: "sales_total"|"customer_outstanding"|"monthly_trend"`,
       ``,
-      `3. query_customers(period, top_n)`,
-      `   → Use for: top buyers, customer revenue, order counts by customer`,
+      `4. web_search(query) — external data only (market trends, regulations, etc.)`,
       ``,
-      `4. web_search(query)`,
-      `   → Use ONLY for external data: market trends, regulations, industry benchmarks, competitor info`,
-      `   → Do NOT use for MoySklad business data`,
-      ``,
-      `━━━ HOW TO RESPOND ━━━`,
-      `- No preamble. No "Sure!", no "Great question!". Lead directly with the answer.`,
-      `- Use a markdown table when the answer has multiple rows. No prose before the table.`,
-      `- After any table: max 1-2 bullet points only if there's a critical action needed.`,
-      `- Numbers: use ₽ symbol. Round to whole rubles for large amounts, 2 decimal for ratios. Use K/M/B suffixes.`,
-      `- If the question is about a specific product or month → always call query_sales first.`,
-      `- If the question asks for flavour/SKU/variant breakdown → call query_sales with group_by="sku". NEVER say "API doesn't support flavour breakdown" — it does via group_by="sku".`,
-      `- If the question is about stock/inventory → always call query_inventory first.`,
-      `- If the question is about customers/buyers → always call query_customers first.`,
-      `- Never make up numbers. Never say data is unavailable without trying a tool first.`,
-      ``,
-      `━━━ BUSINESS CONTEXT ━━━`,
-      `Products: ${productNames.slice(0, 300)}`,
+      `━━━ RULES ━━━`,
+      `- NEVER call MoySklad API directly. ALL data is in MongoDB — always use tools.`,
+      `- For flavour/SKU breakdown → query_moysklad with group_by="sku". Never say it's unavailable.`,
+      `- For P&L / outstanding → query_tally with data_type="snapshot".`,
+      `- For Tally vs MoySklad difference → compare_sources.`,
+      `- Lead with the answer. Use markdown tables for multi-row data. No preamble.`,
       ``,
       `${'═'.repeat(60)}`,
-      `DATA SNAPSHOT (cached ${dateStr} — use tools for live/specific queries)`,
+      `LIVE SNAPSHOT`,
       `${'═'.repeat(60)}`
     );
 
-    // INVENTORY
-    sec(`INVENTORY`);
-    L.push(`Total SKUs: ${stock.length} | In Stock: ${inStk} | Low Stock (≤100 pcs): ${lowStk} | Out of Stock: ${outStk}`);
-    if (lowItems.length) { L.push(`\nLow Stock Items (${lowStk}):`); L.push(...lowItems); }
-    if (outItems.length) { L.push(`\nOut of Stock (${outStk} items):`); L.push(...outItems); }
+    // Inventory
+    sec('INVENTORY');
+    L.push(`${stock.length} SKUs | In Stock: ${stock.filter(s=>s.status==='ok').length} | Low (≤100): ${lowStock.length} | Out: ${outStock.length}`);
+    if (lowStock.length)  L.push('Low stock: ' + lowStock.slice(0,15).map(s=>`${s.name}(${s.quantity})`).join(', '));
+    if (outStock.length)  L.push('Out of stock: ' + outStock.slice(0,15).map(s=>s.name).join(', '));
 
-    // PREDICTIONS
-    sec(`STOCK DEPLETION PREDICTIONS (running out within 45 days)`);
-    if (runningOut.length) {
-      L.push(`Calculated from ${daysIntoMonth}-day sales rate:`);
-      runningOut.forEach(r => L.push(`  • ${r.name}: ${r.qty} pcs → ~${r.daysLeft} days left | Reorder: ${r.reorder} pcs`));
-    } else { L.push(`No items predicted to run out within 45 days.`); }
+    // Sales
+    sec(`SALES — ${curMonthName}`);
+    const mom = prevRevenue>0 ? ` (${pct(curRevenue,prevRevenue)} vs last month)` : '';
+    L.push(`Shipments: ${curShipments} | Revenue: ${fmtS(curRevenue)}${mom}`);
 
-    sec(`SLOW-MOVING ITEMS (in stock, zero sales in ${curMonthName})`);
-    if (slowMoving.length) {
-      slowMoving.forEach(r => L.push(`  • ${r.name}: ${r.quantity} pcs idle`));
-    } else { L.push(`All items have had sales activity this month.`); }
+    sec(`SALES — ${prevMonthName}`);
+    L.push(`Shipments: ${prevShipments} | Revenue: ${fmtS(prevRevenue)}`);
 
-    // SALES — THIS MONTH
-    sec(`SALES — ${curMonthName} (CURRENT MONTH)`);
-    const mom = prevRevenue > 0 ? ` (${Number(pct(curRevenue, prevRevenue)) >= 0 ? '+' : ''}${pct(curRevenue, prevRevenue)} vs last month)` : '';
-    L.push(
-      `Shipments: ${demCur.length} | Revenue: ${fmtS(curRevenue)}${mom}`,
-      `Avg per shipment: ${demCur.length ? fmtS(curRevenue / demCur.length) : '—'}`,
-      `Today (${today}): ${todayDemands.length} shipments | ${fmtS(todayRevenue)}`
-    );
+    // Top products
+    sec(`TOP PRODUCTS — ${curMonthName}`);
+    if (topProducts.length) topProducts.forEach((p,i)=>L.push(`${i+1}. ${p._id||'—'} — ${fmtS(p.revenue)} | ${Math.round(p.qty||0).toLocaleString()} pcs`));
+    else L.push('No product data yet — run MoySklad sync first.');
 
-    // SALES — LAST MONTH
-    sec(`SALES — ${prevMonthName} (PREVIOUS MONTH)`);
-    L.push(`Shipments: ${demPrev.length} | Revenue: ${fmtS(prevRevenue)}`);
+    // Top customers
+    sec(`TOP CUSTOMERS — ${curMonthName}`);
+    if (topCustomers.length) topCustomers.forEach((c,i)=>L.push(`${i+1}. ${c._id||'—'} — ${fmtS(c.revenue)} | ${c.orders} orders`));
+    else L.push('No customer data yet.');
 
-    // TOP PRODUCTS — CURRENT
-    sec(`TOP PRODUCTS BY REVENUE — ${curMonthName}`);
-    if (topProdCur.length) {
-      topProdCur.forEach((p, i) => L.push(`${i+1}. ${p.name} — ${fmtS(p.val)}${p.margin !== null ? ` (${p.margin}% margin)` : ''} | ${p.qty.toLocaleString('en-IN')} pcs`));
-    } else if (curMF.length > 0) {
-      L.push(`(Revenue data from profit report unavailable — showing by PCS from shipment positions)`);
-      const flat = Object.entries(curSkuMap).sort((a,b)=>b[1]-a[1]).slice(0,15);
-      flat.forEach(([name, pcs], i) => L.push(`${i+1}. ${name} — ${pcs.toLocaleString('en-IN')} pcs`));
-    } else { L.push(`No product sales data this month.`); }
-
-    sec(`TOP PRODUCTS BY QTY SOLD — ${curMonthName}`);
-    if (topProdByQty.length) {
-      topProdByQty.forEach((p, i) => L.push(`${i+1}. ${p.name} — ${p.qty.toLocaleString('en-IN')} pcs | ${fmtS(p.val)}`));
-    } else if (curMF.length > 0) {
-      const flat = Object.entries(curSkuMap).sort((a,b)=>b[1]-a[1]).slice(0,15);
-      flat.forEach(([name, pcs], i) => L.push(`${i+1}. ${name} — ${pcs.toLocaleString('en-IN')} pcs`));
+    // Monthly history
+    if (monthlyHistory.length) {
+      sec('MONTHLY HISTORY (Dec 2024 onwards)');
+      monthlyHistory.forEach(m=>{ const d=new Date(m._id+'-02'); L.push(`${d.toLocaleString('en',{month:'short',year:'numeric'})}: ${fmtS(m.revenue)} (${m.orders} shipments)`); });
     }
 
-    // SKU / FLAVOUR BREAKDOWN — CURRENT MONTH
-    sec(`SKU/FLAVOUR BREAKDOWN — ${curMonthName} (${demCur.length} shipments · ${curTotalPCS.toLocaleString('en-IN')} pcs total)`);
-    if (curMF.length > 0) {
-      curMF.forEach(model => {
-        L.push(`${model.name} → ${model.totalPCS.toLocaleString('en-IN')} pcs total`);
-        model.skus.forEach((s, i) => {
-          const p = model.totalPCS > 0 ? ((s.pcs / model.totalPCS) * 100).toFixed(1) : '0';
-          L.push(`  ${i+1}. ${s.sku}: ${s.pcs.toLocaleString('en-IN')} pcs (${p}% of model)`);
-        });
-      });
-    } else {
-      L.push(`No shipment position data for ${curMonthName} yet.`);
+    // Pending orders
+    sec(`PENDING ORDERS (${pendingOrders.length} not dispatched)`);
+    if (pendingOrders.length) pendingOrders.slice(0,15).forEach(o=>L.push(`  • ${o.name||'—'} | ${o.customerName||'—'} | ${o.stateName||'—'} | ${fmtS(o.amountRub)}`));
+    else L.push('No pending orders.');
+
+    // Tally summary
+    if (tallySnap) {
+      sec('TALLY FINANCIAL SUMMARY');
+      L.push(`Sales: ${fmtS(tallySnap.totalSales)} | Purchases: ${fmtS(tallySnap.totalPurchases)} | Expenses: ${fmtS(tallySnap.totalExpenses)}`);
+      L.push(`Net Profit: ${fmtS(tallySnap.totalSales-tallySnap.totalPurchases-tallySnap.totalExpenses)} | Outstanding: ${fmtS(tallySnap.totalOutstanding)} | Supplier Dues: ${fmtS(tallySnap.supplierDues)}`);
+      if (tallySnap.debtors?.length) L.push('Top debtors: '+tallySnap.debtors.slice(0,5).map((d,i)=>`${i+1}.${d.name}(${fmtS(d.balance)})`).join(' | '));
+      if (tallySnap.syncedAt) L.push(`Tally synced: ${new Date(tallySnap.syncedAt).toLocaleString('en-IN')}`);
     }
-
-    // SKU / FLAVOUR BREAKDOWN — LAST MONTH (from demand positions)
-    sec(`SKU/FLAVOUR BREAKDOWN — ${prevMonthName} (${demPrev.length} shipments · ${prevTotalPCS.toLocaleString('en-IN')} pcs total)`);
-    if (prevMF.length > 0) {
-      prevMF.forEach(model => {
-        L.push(`${model.name} → ${model.totalPCS.toLocaleString('en-IN')} pcs total`);
-        model.skus.forEach((s, i) => {
-          const p = model.totalPCS > 0 ? ((s.pcs / model.totalPCS) * 100).toFixed(1) : '0';
-          L.push(`  ${i+1}. ${s.sku}: ${s.pcs.toLocaleString('en-IN')} pcs (${p}% of model)`);
-        });
-      });
-    } else {
-      L.push(`No shipment data for ${prevMonthName}.`);
-    }
-
-    // STOCK BY SKU/FLAVOR
-    sec(`STOCK LEVELS BY SKU/FLAVOR (live inventory)`);
-    {
-      const stockModelMap = {};
-      stock.forEach(r => {
-        const fullName = r.name || '—';
-        const flavorM  = fullName.match(/\(([^)]+)\)\s*$/);
-        const baseName = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
-        const sku      = flavorM ? flavorM[1] : '—';
-        const qty      = r.quantity || 0;
-        if (!stockModelMap[baseName]) stockModelMap[baseName] = [];
-        stockModelMap[baseName].push({ sku, qty });
-      });
-      Object.entries(stockModelMap)
-        .sort((a,b) => b[1].reduce((s,x)=>s+x.qty,0) - a[1].reduce((s,x)=>s+x.qty,0))
-        .forEach(([modelName, skus]) => {
-          const total = skus.reduce((s,x)=>s+x.qty,0);
-          const outCount = skus.filter(s=>s.qty<=0).length;
-          const lowCount = skus.filter(s=>s.qty>0&&s.qty<=100).length;
-          L.push(`${modelName}: ${total.toLocaleString('en-IN')} pcs total | ${outCount} out | ${lowCount} low`);
-          skus.sort((a,b)=>b.qty-a.qty).forEach(s => {
-            const tag = s.qty<=0 ? '[OUT]' : s.qty<=100 ? '[LOW]' : '[OK]';
-            L.push(`  • ${s.sku}: ${s.qty.toLocaleString('en-IN')} pcs ${tag}`);
-          });
-        });
-    }
-
-    // TOP PRODUCTS — LAST MONTH
-    sec(`TOP PRODUCTS BY REVENUE — ${prevMonthName} (LAST MONTH)`);
-    if (topProdPrev.length) {
-      topProdPrev.forEach((p, i) => L.push(`${i+1}. ${p.name} — ${fmtS(p.val)} | ${p.qty.toLocaleString('en-IN')} pcs`));
-    } else { L.push(`No data.`); }
-
-    // HIGH MARGIN
-    sec(`MOST PROFITABLE PRODUCTS (by gross margin %)`);
-    if (highMargin.length) {
-      highMargin.forEach((p, i) => L.push(`${i+1}. ${p.name} — ${p.margin}% margin | ${fmtS(p.val)}`));
-    } else { L.push(`Margin data unavailable (buy prices may not be set in MoySklad).`); }
-
-    // CUSTOMERS — CURRENT MONTH
-    sec(`TOP CUSTOMERS BY REVENUE — ${curMonthName}`);
-    if (topCustCurFixed.length) {
-      topCustCurFixed.forEach((c, i) => L.push(`${i+1}. ${c.name} — ${fmtS(c.val)} | ${c.orders} orders | ${c.qty.toLocaleString('en-IN')} pcs`));
-    } else { L.push(`No counterparty revenue data this month.`); }
-
-    sec(`TOP CUSTOMERS BY ORDER COUNT — ${curMonthName}`);
-    if (topCustByOrdersFixed.length) {
-      topCustByOrdersFixed.forEach((c, i) => L.push(`${i+1}. ${c.name} — ${c.orders} orders | ${fmtS(c.val)}`));
-    }
-
-    // CUSTOMERS — LAST MONTH
-    sec(`TOP CUSTOMERS BY REVENUE — ${prevMonthName} (LAST MONTH)`);
-    if (topCustPrev.length) {
-      topCustPrev.forEach((c, i) => L.push(`${i+1}. ${c.name} — ${fmtS(c.val)} | ${c.orders} orders`));
-    } else { L.push(`No data.`); }
-
-    // HISTORICAL MONTHLY DATA
-    if (monthlyHistory.length > 0) {
-      sec(`COMPLETE MONTHLY HISTORY — Nov 2025 to ${monthlyHistory[0].label}`);
-      monthlyHistory.forEach(m => {
-        const shipStr = m.shipments !== null ? `${m.shipments} shipments` : 'shipments: N/A';
-        L.push(``, `${m.label.toUpperCase()} — Revenue: ${fmtS(m.revenue)} | ${shipStr} | Avg/shipment: ${m.shipments ? fmtS(m.revenue / m.shipments) : '—'}`);
-        if (m.custs.length) {
-          L.push(`  Top Customers: ` + m.custs.map((c,i) => `${i+1}. ${c.name} (${fmtS(c.val)}, ${c.orders} orders)`).join(' | '));
-        } else { L.push(`  Top Customers: No data`); }
-        if (m.prods.length) {
-          L.push(`  Top Products:  ` + m.prods.map((p,i) => `${i+1}. ${p.name} (${fmtS(p.val)}, ${p.qty} pcs)`).join(' | '));
-        } else { L.push(`  Top Products:  No data`); }
-      });
-    }
-
-    // PENDING
-    sec(`PENDING ORDERS (${pendingOrders.length} not yet dispatched)`);
-    if (pendingOrders.length) {
-      pendingOrders.slice(0, 25).forEach(o => {
-        const state = resolveState(o, stateMap) || '—';
-        L.push(`  • ${o.name||'—'} | Customer: ${o.agent?.name||'—'} | State: ${state} | ${fmtS((o.sum||0)/100)}`);
-      });
-      if (pendingOrders.length > 25) L.push(`  ... and ${pendingOrders.length - 25} more`);
-    } else { L.push(`No pending orders.`); }
-
-    // DELAYED
-    sec(`DELAYED ORDERS (past planned delivery date)`);
-    if (delayedOrders.length) {
-      delayedOrders.slice(0, 15).forEach(o => {
-        L.push(`  • ${o.name} | ${o.customer} | ${o.daysLate} days overdue | Planned: ${o.planned} | State: ${o.state} | ${fmtS(o.val)}`);
-      });
-    } else { L.push(`No delayed orders.`); }
 
     return L.join('\n');
   });
@@ -2106,8 +1951,7 @@ async function webSearch(query) {
   }
 }
 
-// ── MoySklad live tool helpers ────────────────────────────
-
+// ── (legacy helpers kept for dashboard pages — chatbot uses MongoDB) ───────
 function resolvePeriod(period) {
   const now = new Date();
   if (!period || period === 'this_month') return { from: monthStart(), to: `${todayStr()} 23:59:59` };
@@ -2127,209 +1971,95 @@ function resolvePeriod(period) {
   return { from: monthStart(), to: `${todayStr()} 23:59:59` };
 }
 
-async function toolQuerySales({ period = 'this_month', group_by = 'product', top_n = 15, filter_product } = {}) {
-  try {
-    const { from, to } = resolvePeriod(period);
-    const N = Math.min(+top_n || 15, 100);
-
-    if (group_by === 'customer') {
-      const { rows = [] } = await msAll(`/report/profit/bycounterparty?momentFrom=${enc(from)}&momentTo=${enc(to)}`);
-      const name = r => r.counterparty?.name || r.agent?.name || null;
-      const results = rows.filter(r => name(r))
-        .map(r => ({ customer: name(r), revenue: Math.round((r.sellSum||0)/100), orders: r.salesCount||0, pcs: Math.round(r.sellQuantity||0) }))
-        .sort((a,b) => b.revenue - a.revenue).slice(0, N);
-      return JSON.stringify({ period, results, count: results.length });
-    }
-
-    if (group_by === 'day') {
-      const { rows: demands = [] } = await msAll(`/entity/demand?filter=${enc('moment>='+from+';moment<='+to)}&order=moment,asc`);
-      const byDay = {};
-      demands.forEach(d => {
-        const day = (d.moment||'').slice(0,10);
-        if (!byDay[day]) byDay[day] = { date: day, shipments: 0, revenue: 0 };
-        byDay[day].shipments++;
-        byDay[day].revenue += (d.sum||0)/100;
-      });
-      const results = Object.values(byDay).map(d => ({ ...d, revenue: Math.round(d.revenue) }));
-      return JSON.stringify({ period, total_shipments: demands.length, results });
-    }
-
-    if (group_by === 'sku' || group_by === 'flavor') {
-      // Demand-positions approach: gives true flavour/variant breakdown for ANY month.
-      // Results are cached per month-period so repeat queries are instant.
-      const cacheKey = `tool_sku_${from.slice(0,7)}`;
-      const skuMap = await cached(cacheKey, 30 * 60 * 1000, async () => {
-        const [demandsRes, profitRes, nameMap] = await Promise.all([
-          msAll(`/entity/demand?filter=${enc('moment>='+from+';moment<='+to)}&order=moment,desc`),
-          msAll(`/report/profit/byproduct?momentFrom=${enc(from)}&momentTo=${enc(to)}`),
-          getNameMap()
-        ]);
-        const demands = demandsRes.rows || [];
-
-        // Profit report → authoritative model-level totals for normalization
-        const profitTotals = {};
-        (profitRes.rows || []).forEach(r => {
-          const n = r.assortment?.name;
-          const q = Math.round(r.sellQuantity || 0);
-          if (n && q > 0) profitTotals[n] = (profitTotals[n] || 0) + q;
-        });
-
-        // Demand positions → raw flavour counts
-        const rawSku = {};
-        const BATCH  = 25;
-        for (let i = 0; i < Math.min(demands.length, 500); i += BATCH) {
-          const res = await Promise.allSettled(
-            demands.slice(i, i + BATCH).map(d => fetchAllPos(d.id))
-          );
-          res.forEach(r => {
-            if (r.status !== 'fulfilled') return;
-            (r.value || []).forEach(pos => {
-              const name = nameMap[pos.assortment?.meta?.href];
-              if (!name) return;
-              rawSku[name] = (rawSku[name] || 0) + Math.round(pos.quantity || 0);
-            });
-          });
-        }
-
-        // Group flavours by base model name, then normalize to profit-report totals
-        const byModel = {};
-        Object.entries(rawSku).forEach(([fullName, qty]) => {
-          const base = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
-          if (!byModel[base]) byModel[base] = { total: 0, skus: [] };
-          byModel[base].total += qty;
-          byModel[base].skus.push({ name: fullName, qty });
-        });
-
-        const result = {};
-        Object.entries(byModel).forEach(([base, data]) => {
-          const pTotal = profitTotals[base] || 0;
-          const ratio  = (pTotal > 0 && data.total > 0) ? pTotal / data.total : 1;
-          data.skus.forEach(s => { result[s.name] = Math.round(s.qty * ratio); });
-        });
-        // Models only in profit report (no position data) → single entry
-        Object.entries(profitTotals).forEach(([name, total]) => {
-          if (!byModel[name]) result[name] = total;
-        });
-        return result;
-      });
-
-      let entries = Object.entries(skuMap);
-      if (filter_product) {
-        const fp = filter_product.toLowerCase();
-        entries = entries.filter(([name]) => name.toLowerCase().includes(fp));
-      }
-      const total_pcs = entries.reduce((a, [, v]) => a + v, 0);
-      const results = entries
-        .map(([product, pcs]) => ({
-          product,
-          flavor: product.match(/\(([^)]+)\)\s*$/)?.[1] || product,
-          pcs
-        }))
-        .sort((a, b) => b.pcs - a.pcs)
-        .slice(0, N);
-      return JSON.stringify({ period, group_by: 'sku', total_pcs, results });
-    }
-
-    // group_by === 'product' — model-level totals from profit report (fast)
-    const { rows = [] } = await msAll(`/report/profit/byproduct?momentFrom=${enc(from)}&momentTo=${enc(to)}`);
-    let results = rows.filter(r => r.assortment?.name)
-      .map(r => ({ product: r.assortment.name, pcs: Math.round(r.sellQuantity||0), revenue: Math.round((r.sellSum||0)/100) }));
-    if (filter_product) {
-      const fp = filter_product.toLowerCase();
-      results = results.filter(r => r.product.toLowerCase().includes(fp));
-    }
-    const total_pcs = results.reduce((a,r) => a+r.pcs, 0);
-    const total_revenue = results.reduce((a,r) => a+r.revenue, 0);
-    results = results.sort((a,b) => b.pcs - a.pcs).slice(0, N);
-    return JSON.stringify({ period, total_pcs, total_revenue, results });
-  } catch (e) { return JSON.stringify({ error: e.message }); }
-}
-
-async function toolQueryInventory({ filter_product, status = 'all' } = {}) {
-  try {
-    const { rows: stock = [] } = await ms('/report/stock/all?limit=1000');
-    let items = stock.map(r => ({
-      product: r.name || '—',
-      qty: r.quantity || 0,
-      status: (r.quantity||0) <= 0 ? 'out' : (r.quantity||0) <= 100 ? 'low' : 'ok'
-    }));
-    if (filter_product) { const fp = filter_product.toLowerCase(); items = items.filter(r => r.product.toLowerCase().includes(fp)); }
-    if (status === 'low') items = items.filter(r => r.status === 'low');
-    if (status === 'out') items = items.filter(r => r.status === 'out');
-    const summary = {
-      total_skus: items.length,
-      out_of_stock: items.filter(r => r.status==='out').length,
-      low_stock: items.filter(r => r.status==='low').length,
-      in_stock: items.filter(r => r.status==='ok').length
-    };
-    return JSON.stringify({ summary, items: items.sort((a,b) => b.qty-a.qty).slice(0,100) });
-  } catch (e) { return JSON.stringify({ error: e.message }); }
-}
-
-async function toolQueryCustomers({ period = 'this_month', top_n = 15 } = {}) {
-  try {
-    const { from, to } = resolvePeriod(period);
-    const { rows = [] } = await msAll(`/report/profit/bycounterparty?momentFrom=${enc(from)}&momentTo=${enc(to)}`);
-    const name = r => r.counterparty?.name || r.agent?.name || null;
-    const results = rows.filter(r => name(r))
-      .map(r => ({ customer: name(r), revenue: Math.round((r.sellSum||0)/100), orders: r.salesCount||0, pcs: Math.round(r.sellQuantity||0) }))
-      .sort((a,b) => b.revenue - a.revenue).slice(0, Math.min(+top_n||15, 50));
-    return JSON.stringify({ period, results });
-  } catch (e) { return JSON.stringify({ error: e.message }); }
-}
-
 // ── Chat tools definition ─────────────────────────────────
 const CHAT_TOOLS = [
   {
-    name: 'query_sales',
-    description: `Fetch live sales data from MoySklad for ANY period.
+    name: 'query_moysklad',
+    description: `Query MoySklad business data from MongoDB (fast — no live API calls).
 
-group_by options — CHOOSE CAREFULLY:
-• "sku"     → FLAVOUR/VARIANT-level breakdown. Use this for: "sku wise", "flavour wise", "variant wise", "which flavour sold most", "breakdown of X". Fetches demand line-items — takes 20-60s first time, then cached. ALWAYS use this when the user asks for flavour/SKU detail.
-• "product" → MODEL-level totals only (fast). Use for: overall totals, which model sold most, revenue by product.
-• "customer"→ by buyer/customer name.
-• "day"     → daily trend.
+data_type options:
+• "demands"   → shipment/sales records. Combine with group_by for breakdowns.
+• "orders"    → customer orders (not yet shipped). Use for pending/outstanding orders.
+• "stock"     → current inventory levels from latest sync.
+• "customers" → customer list/details.
 
-period examples: "today", "this_month", "last_month", "2026-01", "2025-11", "2026-01-01:2026-03-31"
-filter_product: partial name match e.g. "NIC KING" or "GH23000" — use WITH group_by="sku" to filter flavours of ONE model.
+group_by (for demands only):
+• "product"  → revenue + qty by product model (fast). Default.
+• "sku"      → flavour/variant breakdown (unwinds positions). Use for "sku wise", "flavour wise", "variant wise".
+• "customer" → revenue + shipments by customer.
+• "day"      → daily trend.
+• "month"    → monthly trend across all history.
+• "none"     → single total (revenue, count) for the period.
 
-RULE: If user says "sku wise", "flavour wise", "variant wise", "breakdown" → ALWAYS use group_by="sku".`,
+period: "today", "this_month", "last_month", "this_year", "all", "YYYY-MM", "YYYY-MM-DD:YYYY-MM-DD"
+filter: partial name match for product or customer (applies to sku/product/customer group_by)
+sort_by: "revenue" (default) | "quantity" | "orders"
+top_n: max results (default 15, max 200)
+
+RULES:
+- "sku wise" / "flavour wise" / "variant wise" / "breakdown" → group_by="sku"
+- "which model sold most" / "product totals" → group_by="product"
+- "by customer" / "top customers" → group_by="customer" OR data_type="customers"
+- "monthly trend" / "month by month" → group_by="month"
+- Pending orders / unshipped → data_type="orders"`,
     input_schema: {
       type: 'object',
       properties: {
-        period: { type: 'string', description: 'Period: "today", "this_month", "last_month", "YYYY-MM" (e.g. "2026-01"), or "YYYY-MM-DD:YYYY-MM-DD"' },
-        group_by: { type: 'string', enum: ['sku', 'product', 'customer', 'day'], description: 'MUST be "sku" for flavour/variant breakdown. "product" for model totals. Default: product' },
-        top_n: { type: 'number', description: 'Max results to return. Default: 15' },
-        filter_product: { type: 'string', description: 'Filter by product/model name (partial match). E.g. "NIC KING" or "GH23000" or "LUSH"' }
+        data_type: { type: 'string', enum: ['demands', 'orders', 'stock', 'customers'], description: 'Which collection to query' },
+        period: { type: 'string', description: '"today","this_month","last_month","this_year","all","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"' },
+        group_by: { type: 'string', enum: ['product', 'sku', 'customer', 'day', 'month', 'none'], description: 'How to aggregate demands. "sku" for flavour detail.' },
+        filter: { type: 'string', description: 'Partial name match for product or customer' },
+        top_n: { type: 'number', description: 'Max rows to return (default 15)' },
+        sort_by: { type: 'string', enum: ['revenue', 'quantity', 'orders'], description: 'Sort field (default: revenue)' }
       },
-      required: ['period']
+      required: ['data_type']
     }
   },
   {
-    name: 'query_inventory',
-    description: 'Fetch live current stock levels from MoySklad. Use for: current inventory, low stock, out of stock, or stock for a specific product.',
+    name: 'query_tally',
+    description: `Query Tally accounting data from MongoDB.
+
+data_type options:
+• "snapshot"  → latest Tally P&L snapshot: totalSales, totalPurchases, grossProfit, collections, outstanding, payables
+• "debtors"   → list of customers who owe money (from Tally outstanding)
+• "creditors" → list of suppliers owed (from Tally payables)
+• "vouchers"  → individual Tally voucher transactions for a period
+• "ledgers"   → ledger account balances
+
+Use Tally data for: accounting figures, P&L, collections, outstanding receivables/payables, debtors/creditors.
+Use MoySklad (query_moysklad) for: shipment volumes, SKU sales, order tracking, inventory.`,
     input_schema: {
       type: 'object',
       properties: {
-        filter_product: { type: 'string', description: 'Filter by product name (partial match). Leave empty for all products.' },
-        status: { type: 'string', enum: ['all', 'low', 'out'], description: '"all" = all products, "low" = ≤100 pcs, "out" = zero stock. Default: all' }
-      }
+        data_type: { type: 'string', enum: ['snapshot', 'debtors', 'creditors', 'vouchers', 'ledgers'], description: 'Which Tally data to fetch' },
+        period: { type: 'string', description: 'Period for vouchers/ledgers: "this_month","last_month","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"' },
+        filter: { type: 'string', description: 'Filter by ledger/party name (partial match)' }
+      },
+      required: ['data_type']
     }
   },
   {
-    name: 'query_customers',
-    description: 'Fetch live customer purchase data from MoySklad. Use for: top customers by revenue, customer order counts, buyer analysis.',
+    name: 'compare_sources',
+    description: `Compare Tally accounting data vs MoySklad operational data to find discrepancies.
+
+comparison_type options:
+• "sales_total"           → MoySklad shipment revenue vs Tally total sales for same period
+• "customer_outstanding"  → Tally debtors outstanding vs MoySklad pending/unshipped orders
+• "monthly_trend"         → Month-by-month revenue from both systems side by side
+
+Use this when user asks: "why is there a difference", "reconcile", "tally vs moysklad", "discrepancy", "match the figures".`,
     input_schema: {
       type: 'object',
       properties: {
-        period: { type: 'string', description: 'Period: "this_month", "last_month", or "YYYY-MM"' },
-        top_n: { type: 'number', description: 'Number of top customers to return. Default: 15' }
-      }
+        comparison_type: { type: 'string', enum: ['sales_total', 'customer_outstanding', 'monthly_trend'], description: 'What to compare' },
+        period: { type: 'string', description: 'Period for comparison: "this_month","last_month","YYYY-MM","this_year"' }
+      },
+      required: ['comparison_type']
     }
   },
   {
     name: 'web_search',
-    description: 'Search the internet for EXTERNAL information only: market trends, regulations, competitor data, industry news, GST/tax rates, global pricing. Do NOT use for business data — use query_sales/inventory/customers instead.',
+    description: 'Search the internet for EXTERNAL information only: market trends, regulations, competitor data, industry news, GST/tax rates, global pricing. Do NOT use for internal business data — use query_moysklad or query_tally instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2339,6 +2069,35 @@ RULE: If user says "sku wise", "flavour wise", "variant wise", "breakdown" → A
     }
   }
 ];
+
+// ── MoySklad sync endpoints ───────────────────────────────────────────────
+let _msSyncRunning = false;
+
+app.post('/api/ms/sync', async (req, res) => {
+  if (_msSyncRunning) return res.json({ ok: false, message: 'Sync already running' });
+  res.json({ ok: true, message: 'Sync started' });
+  _msSyncRunning = true;
+  try {
+    const { runSync } = require('./sync-ms-data');
+    await runSync({ verbose: true });
+    console.log('[MS sync] completed');
+  } catch (e) {
+    console.error('[MS sync] failed:', e.message);
+  } finally {
+    _msSyncRunning = false;
+  }
+});
+
+app.get('/api/ms/sync/status', async (req, res) => {
+  try {
+    const db = await getMongoDb();
+    if (!db) return res.json({ ok: false, error: 'MongoDB not connected' });
+    const meta = await db.collection('ms_sync_meta').findOne({ _id: 'main' });
+    res.json({ ok: true, running: _msSyncRunning, meta: meta || null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 app.post('/api/chat', async (req, res) => {
   try {
@@ -2365,10 +2124,10 @@ app.post('/api/chat', async (req, res) => {
         if (toolUses.length > 0) {
           const toolResults_raw = await Promise.all(toolUses.map(t => {
             if (t.name === 'web_search')       return webSearch(t.input.query);
-            if (t.name === 'query_sales')      return toolQuerySales(t.input);
-            if (t.name === 'query_inventory')  return toolQueryInventory(t.input);
-            if (t.name === 'query_customers')  return toolQueryCustomers(t.input);
-            return Promise.resolve(JSON.stringify({ error: 'Unknown tool' }));
+            if (t.name === 'query_moysklad')   return toolQueryMoysklad(t.input);
+            if (t.name === 'query_tally')      return toolQueryTally(t.input);
+            if (t.name === 'compare_sources')  return toolCompareSources(t.input);
+            return Promise.resolve(JSON.stringify({ error: 'Unknown tool: ' + t.name }));
           }));
           const toolResults = toolUses.map((t, i) => ({
             type: 'tool_result',
@@ -2826,6 +2585,25 @@ function startServer(port) {
     console.log(`\n  PLATINA running`);
     console.log(`  Local:   http://localhost:${port}`);
     console.log(`  Network: http://${ip}:${port}\n`);
+
+    // Background MoySklad auto-sync every 4 hours
+    const MS_SYNC_INTERVAL = 4 * 60 * 60 * 1000;
+    async function scheduleSync() {
+      if (!_msSyncRunning) {
+        _msSyncRunning = true;
+        try {
+          const { runSync } = require('./sync-ms-data');
+          await runSync({ verbose: false });
+          console.log('[MS auto-sync] completed');
+        } catch (e) {
+          console.error('[MS auto-sync] failed:', e.message);
+        } finally {
+          _msSyncRunning = false;
+        }
+      }
+      setTimeout(scheduleSync, MS_SYNC_INTERVAL);
+    }
+    setTimeout(scheduleSync, MS_SYNC_INTERVAL);
   });
 
   server.on('error', (err) => {

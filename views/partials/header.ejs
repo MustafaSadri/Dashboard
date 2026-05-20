@@ -38,6 +38,13 @@
   <a href="javascript:location.reload()" class="topbar-refresh" title="Refresh data">
     <i class="fas fa-rotate-right"></i>
   </a>
+  <button id="msSyncBtn" onclick="triggerMsSync()" title="Sync MoySklad data to MongoDB"
+    style="background:none;border:1px solid var(--border);color:var(--text2);border-radius:8px;
+           padding:6px 10px;cursor:pointer;font-size:13px;transition:all .2s;margin-left:8px;
+           display:inline-flex;align-items:center;gap:6px;">
+    <i class="fas fa-cloud-arrow-down" id="msSyncIcon"></i>
+    <span id="msSyncLabel" style="font-size:12px">Sync MS</span>
+  </button>
   <a href="/logout" title="Sign out"
     style="background:none;border:1px solid var(--border);color:var(--text2);border-radius:8px;
            padding:6px 10px;cursor:pointer;font-size:13px;transition:all .2s;margin-left:8px;
@@ -45,6 +52,34 @@
     <i class="fas fa-right-from-bracket"></i>
   </a>
 </div>
+
+<script>
+async function triggerMsSync() {
+  var btn = document.getElementById('msSyncBtn');
+  var icon = document.getElementById('msSyncIcon');
+  var lbl = document.getElementById('msSyncLabel');
+  btn.disabled = true;
+  icon.className = 'fas fa-spinner fa-spin';
+  lbl.textContent = 'Syncing…';
+  try {
+    var r = await fetch('/api/ms/sync', { method: 'POST' });
+    var d = await r.json();
+    if (d.ok) {
+      icon.className = 'fas fa-check';
+      lbl.textContent = 'Started';
+      setTimeout(function(){ icon.className='fas fa-cloud-arrow-down'; lbl.textContent='Sync MS'; btn.disabled=false; }, 4000);
+    } else {
+      icon.className = 'fas fa-info-circle';
+      lbl.textContent = d.message || 'Running';
+      setTimeout(function(){ icon.className='fas fa-cloud-arrow-down'; lbl.textContent='Sync MS'; btn.disabled=false; }, 3000);
+    }
+  } catch(e) {
+    icon.className = 'fas fa-exclamation-triangle';
+    lbl.textContent = 'Error';
+    setTimeout(function(){ icon.className='fas fa-cloud-arrow-down'; lbl.textContent='Sync MS'; btn.disabled=false; }, 3000);
+  }
+}
+</script>
 
 <!-- Stock Alert Panel -->
 <div class="alert-panel" id="alertPanel">
