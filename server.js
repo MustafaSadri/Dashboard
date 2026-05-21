@@ -934,39 +934,77 @@ app.get('/salesman', async (req, res) => {
       return map;
     });
 
-    // Fetch customerOrders and demands for the period in parallel.
-    // Demands filter uses the same start but extends the end by 45 days to catch
-    // shipments created shortly after the period (e.g. order Jan 31, shipped Feb 2).
+    // ── KEY LOGIC: aggregate by SHIPMENT (demand) date, not order date ─────────
+    // This means an April order shipped in May counts in May's salesman report.
+    // An order placed this month but not yet shipped is NOT counted (shown in unshipped modal).
+
+    // 1. Fetch all shipments (demands) whose shipment date falls in the selected period
+    const demUrl = `/entity/demand?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent&order=moment,desc`;
+    const { rows: demands } = await msAll(demUrl);
+
+    // 2. Fetch orders placed in the period — used ONLY for the unshipped modal
     const ordUrl = `/entity/customerorder?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent&order=moment,desc`;
-    const demParts = [];
-    if (momentFrom) demParts.push(`moment>${momentFrom}`);
-    if (momentTo) {
-      const bufDate = new Date(momentTo.slice(0, 10));
-      bufDate.setDate(bufDate.getDate() + 45);
-      demParts.push(`moment<${localDateStr(bufDate)} 00:00:00`);
-    }
-    const demFilterStr = demParts.join(';');
-    const demUrl = `/entity/demand?${demFilterStr ? 'filter='+enc(demFilterStr)+'&' : ''}order=moment,desc`;
+    const { rows: ordersInPeriod } = await msAll(ordUrl);
 
-    const [{ rows: orders }, { rows: demands }] = await Promise.all([
-      msAll(ordUrl),
-      msAll(demUrl)
-    ]);
-
-    // Build a Set of customerOrder IDs that have at least one demand (shipment created).
+    // 3. Build set of customerOrder IDs that have at least one shipment in this period
     const shippedOrderIds = new Set();
     demands.forEach(d => {
       const href = d.customerOrder?.meta?.href || '';
-      if (!href) return;
-      const oid = href.split('/').pop().split('?')[0];
-      if (oid) shippedOrderIds.add(oid);
+      if (href) shippedOrderIds.add(href.split('/').pop().split('?')[0]);
     });
 
-    // Only count orders where a shipment has actually been created.
-    const shippedOrders   = orders.filter(o =>  shippedOrderIds.has(o.id));
-    const unshippedRaw    = orders.filter(o => !shippedOrderIds.has(o.id));
+    // 4. Batch-fetch the parent customer orders for each demand so we can read
+    //    their `owner` (salesman). These orders may be from any previous period.
+    const parentOrderIds = [...new Set(demands.map(d => {
+      const href = d.customerOrder?.meta?.href || '';
+      return href ? href.split('/').pop().split('?')[0] : null;
+    }).filter(Boolean))];
 
-    // Fetch positions for each unshipped order (batches of 20) to get PCS count.
+    const POBATCH = 30;
+    const parentOrderMap = {}; // orderId → order object
+    for (let i = 0; i < parentOrderIds.length; i += POBATCH) {
+      const results = await Promise.allSettled(
+        parentOrderIds.slice(i, i + POBATCH).map(id => ms(`/entity/customerorder/${id}`))
+      );
+      results.forEach((r, j) => {
+        if (r.status === 'fulfilled') parentOrderMap[parentOrderIds[i + j]] = r.value;
+      });
+    }
+
+    // 5. Aggregate demands by salesman (owner of parent order)
+    //    Revenue = demand.sum (the actual shipment value, not the original order value)
+    const smMap = {};
+    demands.forEach(demand => {
+      const ordHref  = demand.customerOrder?.meta?.href || '';
+      const ordId    = ordHref ? ordHref.split('/').pop().split('?')[0] : null;
+      const order    = ordId ? parentOrderMap[ordId] : null;
+
+      const ownerUUID = (order?.owner?.meta?.href || '').split('/').pop().split('?')[0];
+      const name      = ownerUUID ? (empMap[ownerUUID] || 'Unassigned') : 'Unassigned';
+      const val       = (demand.sum || 0) / 100;
+      const date      = (demand.moment || '').slice(0, 10);
+      const customer  = demand.agent?.name || order?.agent?.name || '—';
+      const orderName = order?.name || '—';
+
+      if (!smMap[name]) smMap[name] = { name, orders: 0, totalVal: 0, orderList: [] };
+      smMap[name].orders++;
+      smMap[name].totalVal += val;
+      smMap[name].orderList.push({ name: demand.name || '—', orderName, date, customer, val, state: '—' });
+    });
+
+    const salesmen = Object.values(smMap)
+      .map(s => ({
+        name:      s.name,
+        orders:    s.orders,
+        shipments: s.orders,
+        totalVal:  s.totalVal,
+        avgVal:    s.orders > 0 ? s.totalVal / s.orders : 0,
+        orderList: s.orderList.sort((a, b) => new Date(b.date) - new Date(a.date))
+      }))
+      .sort((a, b) => b.totalVal - a.totalVal);
+
+    // 6. Unshipped modal: orders placed in this period with no shipment created yet
+    const unshippedRaw = ordersInPeriod.filter(o => !shippedOrderIds.has(o.id));
     const UBATCH = 20;
     const unshippedOrders = [];
     for (let i = 0; i < unshippedRaw.length; i += UBATCH) {
@@ -992,39 +1030,11 @@ app.get('/salesman', async (req, res) => {
     }
     unshippedOrders.sort((a, b) => b.val - a.val);
 
-    // Aggregate by salesman (customerOrder.owner)
-    const smMap = {};
-    shippedOrders.forEach(order => {
-      const ownerUUID = (order.owner?.meta?.href || '').split('/').pop().split('?')[0];
-      const name      = ownerUUID ? (empMap[ownerUUID] || 'Unassigned') : 'Unassigned';
-      const val       = (order.sum || 0) / 100;
-      const date      = (order.moment || '').slice(0, 10);
-      const customer  = order.agent?.name || '—';
-      const orderName = order.name || '—';
-      const state     = order.state?.name || '—';
-
-      if (!smMap[name]) smMap[name] = { name, orders: 0, totalVal: 0, orderList: [] };
-      smMap[name].orders++;
-      smMap[name].totalVal += val;
-      smMap[name].orderList.push({ name: orderName, orderName, date, customer, val, state });
-    });
-
-    const salesmen = Object.values(smMap)
-      .map(s => ({
-        name:      s.name,
-        orders:    s.orders,
-        shipments: s.orders,   // kept for template compatibility
-        totalVal:  s.totalVal,
-        avgVal:    s.orders > 0 ? s.totalVal / s.orders : 0,
-        orderList: s.orderList.sort((a, b) => new Date(b.date) - new Date(a.date))
-      }))
-      .sort((a, b) => b.totalVal - a.totalVal);
-
     const chartTop = salesmen.slice(0, 10);
     res.render('salesman', {
       ...c, active: 'salesman',
       salesmen, period, months,
-      totalOrders: shippedOrders.length,
+      totalOrders: demands.length,
       chartLabels:    JSON.stringify(chartTop.map(s => s.name)),
       chartValueData:  JSON.stringify(chartTop.map(s => Math.round(s.totalVal))),
       chartOrderData:  JSON.stringify(chartTop.map(s => s.orders)),
