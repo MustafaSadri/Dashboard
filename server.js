@@ -199,6 +199,11 @@ app.get('/api/warm', async (req, res) => {
       .filter(r => !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(resolveState(r, stateMapVal).toLowerCase()))
       .map(o => o.id);
     if (pendingIds.length) await getPendingPCS(pendingIds).catch(() => {});
+    // Pre-warm today's PCS from recent demands (warmed[3])
+    const demandsVal = warmed[3].status === 'fulfilled' ? warmed[3].value : [];
+    const todayWarm  = todayStr();
+    const todayIds   = demandsVal.filter(d => (d.moment||'').startsWith(todayWarm)).map(d => d.id);
+    if (todayIds.length) await getTodayPCS(todayIds).catch(() => {});
     res.json({ ok: true });
   } catch (e) {
     res.json({ ok: true, warn: e.message });
@@ -566,6 +571,24 @@ async function getPendingPCS(orderIds) {
   });
 }
 
+// Fetch total PCS (units) for today's shipped demands — all in parallel (small number)
+// TTL matches getRecentDemands (90s) since both are based on today's data
+async function getTodayPCS(demandIds) {
+  if (!demandIds.length) return 0;
+  const cacheKey = `today_pcs_${todayStr()}_${demandIds.length}`;
+  return cached(cacheKey, 90 * 1000, async () => {
+    const results = await Promise.allSettled(
+      demandIds.map(id => ms(`/entity/demand/${id}/positions?limit=200`))
+    );
+    let total = 0;
+    results.forEach(r => {
+      if (r.status === 'fulfilled')
+        (r.value.rows || []).forEach(pos => { total += Math.round(pos.quantity || 0); });
+    });
+    return total;
+  });
+}
+
 // ── Helpers ──────────────────────────────────────────────
 const todayStr   = () => localDateStr(new Date());
 const localDateStr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -629,6 +652,7 @@ app.get('/', async (req, res) => {
     const todayShipments = shipments.filter(r => (r.moment||'').startsWith(today));
     const salesToday     = todayShipments.reduce((a, r) => a + (r.sum||0), 0);
     const shipmentsToday = todayShipments.length;
+    const todayPCS       = await getTodayPCS(todayShipments.map(d => d.id));
 
     // Pending = NOT dispatched / declined / cancelled.
     // "ready to dispatch" stays pending. Declined/cancelled are excluded.
@@ -639,14 +663,16 @@ app.get('/', async (req, res) => {
     const pending = pendingOrders.length;
 
     // Count by actual state name for card sub-label
+    // Draft orders (no state) are counted separately and shown after named states
     const stateCountMap = {};
+    let draftCount = 0;
     pendingOrders.forEach(r => {
-      const s = resolveState(r, stateMap) || '—';
+      const s = resolveState(r, stateMap);
+      if (!s) { draftCount++; return; }  // no state = draft
       stateCountMap[s] = (stateCountMap[s] || 0) + 1;
     });
     const pendingStates = Object.entries(stateCountMap)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
       .map(([name, count]) => ({ name, count }));
     const pendingValue = pendingOrders.reduce((a, r) => a + (r.sum || 0), 0) / 100;
     // Total pieces across all pending orders (fetched in batches, cached)
@@ -681,8 +707,8 @@ app.get('/', async (req, res) => {
 
     res.render('dashboard', {
       ...c, active: 'dashboard',
-      salesToday: salesToday/100, shipmentsToday,
-      pending, pendingStates, pendingValue, pendingPCS,
+      salesToday: salesToday/100, shipmentsToday, todayPCS,
+      pending, pendingStates, pendingValue, pendingPCS, draftCount,
       totalOrders: orders.length,
       products: products.slice(0,10).map(r=>({
         name: r.assortment?.name||'—',
@@ -925,7 +951,7 @@ app.get('/salesman', async (req, res) => {
 
     // Get ALL employees in one call (cached 15 min) — keyed by UUID.
     const empMap = await cached('employees_map', 15*60*1000, async () => {
-      const r = await ms('/entity/employee?limit=100');
+      const r = await ms('/entity/employee?limit=1000');
       const map = {};
       (r.rows || []).forEach(e => {
         const uuid = (e.meta?.href || '').split('/').pop().split('?')[0];
@@ -973,14 +999,24 @@ app.get('/salesman', async (req, res) => {
 
     // 5. Aggregate demands by salesman (owner of parent order)
     //    Revenue = demand.sum (the actual shipment value, not the original order value)
+    //
+    //    Owner resolution priority:
+    //      1. Parent customer order's owner  (standard case — order placed then shipped)
+    //      2. Demand's own owner field       (fallback for standalone demands with no parent order,
+    //                                         or when the parent order fetch failed)
     const smMap = {};
     demands.forEach(demand => {
       const ordHref  = demand.customerOrder?.meta?.href || '';
       const ordId    = ordHref ? ordHref.split('/').pop().split('?')[0] : null;
       const order    = ordId ? parentOrderMap[ordId] : null;
 
-      const ownerUUID = (order?.owner?.meta?.href || '').split('/').pop().split('?')[0];
+      // Try parent order owner first; fall back to the demand's own owner so standalone
+      // demands (not linked to any customer order) are never incorrectly "Unassigned".
+      const orderOwnerUUID  = (order?.owner?.meta?.href  || '').split('/').pop().split('?')[0];
+      const demandOwnerUUID = (demand.owner?.meta?.href  || '').split('/').pop().split('?')[0];
+      const ownerUUID = orderOwnerUUID || demandOwnerUUID;
       const name      = ownerUUID ? (empMap[ownerUUID] || 'Unassigned') : 'Unassigned';
+
       const val       = (demand.sum || 0) / 100;
       const date      = (demand.moment || '').slice(0, 10);
       const customer  = demand.agent?.name || order?.agent?.name || '—';

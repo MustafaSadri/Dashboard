@@ -10,7 +10,7 @@
       <div class="stat-card success" style="cursor:pointer" title="Click to see day-wise shipments">
         <div class="stat-label">Sales Today <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
         <div class="stat-value"><%- fmtShort(salesToday) %></div>
-        <div class="stat-sub"><%- shipmentsToday %> shipment(s) today</div>
+        <div class="stat-sub"><%- shipmentsToday %> shipment(s) today<% if(typeof todayPCS !== 'undefined' && todayPCS > 0){ %> · <strong><%- todayPCS.toLocaleString('en-US') %> pcs</strong><% } %></div>
         <i class="fas fa-truck stat-icon"></i>
       </div>
       </a>
@@ -23,9 +23,8 @@
         </div>
         <div class="stat-sub" style="margin-top:4px">
           <% if(typeof pendingPCS !== 'undefined' && pendingPCS > 0){ %><strong><%- pendingPCS.toLocaleString('en-US') %> pcs</strong> · <% } %>
-          <% if(pendingStates.length===0){ %>No pending orders
-          <% } else { pendingStates.forEach(function(s,i){ %><%- s.name %>: <%- s.count %><%- i<pendingStates.length-1?' · ':'' %>
-          <% }) } %>
+          <% if(pendingStates.length===0 && !(draftCount > 0)){ %>No pending orders
+          <% } else { pendingStates.forEach(function(s,i){ %><%- s.name %>: <%- s.count %><%- (i<pendingStates.length-1 || draftCount>0)?' · ':'' %><% }); if(draftCount > 0){ %>Draft: <%- draftCount %><% } } %>
         </div>
         <i class="fas fa-shopping-cart stat-icon"></i>
       </div>
