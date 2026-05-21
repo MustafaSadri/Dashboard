@@ -182,15 +182,23 @@ app.get('/loading', (req, res) => {
 app.get('/api/warm', async (req, res) => {
   if (!req.session.loggedIn) return res.status(401).json({ ok: false });
   try {
-    await Promise.allSettled([
-      common(),
-      getStock(),
-      getAllOrders(),
-      getRecentDemands(),
-      getOrderStateMap(),
-      getProfitByProduct(monthStart()),
-      getProfitByCounterparty(monthStart()),
+    const warmed = await Promise.allSettled([
+      common(),                              // 0
+      getStock(),                            // 1
+      getAllOrders(),                         // 2
+      getRecentDemands(),                    // 3
+      getOrderStateMap(),                    // 4
+      getProfitByProduct(monthStart()),      // 5
+      getProfitByCounterparty(monthStart()), // 6
+      getDemandsFromDec25(),                 // 7
     ]);
+    // Also pre-warm pending PCS (needs orders + stateMap already cached above)
+    const ordersVal   = warmed[2].status === 'fulfilled' ? warmed[2].value : [];
+    const stateMapVal = warmed[4].status === 'fulfilled' ? warmed[4].value : {};
+    const pendingIds  = ordersVal
+      .filter(r => !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(resolveState(r, stateMapVal).toLowerCase()))
+      .map(o => o.id);
+    if (pendingIds.length) await getPendingPCS(pendingIds).catch(() => {});
     res.json({ ok: true });
   } catch (e) {
     res.json({ ok: true, warn: e.message });
@@ -537,6 +545,27 @@ const getProfitByCounterparty = (from, to) => {
   return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []));
 };
 
+// Fetch total PCS (units) for a list of pending order IDs — batch of 20 parallel calls
+// Cache key uses count + first ID as a lightweight signature (busts when orders change)
+async function getPendingPCS(orderIds) {
+  if (!orderIds.length) return 0;
+  const cacheKey = `pending_pcs_${orderIds.length}_${orderIds[0] || ''}`;
+  return cached(cacheKey, 3 * 60 * 1000, async () => {
+    const BATCH = 20;
+    let total = 0;
+    for (let i = 0; i < orderIds.length; i += BATCH) {
+      const results = await Promise.allSettled(
+        orderIds.slice(i, i + BATCH).map(id => ms(`/entity/customerorder/${id}/positions?limit=200`))
+      );
+      results.forEach(r => {
+        if (r.status === 'fulfilled')
+          (r.value.rows || []).forEach(pos => { total += Math.round(pos.quantity || 0); });
+      });
+    }
+    return total;
+  });
+}
+
 // ── Helpers ──────────────────────────────────────────────
 const todayStr   = () => localDateStr(new Date());
 const localDateStr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -601,10 +630,11 @@ app.get('/', async (req, res) => {
     const salesToday     = todayShipments.reduce((a, r) => a + (r.sum||0), 0);
     const shipmentsToday = todayShipments.length;
 
-    // Pending = everything that is NOT dispatched (includes draft, new, accepted, ready)
+    // Pending = NOT dispatched / declined / cancelled.
+    // "ready to dispatch" stays pending. Declined/cancelled are excluded.
     const pendingOrders = orders.filter(r => {
       const s = resolveState(r, stateMap).toLowerCase();
-      return !/dispatch|отгруз/i.test(s);
+      return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
     });
     const pending = pendingOrders.length;
 
@@ -619,6 +649,8 @@ app.get('/', async (req, res) => {
       .slice(0, 3)
       .map(([name, count]) => ({ name, count }));
     const pendingValue = pendingOrders.reduce((a, r) => a + (r.sum || 0), 0) / 100;
+    // Total pieces across all pending orders (fetched in batches, cached)
+    const pendingPCS   = await getPendingPCS(pendingOrders.map(o => o.id));
 
     // Stock stats
     let lowStock=0, inStock=0, outStock=0, totalQty=0, totalVal=0;
@@ -629,14 +661,28 @@ app.get('/', async (req, res) => {
       if (q<=0) outStock++; else if (q<100) { lowStock++; inStock++; } else inStock++;
     });
 
-    const totalSell      = products.reduce((a,r)=>a+(r.sellSum||0),0);
-    const weeklyOrders   = buildDailyCounts(shipments, 15);
-    const monthlyOrders  = await getDemandsFromDec25().then(rows => buildMonthlyCounts(rows));
+    const totalSell     = products.reduce((a,r)=>a+(r.sellSum||0),0);
+    const weeklyOrders  = buildDailyCounts(shipments, 15);
+    const allDemands    = await getDemandsFromDec25();
+    const monthlyOrders = buildMonthlyCounts(allDemands);
+
+    // Pro-rata growth: compare current month (day 1 → today) vs SAME day range last month
+    // so an incomplete month never shows fake negative growth vs a full previous month
+    const nowD         = new Date();
+    const dayOfMonth   = nowD.getDate();
+    const prevD        = new Date(nowD.getFullYear(), nowD.getMonth() - 1, 1);
+    const prevMonthKey = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}`;
+    const prevMonthProRata = allDemands
+      .filter(d => {
+        const date = (d.moment || '').slice(0, 10);
+        return date.startsWith(prevMonthKey) && parseInt(date.slice(8, 10), 10) <= dayOfMonth;
+      })
+      .reduce((a, d) => a + Math.round((d.sum || 0) / 100), 0);
 
     res.render('dashboard', {
       ...c, active: 'dashboard',
       salesToday: salesToday/100, shipmentsToday,
-      pending, pendingStates, pendingValue,
+      pending, pendingStates, pendingValue, pendingPCS,
       totalOrders: orders.length,
       products: products.slice(0,10).map(r=>({
         name: r.assortment?.name||'—',
@@ -655,8 +701,10 @@ app.get('/', async (req, res) => {
       lowStock, inStock, outStock,
       totalSKU: stock.length, totalVal: totalVal/100,
       totalQty, categories: folders.size,
-      weeklyData:   JSON.stringify(weeklyOrders),
-      monthlyData:  JSON.stringify(monthlyOrders)
+      weeklyData:        JSON.stringify(weeklyOrders),
+      monthlyData:       JSON.stringify(monthlyOrders),
+      dayOfMonth,
+      prevMonthProRata
     });
   } catch (e) { res.status(500).render('error', { message: e.message }); }
 });
