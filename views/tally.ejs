@@ -9,10 +9,7 @@
       if (!ds) return null;
       return Math.floor((Date.now() - new Date(ds).getTime()) / 86400000);
     };
-    var selMonthLabel = (function(){
-      var d = new Date(selMonth + '-02');
-      return d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-    })();
+    var selMonthLabel = periodLabel;
     var grossProfit = periodSales - periodPurchases - openingStock + closingStock;
     var ytdProfit   = totalSales - totalPurchases - totalExpenses;
     var grossMargin = periodSales > 0 ? Math.round(grossProfit / periodSales * 100) : 0;
@@ -25,39 +22,46 @@
       <% if(!connected){ %>
       <% if(syncedAt){ %>
       <div style="font-size:12px;color:var(--text2)">
-        <i class="fas fa-database" style="margin-right:5px;opacity:.6"></i>Last synced: <%= new Date(syncedAt).toLocaleString('en-IN') %>
+        <i class="fas fa-database" style="margin-right:5px;opacity:.6"></i>Tally last synced: <%= new Date(syncedAt).toLocaleString('en-IN') %>
       </div>
       <% } %>
       <% } else { %>
       <div style="display:flex;align-items:center;gap:7px;color:var(--accent2);font-size:13px">
         <i class="fas fa-circle-check"></i>
         <span>Connected<% if(company){ %> · <strong style="color:var(--text)"><%- company %></strong><% } %></span>
-        <% if(syncedAt){ %><span style="color:var(--text2);font-size:12px">· synced <%= new Date(syncedAt).toLocaleString('en-IN') %></span><% } %>
+        <% if(syncedAt){ %><span style="color:var(--text2);font-size:12px">· Tally last synced <%= new Date(syncedAt).toLocaleString('en-IN') %></span><% } %>
       </div>
       <% } %>
 
       <div style="margin-left:auto;display:flex;align-items:center;gap:9px;flex-wrap:wrap">
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)">
-          <i class="fas fa-calendar-days" style="font-size:11px"></i>
-          <select onchange="window.location='/tally?month='+this.value"
-            style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:5px 10px;font-size:12px;cursor:pointer;outline:none">
-            <%
-              var lastFy = null;
-              monthOpts.forEach(function(m) {
-                if (m.fy !== lastFy) { lastFy = m.fy; %>
-                  <optgroup label="── <%- m.fy %> ──" style="color:var(--text2);font-size:11px">
-                <% } %>
-                <option value="<%- m.value %>" <%- m.value===selMonth?'selected':'' %>><%- m.label %></option>
-            <% }); %>
-          </select>
-        </div>
+        <!-- Date range picker — by default current month start → today -->
+        <form onsubmit="applyCustomRange(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <i class="fas fa-calendar-days" style="font-size:11px;color:var(--text2)"></i>
+          <input id="customFrom" type="date" value="<%- customFrom %>"
+            style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:5px 8px;font-size:12px;outline:none">
+          <span style="font-size:11px;color:var(--text2)">to</span>
+          <input id="customTo" type="date" value="<%- customTo %>"
+            style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:5px 8px;font-size:12px;outline:none">
+          <button type="submit" title="Apply date range"
+            style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--accent);border:none;color:#fff;border-radius:8px;cursor:pointer">
+            <i class="fas fa-filter" style="font-size:12px"></i>
+          </button>
+          <a href="/tally" title="Reset to current month"
+            style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:8px;text-decoration:none" title="Reset to this month">
+            <i class="fas fa-rotate-left" style="font-size:12px"></i>
+          </a>
+        </form>
         <% if(connected){ %>
         <button id="syncBtn" onclick="syncNow()"
           style="display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">
           <i class="fas fa-cloud-arrow-up" id="syncIcon"></i><span id="syncText">Sync to DB</span>
         </button>
+        <button id="stockSnapBtn" onclick="saveStockSnapshot()" title="Save today's stock value to history (used for gross profit calculation)"
+          style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">
+          <i class="fas fa-boxes-stacked" id="stockSnapIcon" style="color:#5b8dee"></i><span id="stockSnapText">Save Stock</span>
+        </button>
         <% } %>
-        <a href="/tally?month=<%- selMonth %>" class="topbar-refresh" title="Refresh"><i class="fas fa-rotate-right"></i></a>
+        <a href="/tally?from=<%- customFrom %>&to=<%- customTo %>" class="topbar-refresh" title="Refresh"><i class="fas fa-rotate-right"></i></a>
       </div>
     </div>
 
@@ -87,39 +91,37 @@
     <i class="fas fa-calendar-check" style="color:var(--accent);margin-right:5px"></i><%- selMonthLabel %>
   </div>
   <div class="stats-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:20px">
-    <div class="stat-card success">
-      <div class="stat-label">Sales</div>
+    <div class="stat-card success" onclick="showVoucherType('sales')" style="cursor:pointer" title="Click to view sales entries">
+      <div class="stat-label">Sales <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.5;margin-left:3px"></i></div>
       <div class="stat-value"><%- fmtShort(periodSales) %></div>
       <div class="stat-sub">Revenue</div>
       <i class="fas fa-arrow-trend-up stat-icon"></i>
     </div>
-    <div class="stat-card warn">
-      <div class="stat-label">Purchases</div>
+    <div class="stat-card warn" onclick="showVoucherType('purchase')" style="cursor:pointer" title="Click to view purchase entries">
+      <div class="stat-label">Purchases <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.5;margin-left:3px"></i></div>
       <div class="stat-value"><%- fmtShort(periodPurchases) %></div>
       <div class="stat-sub">COGS</div>
       <i class="fas fa-cart-flatbed stat-icon"></i>
     </div>
-    <div class="stat-card <%- grossProfit>=0?'success':'danger' %>">
-      <div class="stat-label">Gross Profit</div>
+    <div class="stat-card <%- grossProfit>=0?'success':'danger' %>" onclick="openProfitDetail()" style="cursor:pointer" title="Click for full profit breakdown">
+      <div class="stat-label">Gross Profit <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.5;margin-left:3px"></i></div>
       <div class="stat-value"><%- fmtShort(Math.abs(grossProfit)) %></div>
-      <div class="stat-sub" title="Sales − Purchases − Opening Stock + Closing Stock">
+      <div class="stat-sub" title="Click for full breakdown">
         Margin <%- grossMargin %>%
-        <% if(openingStock > 0 || closingStock > 0){ %>
-        · OS <%- fmtShort(openingStock) %> / CS <%- fmtShort(closingStock) %>
-        <% } %>
+        · <% if(hasValidStockRange){ %><span style="color:var(--accent2);font-size:10px">Stock adjusted</span><% } else { %><span style="color:var(--warn);font-size:10px">No stock data</span><% } %>
       </div>
       <i class="fas fa-chart-pie stat-icon"></i>
     </div>
-    <div class="stat-card" onclick="document.getElementById('voucherSection').scrollIntoView({behavior:'smooth'});setTimeout(function(){filterV('receipt');},400);" style="cursor:pointer" title="Click to view collection entries">
+    <div class="stat-card" onclick="showVoucherType('receipt')" style="cursor:pointer" title="Click to view collection entries">
       <div class="stat-label">Collections <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.5;margin-left:3px"></i></div>
       <div class="stat-value"><%- fmtShort(periodCollections) %></div>
-      <div class="stat-sub">Money received this month</div>
+      <div class="stat-sub">Money received in this period</div>
       <i class="fas fa-hand-holding-dollar stat-icon"></i>
     </div>
-    <div class="stat-card danger">
-      <div class="stat-label">Outstanding</div>
+    <div class="stat-card danger" onclick="document.getElementById('receivablesAging').scrollIntoView({behavior:'smooth',block:'start'})" style="cursor:pointer" title="Click to view aging breakdown">
+      <div class="stat-label">Outstanding <i class="fas fa-arrow-down" style="font-size:9px;opacity:.5;margin-left:3px"></i></div>
       <div class="stat-value"><%- fmtShort(totalOutstanding) %></div>
-      <div class="stat-sub"><%- debtors.length %> customers</div>
+      <div class="stat-sub"><%- debtors.length %> customers — click to view aging</div>
       <i class="fas fa-clock stat-icon"></i>
     </div>
     <div class="stat-card warn">
@@ -195,7 +197,7 @@
 
   <!-- ══ RECEIVABLES AGING ════════════════════════════════════ -->
   <% if(debtors.length>0){ %>
-  <div style="margin-bottom:22px">
+  <div id="receivablesAging" style="margin-bottom:22px;scroll-margin-top:80px">
     <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.8px;font-weight:600;margin-bottom:10px">
       <i class="fas fa-hourglass-half" style="color:var(--warn);margin-right:5px"></i>Receivables Aging
     </div>
@@ -444,7 +446,7 @@
         <% if(!hasDbData){ %>
           <br><span style="font-size:12px;color:var(--text2)">Run <code style="background:var(--bg3);padding:1px 5px;border-radius:3px">node sync-tally-full.js</code> to load history</span>
         <% } else { %>
-          <br><span style="font-size:12px;color:var(--text2)">This month has no vouchers in Tally. Select a month with data using the dropdown above.</span>
+          <br><span style="font-size:12px;color:var(--text2)">This period has no vouchers in Tally. Select a month with data or choose another date range.</span>
         <% } %>
       </div>
     <% } else { %>
@@ -558,10 +560,289 @@
 
   </div><!-- /page -->
 </div><!-- /main -->
+
+<!-- ══ GROSS PROFIT DETAIL MODAL ══════════════════════════════ -->
+<%
+  var cogs = periodPurchases + openingStock - closingStock;
+  var grossProfitAbs = Math.abs(grossProfit);
+  var isLoss = grossProfit < 0;
+  var netProfitAbs = Math.abs(ytdProfit);
+  var isNetLoss = ytdProfit < 0;
+  var contributionMargin = periodSales > 0 ? Math.round((periodSales - periodPurchases) / periodSales * 100) : 0;
+%>
+<div id="profitDetailOverlay" onclick="if(event.target===this)closeProfitDetail()" style="
+  display:none;position:fixed;inset:0;z-index:9999;
+  background:rgba(10,12,28,.75);backdrop-filter:blur(4px);
+  align-items:center;justify-content:center;padding:20px">
+  <div style="
+    background:var(--bg2);border:1px solid var(--border);border-radius:16px;
+    width:100%;max-width:680px;max-height:90vh;overflow-y:auto;
+    box-shadow:0 24px 64px rgba(0,0,0,.5)">
+
+    <!-- Header -->
+    <div style="padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+      <div style="width:38px;height:38px;border-radius:10px;background:rgba(0,212,170,.12);display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-chart-pie" style="color:var(--accent2);font-size:16px"></i>
+      </div>
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--text)">Gross Profit Breakdown</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px"><%- selMonthLabel %></div>
+      </div>
+      <button onclick="closeProfitDetail()" style="margin-left:auto;width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-xmark"></i>
+      </button>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:24px">
+
+      <!-- Formula banner — always full 4-part formula -->
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px 18px;margin-bottom:18px;font-size:12px;color:var(--text2);text-align:center">
+        <code style="color:var(--accent)">Gross Profit = Sales − Opening Stock − Purchases + Closing Stock</code>
+      </div>
+
+      <!-- Stock notice: two states -->
+      <% if(!hasValidStockRange){ %>
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:11px 14px;background:rgba(255,169,77,.07);border:1px solid rgba(255,169,77,.28);border-radius:10px;margin-bottom:16px;font-size:12px">
+        <i class="fas fa-triangle-exclamation" style="color:var(--warn);margin-top:2px;flex-shrink:0"></i>
+        <div style="color:var(--text2);line-height:1.55">
+          <strong style="color:var(--warn)">Opening stock snapshot missing.</strong>
+          No sync was found on or before <strong><%- customFrom.split('-').reverse().join('/') %></strong> —
+          stock rows are set to <strong>₹0</strong> and cancel out of the formula.<br>
+          <span style="margin-top:5px;display:inline-block;opacity:.85">
+            <i class="fas fa-lightbulb" style="color:var(--warn);margin-right:4px"></i>
+            <strong>Fix:</strong> click <strong>Sync to DB</strong> on <strong>the first day</strong> of each period, then again at the end.
+          </span>
+        </div>
+      </div>
+      <% } %>
+
+      <!-- Calculation table — always shows all 4 rows -->
+      <div style="display:flex;flex-direction:column;gap:9px;margin-bottom:22px">
+
+        <!-- Sales (positive) -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:rgba(0,212,170,.06);border:1px solid rgba(0,212,170,.2);border-radius:10px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:17px;color:var(--accent2);font-weight:700;width:20px;text-align:center">+</span>
+            <div>
+              <div style="font-size:13px;font-weight:600;color:var(--text)">Revenue (Sales)</div>
+              <div style="font-size:11px;color:var(--text2);margin-top:2px">Invoiced sales in the period</div>
+            </div>
+          </div>
+          <div style="font-size:18px;font-weight:700;color:var(--accent2)"><%- fmt(periodSales) %></div>
+        </div>
+
+        <!-- Opening Stock (negative) -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;
+          background:<%- hasValidStockRange?'rgba(136,145,181,.06)':'rgba(136,145,181,.03)' %>;
+          border:1px solid <%- hasValidStockRange?'var(--border)':'rgba(136,145,181,.2)' %>;border-radius:10px;
+          opacity:<%- hasValidStockRange?'1':'.6' %>">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:17px;color:var(--text2);font-weight:700;width:20px;text-align:center">−</span>
+            <div>
+              <div style="font-size:13px;font-weight:600;color:var(--text)">Opening Stock</div>
+              <div style="font-size:11px;color:var(--text2);margin-top:2px">
+                <% if(hasValidStockRange){ %>snapshot as of <%- openingStockDate %>
+                <% } else { %>No snapshot found before <%- customFrom.split('-').reverse().join('/') %> — using ₹0<% } %>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:18px;font-weight:700;color:var(--text)"><%- hasValidStockRange ? fmt(openingStock) : '₹0' %></div>
+        </div>
+
+        <!-- Purchases (negative) -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:rgba(255,184,77,.06);border:1px solid rgba(255,184,77,.2);border-radius:10px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:17px;color:var(--warn);font-weight:700;width:20px;text-align:center">−</span>
+            <div>
+              <div style="font-size:13px;font-weight:600;color:var(--text)">Purchases (COGS)</div>
+              <div style="font-size:11px;color:var(--text2);margin-top:2px">Goods purchased in the period</div>
+            </div>
+          </div>
+          <div style="font-size:18px;font-weight:700;color:var(--warn)"><%- fmt(periodPurchases) %></div>
+        </div>
+
+        <!-- Closing Stock (positive) -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;
+          background:<%- hasValidStockRange?'rgba(91,141,238,.06)':'rgba(136,145,181,.03)' %>;
+          border:1px solid <%- hasValidStockRange?'rgba(91,141,238,.2)':'rgba(136,145,181,.2)' %>;border-radius:10px;
+          opacity:<%- hasValidStockRange?'1':'.6' %>">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:17px;color:#5b8dee;font-weight:700;width:20px;text-align:center">+</span>
+            <div>
+              <div style="font-size:13px;font-weight:600;color:var(--text)">Closing Stock</div>
+              <div style="font-size:11px;color:var(--text2);margin-top:2px">
+                <% if(hasValidStockRange){ %>snapshot as of <%- closingStockDate %>
+                <% } else { %>No matching boundary snapshot — using ₹0<% } %>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:18px;font-weight:700;color:#5b8dee"><%- hasValidStockRange ? fmt(closingStock) : '₹0' %></div>
+        </div>
+
+        <!-- Divider + Result -->
+        <div style="border-top:2px solid var(--border);margin:3px 0"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 16px;
+          background:<%- isLoss?'rgba(255,77,109,.08)':'rgba(0,212,170,.08)' %>;
+          border:2px solid <%- isLoss?'var(--danger)':'var(--accent2)' %>;border-radius:10px">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text)">= Gross <%- isLoss?'Loss':'Profit' %></div>
+            <div style="font-size:11px;color:var(--text2);margin-top:3px">
+              Sales − Opening Stock − Purchases + Closing Stock
+            </div>
+          </div>
+          <div>
+            <div style="font-size:24px;font-weight:800;color:<%- isLoss?'var(--danger)':'var(--accent2)' %>">
+              <%- isLoss?'−':'' %><%- fmt(grossProfitAbs) %>
+            </div>
+            <div style="text-align:right;margin-top:3px">
+              <span style="font-size:12px;padding:2px 10px;border-radius:20px;font-weight:600;
+                background:<%- isLoss?'rgba(255,77,109,.15)':'rgba(0,212,170,.15)' %>;
+                color:<%- isLoss?'var(--danger)':'var(--accent2)' %>"><%- grossMargin %>% margin</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Reference stock snapshot (always visible when any sync exists) -->
+      <% if(refStockValue !== null && refStockValue !== undefined){ %>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:22px;display:flex;align-items:center;gap:12px">
+        <div style="width:34px;height:34px;border-radius:8px;background:rgba(91,141,238,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-boxes-stacked" style="color:#5b8dee;font-size:14px"></i>
+        </div>
+        <div style="flex:1">
+          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:3px">
+            Latest Stock Snapshot <% if(!hasValidStockRange){ %><span style="font-weight:400;font-size:10px;color:var(--warn)">(reference only — not used in formula above)</span><% } %>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <span style="font-size:16px;font-weight:700;color:var(--text)"><%- fmt(refStockValue) %></span>
+            <span style="font-size:12px;color:var(--text2)">as of <%- refStockDate.split('-').reverse().join('/') %></span>
+            <% if(!hasValidStockRange){ %>
+            <span style="font-size:11px;color:var(--text2);background:rgba(255,169,77,.1);padding:2px 8px;border-radius:4px;border:1px solid rgba(255,169,77,.2)">
+              Sync on <%- customFrom.split('-').reverse().join('/') %> to use as opening stock
+            </span>
+            <% } %>
+          </div>
+        </div>
+      </div>
+      <% } %>
+
+      <!-- Metrics row -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Contribution Margin</div>
+          <div style="font-size:20px;font-weight:700;color:var(--text)"><%- contributionMargin %>%</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">(Sales − Purchases) / Sales</div>
+        </div>
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">COGS Total</div>
+          <div style="font-size:20px;font-weight:700;color:var(--warn)"><%- fmt(Math.max(0,cogs)) %></div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">Purchases + OS − CS</div>
+        </div>
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Collections</div>
+          <div style="font-size:20px;font-weight:700;color:#5b8dee"><%- fmt(periodCollections) %></div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">Cash received this period</div>
+        </div>
+      </div>
+
+      <!-- YTD P&L summary -->
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:16px 18px">
+        <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.7px;font-weight:600;margin-bottom:14px">
+          <i class="fas fa-chart-bar" style="color:var(--accent);margin-right:5px"></i>YTD P&L Summary
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;justify-content:space-between;font-size:13px">
+            <span style="color:var(--text2)">YTD Sales</span>
+            <strong style="color:var(--accent2)"><%- fmt(totalSales) %></strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:13px">
+            <span style="color:var(--text2)">YTD Purchases</span>
+            <strong style="color:var(--warn)">− <%- fmt(totalPurchases) %></strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:13px">
+            <span style="color:var(--text2)">YTD Expenses</span>
+            <strong style="color:var(--danger)">− <%- fmt(totalExpenses) %></strong>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:2px;display:flex;justify-content:space-between;font-size:14px">
+            <span style="font-weight:600;color:var(--text)">YTD Net <%- isNetLoss?'Loss':'Profit' %></span>
+            <strong style="font-size:16px;color:<%- isNetLoss?'var(--danger)':'var(--accent2)' %>">
+              <%- isNetLoss?'−':'' %><%- fmt(netProfitAbs) %>
+            </strong>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /body -->
+  </div>
+</div>
+
 <%- include('partials/foot') %>
 
 <!-- ── Sync button JS ─────────────────────────────────────── -->
 <script>
+function applyCustomRange(e) {
+  e.preventDefault();
+  const from = document.getElementById('customFrom').value;
+  const to = document.getElementById('customTo').value;
+  if (!from || !to) {
+    alert('Please select both from and to dates.');
+    return;
+  }
+  if (from > to) {
+    alert('From date cannot be after To date.');
+    return;
+  }
+  window.location = '/tally?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to);
+}
+
+function showVoucherType(type) {
+  const section = document.getElementById('voucherSection');
+  if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setTimeout(function(){ filterV(type); }, 350);
+}
+
+async function saveStockSnapshot() {
+  const btn  = document.getElementById('stockSnapBtn');
+  const icon = document.getElementById('stockSnapIcon');
+  const txt  = document.getElementById('stockSnapText');
+  btn.disabled = true;
+  icon.className = 'fas fa-spinner fa-spin';
+  txt.textContent = 'Saving…';
+  try {
+    // Use the "to" date from the picker as the snapshot date (defaults to today)
+    const snapDate = document.getElementById('customTo').value || new Date().toISOString().slice(0,10);
+    const d = await (await fetch('/api/tally/stock-snapshot?date=' + snapDate, { method: 'POST' })).json();
+    if (d.ok) {
+      icon.className = 'fas fa-check';
+      txt.textContent = 'Saved · ₹' + Math.round(d.totalValue).toLocaleString('en-IN');
+      setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#5b8dee'; txt.textContent='Save Stock'; btn.disabled=false; }, 3000);
+    } else {
+      icon.className = 'fas fa-xmark'; txt.textContent = 'Failed'; btn.disabled = false;
+      alert('Stock snapshot failed: ' + (d.error || 'Unknown'));
+      setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#5b8dee'; txt.textContent='Save Stock'; }, 2000);
+    }
+  } catch(e) {
+    icon.className = 'fas fa-xmark'; txt.textContent = 'Error'; btn.disabled = false;
+    alert('Error: ' + e.message);
+    setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#5b8dee'; txt.textContent='Save Stock'; }, 2000);
+  }
+}
+
+function openProfitDetail() {
+  const el = document.getElementById('profitDetailOverlay');
+  el.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+function closeProfitDetail() {
+  const el = document.getElementById('profitDetailOverlay');
+  el.style.display = 'none';
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeProfitDetail();
+});
+
 async function syncNow() {
   const btn=document.getElementById('syncBtn'), icon=document.getElementById('syncIcon'), txt=document.getElementById('syncText');
   btn.disabled=true; icon.className='fas fa-spinner fa-spin'; txt.textContent='Syncing…';

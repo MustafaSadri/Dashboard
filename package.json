@@ -4,7 +4,8 @@
   "description": "Warehouse Intelligence Dashboard",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "clear:moysklad": "node clear-moysklad-data.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.1",

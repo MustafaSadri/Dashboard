@@ -84,7 +84,7 @@ function parseVouchersFromXml(xml) {
     const num    = stripXml(getTag(blk, 'VOUCHERNUMBER'));
     const party  = stripXml(getTag(blk, 'PARTYLEDGERNAME'));
     const amount = Math.abs(parseTallyAmount(getTag(blk, 'AMOUNT')));
-    const raw    = `${dateStr}|${type}|${num || (party + '|' + amount)}`;
+    const raw    = `${dateStr}|${type}|${num}|${party}|${amount}`;
     const _id    = raw.replace(/[^a-zA-Z0-9|._-]/g, '_').slice(0, 120);
     out.push({ _id, dateStr, date: new Date(dateStr), month: dateStr.slice(0,7),
                type, voucherNumber: num, party, amount,
@@ -1141,25 +1141,8 @@ app.get('/customers', async (req, res) => {
       custMap[key].totalVal += (demand.sum || 0) / 100;
     });
 
-    // Overlay qty from MongoDB ms_demands (has embedded positions from last sync — best effort)
-    try {
-      const db = await getMongoDb();
-      if (db) {
-        const qFilter = {};
-        if (momentFrom) qFilter.moment = { $gte: momentFrom };
-        if (momentTo)   (qFilter.moment = qFilter.moment || {}).$lt = momentTo;
-        const mongoDemands = await db.collection('ms_demands')
-          .find(qFilter, { projection: { customerId: 1, positions: 1 } })
-          .toArray();
-        mongoDemands.forEach(d => {
-          const key = d.customerId || '__no_agent__';
-          if (custMap[key]) {
-            const qty = (d.positions || []).reduce((a, p) => a + Math.round(p.quantity || 0), 0);
-            custMap[key].totalQty += qty;
-          }
-        });
-      }
-    } catch (_) { /* MongoDB unavailable — qty shows 0, revenue unaffected */ }
+    // Note: qty per customer is not available from the profit/bycounterparty endpoint.
+    // MoySklad sync to MongoDB is disabled, so qty always stays 0 (not shown in UI).
 
     const customers = Object.values(custMap)
       .filter(x => x.id && x.name !== '—')   // exclude no-agent demands from list
@@ -1713,99 +1696,179 @@ function parsePeriodMongo(period) {
   return { from: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`, to: todayStr() };
 }
 
-// ── Chatbot tool: query MoySklad data from MongoDB ────────────────────────
+// ── Chatbot tool: query MoySklad data LIVE via API (not MongoDB) ──────────
 async function toolQueryMoysklad({ data_type = 'demands', period = 'this_month', group_by = 'product', filter, top_n = 15, sort_by = 'revenue' } = {}) {
   try {
-    const db = await getMongoDb();
-    if (!db) return JSON.stringify({ error: 'MongoDB not connected' });
-    const { from, to } = parsePeriodMongo(period);
-    const N  = Math.min(+top_n || 15, 200);
-    const sf = sort_by === 'quantity' ? 'qty' : sort_by === 'orders' ? 'orders' : 'revenue';
+    const { from, to } = parsePeriodMongo(period);  // YYYY-MM-DD strings
+    const N   = Math.min(+top_n || 15, 200);
+    const sf  = sort_by === 'quantity' ? 'qty' : sort_by === 'orders' ? 'orders' : 'revenue';
+    const apiFrom = `${from} 00:00:00`;
+    const apiTo   = `${to} 23:59:59`;
 
-    // ── STOCK ──
+    // ── STOCK ──────────────────────────────────────────────────────────────
     if (data_type === 'stock') {
-      let q = {};
-      if (filter?.startsWith('status:'))  q.status = filter.slice(7);
-      else if (filter?.startsWith('product:')) q.name = { $regex: filter.slice(8), $options: 'i' };
-      else if (filter) q.name = { $regex: filter, $options: 'i' };
-      const items = await db.collection('ms_stock').find(q).sort({ quantity: -1 }).limit(300).toArray();
+      const stockRows = await getStock();
+      let items = stockRows.map(s => {
+        const qty = s.quantity || 0;
+        const status = qty <= 0 ? 'out' : qty < 100 ? 'low' : 'ok';
+        return { name: s.assortment?.name || s.name || '—', qty, status, price: Math.round((s.price || 0) / 100) };
+      });
+      if (filter?.startsWith('status:')) {
+        const st = filter.slice(7);
+        items = items.filter(i => i.status === st);
+      } else if (filter) {
+        const re = new RegExp(filter.replace(/^product:/, ''), 'i');
+        items = items.filter(i => re.test(i.name));
+      }
+      items.sort((a, b) => b.qty - a.qty);
       return JSON.stringify({
-        data_type: 'stock', syncNote: 'Stock snapshot from last sync',
-        summary: { total: items.length, out: items.filter(s=>s.status==='out').length, low: items.filter(s=>s.status==='low').length, ok: items.filter(s=>s.status==='ok').length },
-        items: items.slice(0, 100).map(s => ({ name: s.name, qty: s.quantity, status: s.status, price: Math.round(s.price) }))
+        data_type: 'stock', source: 'MoySklad Live API',
+        summary: { total: items.length, out: items.filter(i => i.status === 'out').length, low: items.filter(i => i.status === 'low').length, ok: items.filter(i => i.status === 'ok').length },
+        items: items.slice(0, 100)
       });
     }
 
-    // ── CUSTOMERS LIST ──
+    // ── CUSTOMERS — top by revenue via profit report ────────────────────────
     if (data_type === 'customers') {
-      const q = filter ? { name: { $regex: filter, $options: 'i' } } : {};
-      const rows = await db.collection('ms_customers').find(q).limit(N).toArray();
-      return JSON.stringify({ data_type: 'customers', count: rows.length, customers: rows.map(r => ({ name: r.name, code: r.code, phone: r.phone, email: r.email })) });
+      const cacheKey = `chat_cp_${apiFrom}_${apiTo}`;
+      const cpRows   = await cached(cacheKey, 5 * 60 * 1000, () =>
+        ms(`/report/profit/bycounterparty?momentFrom=${enc(apiFrom)}&momentTo=${enc(apiTo)}&limit=100`).then(r => r.rows || [])
+      );
+      let customers = cpRows.map(r => ({
+        name: r.counterparty?.name || '—',
+        revenue: Math.round((r.sellSum || 0) / 100),
+        orders: r.salesCount || 0
+      }));
+      if (filter) {
+        const re = new RegExp(filter.replace(/^customer:/, ''), 'i');
+        customers = customers.filter(c => re.test(c.name));
+      }
+      return JSON.stringify({ data_type: 'customers', period, source: 'MoySklad Live API', count: customers.length, customers: customers.slice(0, N) });
     }
 
-    // ── ORDERS ──
+    // ── ORDERS ──────────────────────────────────────────────────────────────
     if (data_type === 'orders') {
-      const match = { date: { $gte: from, $lte: to } };
-      if (filter?.startsWith('customer:')) match.customerName = { $regex: filter.slice(9), $options: 'i' };
-      const orders = await db.collection('ms_orders').find(match).sort({ date: -1 }).limit(N).toArray();
-      const agg = await db.collection('ms_orders').aggregate([{ $match: match }, { $group: { _id: null, revenue: { $sum: '$amountRub' }, count: { $sum: 1 } } }]).toArray();
-      return JSON.stringify({ period, data_type: 'orders', total: agg[0] || {}, orders: orders.map(o => ({ name: o.name, date: o.date, customer: o.customerName, amount: Math.round(o.amountRub), state: o.stateName })) });
+      const [allOrders, sMap] = await Promise.all([getAllOrders(), getOrderStateMap()]);
+      let filtered = allOrders.filter(o => {
+        const date = (o.moment || '').slice(0, 10);
+        return date >= from && date <= to;
+      });
+      if (filter?.startsWith('customer:')) {
+        const re = new RegExp(filter.slice(9), 'i');
+        filtered = filtered.filter(o => re.test(agentName(o)));
+      }
+      const pending = filtered.filter(o => {
+        const s = resolveState(o, sMap).toLowerCase();
+        return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
+      });
+      const totalRevenue = filtered.reduce((a, o) => a + Math.round((o.sum || 0) / 100), 0);
+      return JSON.stringify({
+        period, data_type: 'orders', source: 'MoySklad Live API',
+        total: { revenue: totalRevenue, count: filtered.length },
+        pending_count: pending.length,
+        orders: filtered.slice(0, N).map(o => ({
+          name: o.name || '—',
+          date: (o.moment || '').slice(0, 10),
+          customer: agentName(o),
+          amount: Math.round((o.sum || 0) / 100),
+          state: resolveState(o, sMap) || '—'
+        }))
+      });
     }
 
-    // ── DEMANDS — aggregations ──
-    const dateMatch = { date: { $gte: from, $lte: to } };
-    if (filter?.startsWith('customer:')) dateMatch.customerName = { $regex: filter.slice(9), $options: 'i' };
-    const productFilter = filter?.startsWith('product:') ? filter.slice(8) : (!filter?.includes(':') && filter ? filter : null);
+    // ── DEMANDS — filter live data and aggregate in-memory ──────────────────
+    const allDemands = await getDemandsFromDec25();
+    let demands = allDemands.filter(d => {
+      const date = (d.moment || '').slice(0, 10);
+      return date >= from && date <= to;
+    });
+    if (filter?.startsWith('customer:')) {
+      const re = new RegExp(filter.slice(9), 'i');
+      demands = demands.filter(d => re.test(agentName(d)));
+    }
 
     if (group_by === 'none' || group_by === 'total') {
-      const r = await db.collection('ms_demands').aggregate([{ $match: dateMatch }, { $group: { _id: null, revenue: { $sum: '$amountRub' }, shipments: { $sum: 1 } } }]).toArray();
-      return JSON.stringify({ period, from, to, revenue: Math.round(r[0]?.revenue || 0), shipments: r[0]?.shipments || 0 });
+      const revenue = demands.reduce((a, d) => a + Math.round((d.sum || 0) / 100), 0);
+      return JSON.stringify({ period, from, to, source: 'MoySklad Live API', revenue, shipments: demands.length });
     }
+
     if (group_by === 'customer') {
-      const rows = await db.collection('ms_demands').aggregate([
-        { $match: dateMatch },
-        { $group: { _id: '$customerName', revenue: { $sum: '$amountRub' }, orders: { $sum: 1 } } },
-        { $sort: { [sf === 'orders' ? 'orders' : 'revenue']: -1 } }, { $limit: N }
-      ]).toArray();
-      return JSON.stringify({ period, group_by: 'customer', results: rows.map(r => ({ customer: r._id || '—', revenue: Math.round(r.revenue), orders: r.orders })) });
+      const map = {};
+      demands.forEach(d => {
+        const name = agentName(d) || '—';
+        if (!map[name]) map[name] = { customer: name, revenue: 0, orders: 0 };
+        map[name].revenue += Math.round((d.sum || 0) / 100);
+        map[name].orders++;
+      });
+      const rows = Object.values(map).sort((a, b) => b[sf === 'orders' ? 'orders' : 'revenue'] - a[sf === 'orders' ? 'orders' : 'revenue']);
+      return JSON.stringify({ period, group_by: 'customer', source: 'MoySklad Live API', results: rows.slice(0, N) });
     }
+
     if (group_by === 'day') {
-      const rows = await db.collection('ms_demands').aggregate([
-        { $match: dateMatch },
-        { $group: { _id: '$date', revenue: { $sum: '$amountRub' }, shipments: { $sum: 1 } } },
-        { $sort: { _id: 1 } }
-      ]).toArray();
-      return JSON.stringify({ period, group_by: 'day', results: rows.map(r => ({ date: r._id, revenue: Math.round(r.revenue), shipments: r.shipments })) });
+      const map = {};
+      demands.forEach(d => {
+        const date = (d.moment || '').slice(0, 10);
+        if (!map[date]) map[date] = { date, revenue: 0, shipments: 0 };
+        map[date].revenue += Math.round((d.sum || 0) / 100);
+        map[date].shipments++;
+      });
+      const rows = Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
+      return JSON.stringify({ period, group_by: 'day', source: 'MoySklad Live API', results: rows });
     }
+
     if (group_by === 'month') {
-      const rows = await db.collection('ms_demands').aggregate([
-        { $match: { date: { $gte: '2024-12-01' } } },
-        { $group: { _id: { $substr: ['$date', 0, 7] }, revenue: { $sum: '$amountRub' }, shipments: { $sum: 1 } } },
-        { $sort: { _id: 1 } }
-      ]).toArray();
-      return JSON.stringify({ group_by: 'month', results: rows.map(r => ({ month: r._id, revenue: Math.round(r.revenue), shipments: r.shipments })) });
+      const map = {};
+      allDemands.forEach(d => {
+        const month = (d.moment || '').slice(0, 7);
+        if (!month || month.length < 7) return;
+        if (!map[month]) map[month] = { month, revenue: 0, shipments: 0 };
+        map[month].revenue += Math.round((d.sum || 0) / 100);
+        map[month].shipments++;
+      });
+      const rows = Object.values(map).sort((a, b) => a.month.localeCompare(b.month));
+      return JSON.stringify({ group_by: 'month', source: 'MoySklad Live API', results: rows });
     }
-    // SKU / variant breakdown — unwind positions
-    if (group_by === 'sku') {
-      const pipeline = [
-        { $match: dateMatch }, { $unwind: '$positions' },
-        ...(productFilter ? [{ $match: { 'positions.baseName': { $regex: productFilter, $options: 'i' } } }] : []),
-        { $group: { _id: '$positions.productName', baseName: { $first: '$positions.baseName' }, variant: { $first: '$positions.variantName' }, qty: { $sum: '$positions.quantity' }, revenue: { $sum: '$positions.amountRub' } } },
-        { $sort: { [sf]: -1 } }, { $limit: N }
-      ];
-      const rows = await db.collection('ms_demands').aggregate(pipeline).toArray();
-      const totalQty = rows.reduce((a, r) => a + r.qty, 0);
-      return JSON.stringify({ period, group_by: 'sku', total_pcs: Math.round(totalQty), results: rows.map(r => ({ sku: r._id, product: r.baseName, variant: r.variant || '', qty: Math.round(r.qty), revenue: Math.round(r.revenue) })) });
+
+    if (group_by === 'salesman') {
+      const empMap = await cached('employees_map', 15 * 60 * 1000, async () => {
+        const r = await ms('/entity/employee?limit=1000');
+        const map = {};
+        (r.rows || []).forEach(e => { if (e.id) map[e.id] = e.name || `${e.lastName || ''} ${e.firstName || ''}`.trim() || '—'; });
+        return map;
+      });
+      const map = {};
+      demands.forEach(d => {
+        const uuid = (d.owner?.meta?.href || '').split('/').pop().split('?')[0];
+        const name = uuid ? (empMap[uuid] || 'Unassigned') : 'Unassigned';
+        if (!map[name]) map[name] = { salesman: name, revenue: 0, orders: 0 };
+        map[name].revenue += Math.round((d.sum || 0) / 100);
+        map[name].orders++;
+      });
+      const rows = Object.values(map).sort((a, b) => b[sf === 'orders' ? 'orders' : 'revenue'] - a[sf === 'orders' ? 'orders' : 'revenue']);
+      return JSON.stringify({ period, group_by: 'salesman', source: 'MoySklad Live API', results: rows.slice(0, N) });
     }
-    // Default: product-level (unwind positions, group by baseName)
-    const pipeline = [
-      { $match: dateMatch }, { $unwind: '$positions' },
-      ...(productFilter ? [{ $match: { 'positions.baseName': { $regex: productFilter, $options: 'i' } } }] : []),
-      { $group: { _id: '$positions.baseName', qty: { $sum: '$positions.quantity' }, revenue: { $sum: '$positions.amountRub' } } },
-      { $sort: { [sf]: -1 } }, { $limit: N }
-    ];
-    const rows = await db.collection('ms_demands').aggregate(pipeline).toArray();
-    return JSON.stringify({ period, group_by: 'product', total_revenue: Math.round(rows.reduce((a,r)=>a+r.revenue,0)), total_pcs: Math.round(rows.reduce((a,r)=>a+r.qty,0)), results: rows.map(r => ({ product: r._id || '—', qty: Math.round(r.qty), revenue: Math.round(r.revenue) })) });
+
+    // ── product / sku — MoySklad profit report (live, cached 5 min) ─────────
+    const prodCacheKey = `chat_prod_${apiFrom}_${apiTo}_${N}`;
+    const prodRows = await cached(prodCacheKey, 5 * 60 * 1000, () =>
+      ms(`/report/profit/byproduct?momentFrom=${enc(apiFrom)}&momentTo=${enc(apiTo)}&limit=${Math.min(N, 100)}`).then(r => r.rows || [])
+    );
+    let results = prodRows.map(r => ({
+      product: r.assortment?.name || '—',
+      qty: Math.round(r.sellQuantity || 0),
+      revenue: Math.round((r.sellSum || 0) / 100)
+    }));
+    if (filter) {
+      const re = new RegExp(filter.replace(/^product:/, ''), 'i');
+      results = results.filter(r => re.test(r.product));
+    }
+    results.sort((a, b) => b[sf === 'quantity' ? 'qty' : 'revenue'] - a[sf === 'quantity' ? 'qty' : 'revenue']);
+    return JSON.stringify({
+      period, group_by: group_by || 'product', source: 'MoySklad Live API',
+      total_revenue: results.reduce((a, r) => a + r.revenue, 0),
+      total_pcs: results.reduce((a, r) => a + r.qty, 0),
+      results: results.slice(0, N)
+    });
   } catch (e) { return JSON.stringify({ error: e.message }); }
 }
 
@@ -1855,112 +1918,151 @@ async function toolQueryTally({ data_type = 'snapshot', period, filter } = {}) {
 // ── Chatbot tool: compare Tally vs MoySklad ───────────────────────────────
 async function toolCompareSources({ comparison_type = 'sales_total', period } = {}) {
   try {
-    const db = await getMongoDb();
-    if (!db) return JSON.stringify({ error: 'MongoDB not connected' });
-
     if (comparison_type === 'sales_total') {
       const { from, to } = parsePeriodMongo(period || 'this_month');
-      const [msAgg, tallySnap] = await Promise.all([
-        db.collection('ms_demands').aggregate([{ $match: { date:{ $gte:from, $lte:to } } }, { $group:{ _id:null, revenue:{ $sum:'$amountRub' }, shipments:{ $sum:1 } } }]).toArray(),
-        loadTallySnapshot()
-      ]);
-      const msRev     = Math.round(msAgg[0]?.revenue || 0);
+      const allDemands = await getDemandsFromDec25();
+      const filtered = allDemands.filter(d => {
+        const date = (d.moment || '').slice(0, 10);
+        return date >= from && date <= to;
+      });
+      const msRev     = filtered.reduce((a, d) => a + Math.round((d.sum || 0) / 100), 0);
+      const tallySnap = await loadTallySnapshot();
       const tallySales= Math.round(tallySnap?.totalSales || 0);
       const diff      = msRev - tallySales;
       return JSON.stringify({
         period, from, to,
-        moysklad: { revenue: msRev, shipments: msAgg[0]?.shipments||0 },
+        moysklad: { revenue: msRev, shipments: filtered.length, source: 'MoySklad Live API' },
         tally:    { sales: tallySales, syncedAt: tallySnap?.syncedAt },
         difference: { amount: diff, note: diff > 0 ? 'MoySklad higher' : diff < 0 ? 'Tally higher' : 'Match' }
       });
     }
     if (comparison_type === 'customer_outstanding') {
-      const [tallySnap, msPending] = await Promise.all([
+      const [tallySnap, allOrders, sMap] = await Promise.all([
         loadTallySnapshot(),
-        db.collection('ms_orders').aggregate([
-          { $match: { stateName: { $not: /dispatched|отгружен/i } } },
-          { $group: { _id:'$customerName', pendingValue:{ $sum:'$amountRub' }, count:{ $sum:1 } } },
-          { $sort: { pendingValue:-1 } }, { $limit:20 }
-        ]).toArray()
+        getAllOrders(),
+        getOrderStateMap()
       ]);
+      const pending = allOrders.filter(o => {
+        const s = resolveState(o, sMap).toLowerCase();
+        return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
+      });
+      const custMap = {};
+      pending.forEach(o => {
+        const name = agentName(o) || '—';
+        if (!custMap[name]) custMap[name] = { customer: name, pendingOrders: 0, count: 0 };
+        custMap[name].pendingOrders += Math.round((o.sum || 0) / 100);
+        custMap[name].count++;
+      });
+      const pendingByCustomer = Object.values(custMap).sort((a, b) => b.pendingOrders - a.pendingOrders).slice(0, 20);
       return JSON.stringify({
-        tally_outstanding: { total: Math.round(tallySnap?.totalOutstanding||0), top_debtors: (tallySnap?.debtors||[]).slice(0,10).map(d=>({ name:d.name, balance:Math.round(d.balance) })) },
-        moysklad_pending:  { customers: msPending.map(r=>({ customer:r._id, pendingOrders:Math.round(r.pendingValue), count:r.count })) },
+        tally_outstanding: { total: Math.round(tallySnap?.totalOutstanding || 0), top_debtors: (tallySnap?.debtors || []).slice(0, 10).map(d => ({ name: d.name, balance: Math.round(d.balance) })) },
+        moysklad_pending:  { customers: pendingByCustomer, source: 'MoySklad Live API' },
         note: 'Tally outstanding = unpaid invoices. MoySklad pending = orders not yet dispatched.'
       });
     }
     if (comparison_type === 'monthly_trend') {
-      const [msMonthly, tallyMonthly] = await Promise.all([
-        db.collection('ms_demands').aggregate([
-          { $match:{ date:{ $gte:'2024-12-01' } } },
-          { $group:{ _id:{ $substr:['$date',0,7] }, revenue:{ $sum:'$amountRub' }, orders:{ $sum:1 } } },
-          { $sort:{ _id:1 } }
-        ]).toArray(),
-        db.collection('tally_vouchers').aggregate([
-          { $match:{ type:{ $regex:'sales', $options:'i' } } },
-          { $group:{ _id:'$month', total:{ $sum:'$amount' }, count:{ $sum:1 } } },
-          { $sort:{ _id:1 } }
-        ]).toArray().catch(()=>[])
-      ]);
+      const allDemands = await getDemandsFromDec25();
+      const monthMap = {};
+      allDemands.forEach(d => {
+        const mo = (d.moment || '').slice(0, 7);
+        if (!mo || mo.length < 7) return;
+        if (!monthMap[mo]) monthMap[mo] = { revenue: 0, shipments: 0 };
+        monthMap[mo].revenue += Math.round((d.sum || 0) / 100);
+        monthMap[mo].shipments++;
+      });
+      const msMonthly = Object.entries(monthMap).sort(([a], [b]) => a.localeCompare(b)).map(([mo, s]) => ({ month: mo, revenue: s.revenue, shipments: s.shipments }));
+      let tallyMonthly = [];
+      try {
+        const db = await getMongoDb();
+        if (db) {
+          const rows = await db.collection('tally_vouchers').aggregate([
+            { $match: { type: { $regex: 'sales', $options: 'i' } } },
+            { $group: { _id: '$month', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+            { $sort: { _id: 1 } }
+          ]).toArray().catch(() => []);
+          tallyMonthly = rows.map(m => ({ month: m._id, sales: Math.round(m.total), vouchers: m.count }));
+        }
+      } catch (_) {}
       return JSON.stringify({
-        moysklad_monthly: msMonthly.map(m=>({ month:m._id, revenue:Math.round(m.revenue), shipments:m.orders })),
-        tally_monthly:    tallyMonthly.map(m=>({ month:m._id, sales:Math.round(m.total), vouchers:m.count })),
-        note: 'MoySklad = shipment revenue. Tally = sales ledger entries.'
+        moysklad_monthly: msMonthly,
+        tally_monthly:    tallyMonthly,
+        note: 'MoySklad = live shipment revenue (Dec 2025+). Tally = sales ledger entries.'
       });
     }
     return JSON.stringify({ error: `Unknown comparison_type: ${comparison_type}` });
   } catch(e) { return JSON.stringify({ error: e.message }); }
 }
 
-// ── Build chatbot context from MongoDB (no live API calls) ────────────────
+// ── Build chatbot context from live MoySklad API (cached 5 min) ──────────
 async function buildChatContext() {
-  return cached('chatCtx', 15 * 60 * 1000, async () => {
-    const now = new Date();
+  return cached('chatCtx', 5 * 60 * 1000, async () => {
+    const now           = new Date();
     const daysIntoMonth = now.getDate();
     const today         = todayStr();
-
-    // ── Date boundaries ──────────────────────────────────
-    const prevD         = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const curMonthName  = now.toLocaleString('en', { month: 'long', year: 'numeric' });
+    const prevD         = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const prevMonthName = prevD.toLocaleString('en', { month: 'long', year: 'numeric' });
-    const curStart      = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
-    const prevStart     = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}-01`;
-    const prevEnd       = localDateStr(new Date(now.getFullYear(), now.getMonth(), 0));
+    const curMonthKey   = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    const prevMonthKey  = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}`;
 
     const fmtS = n => { if(!n)return '₽0'; const a=Math.abs(n); if(a>=1e9)return `₽${(n/1e9).toFixed(2)}B`; if(a>=1e6)return `₽${(n/1e6).toFixed(2)}M`; if(a>=1e3)return `₽${Math.round(n/1e3)}K`; return `₽${Math.round(n).toLocaleString()}`; };
-    const pct  = (a,b) => b>0 ? ((a-b)/b*100).toFixed(1)+'%' : 'N/A';
+    const pct  = (a, b) => b > 0 ? ((a-b)/b*100).toFixed(1)+'%' : 'N/A';
 
-    const db       = await getMongoDb();
-    const syncMeta = db ? await db.collection('ms_sync_meta').findOne({ _id:'main' }).catch(()=>null) : null;
-    const tallySnap= await loadTallySnapshot().catch(()=>null);
+    // ── Fetch live data in parallel from MoySklad API ─────────────────────
+    const [demandsR, stockR, profProdR, profCustR, ordersR, stateMapR, tallyR] = await Promise.allSettled([
+      getDemandsFromDec25(),
+      getStock(),
+      getProfitByProduct(monthStart()),
+      getProfitByCounterparty(monthStart()),
+      getAllOrders(),
+      getOrderStateMap(),
+      loadTallySnapshot().catch(() => null)
+    ]);
 
-    // ── Parallel MongoDB queries ──────────────────────────
-    let stock=[], topProducts=[], topCustomers=[], monthlyHistory=[];
-    let curRevenue=0, prevRevenue=0, curShipments=0, prevShipments=0;
-    let pendingOrders=[], lowStock=[], outStock=[];
+    const allDemands = demandsR.status  === 'fulfilled' ? demandsR.value  : [];
+    const stock      = stockR.status    === 'fulfilled' ? stockR.value    : [];
+    const topProds   = profProdR.status === 'fulfilled' ? profProdR.value : [];
+    const topCusts   = profCustR.status === 'fulfilled' ? profCustR.value : [];
+    const allOrders  = ordersR.status   === 'fulfilled' ? ordersR.value   : [];
+    const sMap       = stateMapR.status === 'fulfilled' ? stateMapR.value : {};
+    const tallySnap  = tallyR.status    === 'fulfilled' ? tallyR.value    : null;
 
-    if (db) {
-      const [stkR, curR, prevR, prodR, custR, histR, ordR] = await Promise.allSettled([
-        db.collection('ms_stock').find({}).toArray(),
-        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:curStart } } }, { $group:{ _id:null, revenue:{ $sum:'$amountRub' }, count:{ $sum:1 } } }]).toArray(),
-        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:prevStart, $lte:prevEnd } } }, { $group:{ _id:null, revenue:{ $sum:'$amountRub' }, count:{ $sum:1 } } }]).toArray(),
-        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:curStart } } }, { $unwind:'$positions' }, { $group:{ _id:'$positions.baseName', qty:{ $sum:'$positions.quantity' }, revenue:{ $sum:'$positions.amountRub' } } }, { $sort:{ revenue:-1 } }, { $limit:15 }]).toArray(),
-        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:curStart } } }, { $group:{ _id:'$customerName', revenue:{ $sum:'$amountRub' }, orders:{ $sum:1 } } }, { $sort:{ revenue:-1 } }, { $limit:15 }]).toArray(),
-        db.collection('ms_demands').aggregate([{ $match:{ date:{ $gte:'2024-12-01' } } }, { $group:{ _id:{ $substr:['$date',0,7] }, revenue:{ $sum:'$amountRub' }, orders:{ $sum:1 } } }, { $sort:{ _id:1 } }]).toArray(),
-        db.collection('ms_orders').find({ stateName:{ $not:/dispatched|отгружен/i } }).sort({ date:-1 }).limit(30).toArray(),
-      ]);
-      stock          = stkR.status==='fulfilled' ? stkR.value : [];
-      curRevenue     = curR.status==='fulfilled'  ? (curR.value[0]?.revenue||0)  : 0;
-      curShipments   = curR.status==='fulfilled'  ? (curR.value[0]?.count||0)    : 0;
-      prevRevenue    = prevR.status==='fulfilled' ? (prevR.value[0]?.revenue||0) : 0;
-      prevShipments  = prevR.status==='fulfilled' ? (prevR.value[0]?.count||0)   : 0;
-      topProducts    = prodR.status==='fulfilled' ? prodR.value : [];
-      topCustomers   = custR.status==='fulfilled' ? custR.value : [];
-      monthlyHistory = histR.status==='fulfilled' ? histR.value : [];
-      pendingOrders  = ordR.status==='fulfilled'  ? ordR.value  : [];
-      lowStock       = stock.filter(s=>s.status==='low').sort((a,b)=>a.quantity-b.quantity);
-      outStock       = stock.filter(s=>s.status==='out').slice(0,20);
-    }
+    // ── Compute stats from live demands ───────────────────────────────────
+    const todayDemands   = allDemands.filter(d => (d.moment||'').startsWith(today));
+    const curMonDemands  = allDemands.filter(d => (d.moment||'').slice(0,7) === curMonthKey);
+    const prevMonDemands = allDemands.filter(d => (d.moment||'').slice(0,7) === prevMonthKey);
+
+    const todayRevenue   = todayDemands.reduce((a, d) => a + Math.round((d.sum||0)/100), 0);
+    const todayShipments = todayDemands.length;
+    const curRevenue     = curMonDemands.reduce((a, d) => a + Math.round((d.sum||0)/100), 0);
+    const curShipments   = curMonDemands.length;
+    const prevRevenue    = prevMonDemands.reduce((a, d) => a + Math.round((d.sum||0)/100), 0);
+    const prevShipments  = prevMonDemands.length;
+
+    // Monthly history
+    const monthMap = {};
+    allDemands.forEach(d => {
+      const mo = (d.moment||'').slice(0, 7);
+      if (!mo || mo.length < 7) return;
+      if (!monthMap[mo]) monthMap[mo] = { revenue: 0, shipments: 0 };
+      monthMap[mo].revenue  += Math.round((d.sum||0)/100);
+      monthMap[mo].shipments++;
+    });
+    const monthlyHistory = Object.entries(monthMap).sort(([a],[b]) => a.localeCompare(b));
+
+    // Pending orders
+    const pendingOrders = allOrders.filter(o => {
+      const s = resolveState(o, sMap).toLowerCase();
+      return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
+    });
+
+    // Stock with status
+    const stockWithStatus = stock.map(s => {
+      const qty = s.quantity || 0;
+      return { name: s.assortment?.name || s.name || '—', qty, status: qty <= 0 ? 'out' : qty < 100 ? 'low' : 'ok' };
+    });
+    const lowStock = stockWithStatus.filter(s => s.status === 'low').sort((a,b) => a.qty - b.qty);
+    const outStock = stockWithStatus.filter(s => s.status === 'out');
 
     const L   = [];
     const sec = t => L.push('', `── ${t} ──`);
@@ -1968,16 +2070,13 @@ async function buildChatContext() {
     L.push(
       `You are PLATINA AI — a sharp Business Intelligence assistant.`,
       `Today: ${today} | Month: ${curMonthName} | ${daysIntoMonth} days elapsed | Currency: ₽`,
-      `All business data is served from MongoDB (synced from MoySklad). Data available from Dec 2024.`,
-      syncMeta
-        ? `MoySklad last synced: ${new Date(syncMeta.lastSyncAt).toLocaleString('en-IN')} (${syncMeta.lastSyncType} — ${syncMeta.totalDemands||0} demands, ${syncMeta.totalStock||0} SKUs)`
-        : `⚠ MoySklad not synced yet. Run: node sync-ms-data.js`,
+      `All MoySklad data is fetched LIVE from the MoySklad API (cached, refreshes every 5 min). Data available from Dec 2025.`,
       ``,
       `━━━ TOOLS (USE FOR ALL DATA QUESTIONS) ━━━`,
       `1. query_moysklad(data_type, period, group_by, filter, top_n, sort_by)`,
       `   data_type: "demands"|"stock"|"customers"|"orders"`,
-      `   group_by:  "product"(model totals) | "sku"(FLAVOUR/VARIANT — use for "sku wise"/"flavour wise") | "customer" | "day" | "month" | "none"`,
-      `   period:    "today"|"this_month"|"last_month"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"|"all"`,
+      `   group_by:  "product"(model totals) | "sku"(variant/flavour) | "customer" | "day" | "month" | "salesman" | "none"`,
+      `   period:    "today"|"this_month"|"last_month"|"this_year"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"`,
       `   filter:    "product:NAME" | "customer:NAME" | "status:low" | "status:out"`,
       ``,
       `2. query_tally(data_type, period, filter)`,
@@ -1987,55 +2086,64 @@ async function buildChatContext() {
       `   comparison_type: "sales_total"|"customer_outstanding"|"monthly_trend"`,
       ``,
       `4. web_search(query) — external data only (market trends, regulations, etc.)`,
+      `5. predict_sales(horizon) — forecast tomorrow / next-week / next-month revenue from historical patterns`,
+      `   horizon: "tomorrow" | "next_week" | "next_month" | filter: "customer:NAME"`,
+      `6. analyze(analysis_type, period) — deep analytics on live data`,
+      `   types: "health_report" | "growth_rate" | "slow_moving" | "day_of_week" | "avg_order_value" | "customer_frequency" | "peak_hours" | "top_days"`,
       ``,
       `━━━ RULES ━━━`,
-      `- NEVER call MoySklad API directly. ALL data is in MongoDB — always use tools.`,
-      `- For flavour/SKU breakdown → query_moysklad with group_by="sku". Never say it's unavailable.`,
-      `- For P&L / outstanding → query_tally with data_type="snapshot".`,
+      `- ALL MoySklad data (sales, stock, orders, customers, salesman) comes from LIVE API.`,
+      `- For outstanding receivables / purchase bills → query_tally ONLY (Tally/MongoDB).`,
+      `- For top salesman / salesman breakdown → query_moysklad with group_by="salesman".`,
+      `- For flavour/SKU breakdown → group_by="sku". For product model totals → group_by="product".`,
+      `- For predictions / sales forecast → predict_sales.`,
+      `- For "health report" / "how are we doing" / "business overview" → analyze with analysis_type="health_report".`,
+      `- For slow-moving / dead stock / not selling → analyze with analysis_type="slow_moving".`,
+      `- For growth / MoM trends / weekly trend → analyze with analysis_type="growth_rate".`,
+      `- For P&L / net profit → query_tally with data_type="snapshot".`,
       `- For Tally vs MoySklad difference → compare_sources.`,
       `- Lead with the answer. Use markdown tables for multi-row data. No preamble.`,
       ``,
       `${'═'.repeat(60)}`,
-      `LIVE SNAPSHOT`,
+      `LIVE SNAPSHOT (refreshed ${new Date().toLocaleString('en-IN')})`,
       `${'═'.repeat(60)}`
     );
 
-    // Inventory
-    sec('INVENTORY');
-    L.push(`${stock.length} SKUs | In Stock: ${stock.filter(s=>s.status==='ok').length} | Low (≤100): ${lowStock.length} | Out: ${outStock.length}`);
-    if (lowStock.length)  L.push('Low stock: ' + lowStock.slice(0,15).map(s=>`${s.name}(${s.quantity})`).join(', '));
-    if (outStock.length)  L.push('Out of stock: ' + outStock.slice(0,15).map(s=>s.name).join(', '));
+    sec(`TODAY — ${today}`);
+    L.push(`Shipments: ${todayShipments} | Revenue: ${fmtS(todayRevenue)}`);
 
-    // Sales
+    sec('INVENTORY');
+    L.push(`${stockWithStatus.length} SKUs | In Stock: ${stockWithStatus.filter(s=>s.status==='ok').length} | Low (≤100): ${lowStock.length} | Out: ${outStock.length}`);
+    if (lowStock.length)  L.push('Low stock: '  + lowStock.slice(0,15).map(s=>`${s.name}(${s.qty})`).join(', '));
+    if (outStock.length)  L.push('Out of stock: '+ outStock.slice(0,15).map(s=>s.name).join(', '));
+
     sec(`SALES — ${curMonthName}`);
-    const mom = prevRevenue>0 ? ` (${pct(curRevenue,prevRevenue)} vs last month)` : '';
+    const mom = prevRevenue > 0 ? ` (${pct(curRevenue, prevRevenue)} vs last month)` : '';
     L.push(`Shipments: ${curShipments} | Revenue: ${fmtS(curRevenue)}${mom}`);
 
     sec(`SALES — ${prevMonthName}`);
     L.push(`Shipments: ${prevShipments} | Revenue: ${fmtS(prevRevenue)}`);
 
-    // Top products
     sec(`TOP PRODUCTS — ${curMonthName}`);
-    if (topProducts.length) topProducts.forEach((p,i)=>L.push(`${i+1}. ${p._id||'—'} — ${fmtS(p.revenue)} | ${Math.round(p.qty||0).toLocaleString()} pcs`));
-    else L.push('No product data yet — run MoySklad sync first.');
+    if (topProds.length) topProds.slice(0,15).forEach((p,i) => L.push(`${i+1}. ${p.assortment?.name||'—'} — ${fmtS((p.sellSum||0)/100)} | ${Math.round(p.sellQuantity||0).toLocaleString()} pcs`));
+    else L.push('No product data yet.');
 
-    // Top customers
     sec(`TOP CUSTOMERS — ${curMonthName}`);
-    if (topCustomers.length) topCustomers.forEach((c,i)=>L.push(`${i+1}. ${c._id||'—'} — ${fmtS(c.revenue)} | ${c.orders} orders`));
+    if (topCusts.length) topCusts.slice(0,15).forEach((c,i) => L.push(`${i+1}. ${c.counterparty?.name||'—'} — ${fmtS((c.sellSum||0)/100)} | ${c.salesCount||0} orders`));
     else L.push('No customer data yet.');
 
-    // Monthly history
     if (monthlyHistory.length) {
-      sec('MONTHLY HISTORY (Dec 2024 onwards)');
-      monthlyHistory.forEach(m=>{ const d=new Date(m._id+'-02'); L.push(`${d.toLocaleString('en',{month:'short',year:'numeric'})}: ${fmtS(m.revenue)} (${m.orders} shipments)`); });
+      sec('MONTHLY HISTORY (Dec 2025 onwards)');
+      monthlyHistory.forEach(([mo, stats]) => {
+        const d = new Date(mo + '-02');
+        L.push(`${d.toLocaleString('en', { month: 'short', year: 'numeric' })}: ${fmtS(stats.revenue)} (${stats.shipments} shipments)`);
+      });
     }
 
-    // Pending orders
     sec(`PENDING ORDERS (${pendingOrders.length} not dispatched)`);
-    if (pendingOrders.length) pendingOrders.slice(0,15).forEach(o=>L.push(`  • ${o.name||'—'} | ${o.customerName||'—'} | ${o.stateName||'—'} | ${fmtS(o.amountRub)}`));
+    if (pendingOrders.length) pendingOrders.slice(0,15).forEach(o => L.push(`  • ${o.name||'—'} | ${agentName(o)} | ${resolveState(o,sMap)||'—'} | ${fmtS((o.sum||0)/100)}`));
     else L.push('No pending orders.');
 
-    // Tally summary
     if (tallySnap) {
       sec('TALLY FINANCIAL SUMMARY');
       L.push(`Sales: ${fmtS(tallySnap.totalSales)} | Purchases: ${fmtS(tallySnap.totalPurchases)} | Expenses: ${fmtS(tallySnap.totalExpenses)}`);
@@ -2071,7 +2179,362 @@ async function webSearch(query) {
   }
 }
 
-// ── (legacy helpers kept for dashboard pages — chatbot uses MongoDB) ───────
+// ── Chatbot tool: predict future sales using MoySklad live historical data ──
+async function toolPredictSales({ horizon = 'tomorrow', filter } = {}) {
+  try {
+    let allDemands = await getDemandsFromDec25();
+    if (filter) {
+      const re = new RegExp(filter.replace(/^customer:/, ''), 'i');
+      allDemands = allDemands.filter(d => re.test(agentName(d)));
+    }
+
+    const today = todayStr();
+
+    // Build day-by-day revenue map (exclude today — it's still in progress)
+    const dayMap = {};
+    allDemands.forEach(d => {
+      const date = (d.moment || '').slice(0, 10);
+      if (!date || date >= today) return;
+      if (!dayMap[date]) dayMap[date] = { revenue: 0, shipments: 0 };
+      dayMap[date].revenue += Math.round((d.sum || 0) / 100);
+      dayMap[date].shipments++;
+    });
+
+    const sortedDays = Object.entries(dayMap).sort(([a], [b]) => a.localeCompare(b));
+    if (sortedDays.length < 7)
+      return JSON.stringify({ error: 'Not enough historical data. Need at least 7 days of completed demand data.' });
+
+    const last7  = sortedDays.slice(-7);
+    const last14 = sortedDays.slice(-14);
+    const last30 = sortedDays.slice(-30);
+
+    // Daily moving averages
+    const avg7  = last7.reduce((a, [, d]) => a + d.revenue, 0) / last7.length;
+    const avg14 = last14.reduce((a, [, d]) => a + d.revenue, 0) / last14.length;
+    const avg30 = last30.reduce((a, [, d]) => a + d.revenue, 0) / (last30.length || 1);
+
+    // Day-of-week averages from last 30 days
+    const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dowBuckets = [[], [], [], [], [], [], []];
+    last30.forEach(([date, stats]) => {
+      const dow = new Date(date + 'T00:00:00').getDay();
+      dowBuckets[dow].push(stats.revenue);
+    });
+    const dowAvg = dowBuckets.map((vals, i) =>
+      vals.length ? Math.round(vals.reduce((a, v) => a + v, 0) / vals.length) : Math.round(avg30)
+    );
+
+    // Week-over-week trend (prev 7 days vs the 7 before that)
+    const wk1 = last14.slice(0, 7).reduce((a, [, d]) => a + d.revenue, 0);
+    const wk2 = last7.reduce((a, [, d]) => a + d.revenue, 0);
+    const weekTrend = wk1 > 0 ? (wk2 - wk1) / wk1 : 0;
+    const trendFactor = Math.max(0.7, Math.min(1.5, 1 + weekTrend * 0.5)); // dampen, clamp
+
+    // Day-of-week shipment averages (from last 30 days)
+    const dowShipBuckets = [[], [], [], [], [], [], []];
+    last30.forEach(([date, stats]) => {
+      const dow = new Date(date + 'T00:00:00').getDay();
+      dowShipBuckets[dow].push(stats.shipments);
+    });
+    const dowShipAvg = dowShipBuckets.map(vals =>
+      vals.length ? Math.round(vals.reduce((a, v) => a + v, 0) / vals.length) : 0
+    );
+    const avgDailyShipments = last30.reduce((a, [, d]) => a + d.shipments, 0) / (last30.length || 1);
+
+    // Build tomorrow + next 7 days predictions
+    const next7 = [];
+    for (let i = 1; i <= 7; i++) {
+      const d = new Date(); d.setDate(d.getDate() + i);
+      const dow = d.getDay();
+      const pred = Math.round(dowAvg[dow] * trendFactor);
+      const predShip = dowShipAvg[dow] > 0
+        ? Math.round(dowShipAvg[dow] * trendFactor)
+        : Math.round(avgDailyShipments * trendFactor);
+      next7.push({ date: localDateStr(d), day: DOW_NAMES[dow], predicted_revenue: pred, predicted_shipments: predShip });
+    }
+
+    const tomorrow = next7[0];
+    const next7Total = next7.reduce((a, d) => a + d.predicted_revenue, 0);
+
+    // Next month estimate
+    const now = new Date();
+    const daysInNextMonth = new Date(now.getFullYear(), now.getMonth() + 2, 0).getDate();
+    const nextMonthPred = Math.round(avg30 * trendFactor * daysInNextMonth);
+
+    // Month-over-month context
+    const curMonKey  = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    const prevD2 = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonKey = `${prevD2.getFullYear()}-${String(prevD2.getMonth()+1).padStart(2,'0')}`;
+    const curMonRev  = allDemands.filter(d => (d.moment||'').slice(0,7) === curMonKey).reduce((a,d) => a+Math.round((d.sum||0)/100), 0);
+    const prevMonRev = allDemands.filter(d => (d.moment||'').slice(0,7) === prevMonKey).reduce((a,d) => a+Math.round((d.sum||0)/100), 0);
+
+    const confidence = last30.length >= 25 ? 'high' : last30.length >= 14 ? 'medium' : 'low';
+
+    return JSON.stringify({
+      source: 'MoySklad Live API',
+      model: 'Day-of-week moving average + weekly trend adjustment',
+      data_points_used: last30.length,
+      confidence,
+      moving_averages: {
+        last_7_days_daily_avg: Math.round(avg7),
+        last_14_days_daily_avg: Math.round(avg14),
+        last_30_days_daily_avg: Math.round(avg30)
+      },
+      trend: {
+        prev_week_total: Math.round(wk1),
+        last_week_total: Math.round(wk2),
+        week_over_week: (weekTrend * 100).toFixed(1) + '%',
+        direction: weekTrend > 0.05 ? 'Growing 📈' : weekTrend < -0.05 ? 'Declining 📉' : 'Stable ➡️',
+        this_month_so_far: curMonRev,
+        last_month_total: prevMonRev,
+        month_over_month: prevMonRev > 0 ? ((curMonRev - prevMonRev) / prevMonRev * 100).toFixed(1) + '%' : 'N/A'
+      },
+      day_of_week_averages: DOW_NAMES.map((name, i) => ({ day: name, avg_revenue: dowAvg[i] })),
+      predictions: {
+        tomorrow: { date: tomorrow.date, day: tomorrow.day, low: Math.round(tomorrow.predicted_revenue * 0.75), expected: tomorrow.predicted_revenue, high: Math.round(tomorrow.predicted_revenue * 1.35) },
+        next_7_days: { total_expected: next7Total, daily_avg: Math.round(next7Total / 7), day_by_day: next7 },
+        next_month_estimate: nextMonthPred
+      },
+      note: 'Predictions use day-of-week averages + weekly momentum. Higher confidence with more data.'
+    });
+  } catch (e) { return JSON.stringify({ error: e.message }); }
+}
+
+// ── Chatbot tool: deep analytics from MoySklad live data ──────────────────
+async function toolAnalytics({ analysis_type = 'health_report', period = 'this_month', filter } = {}) {
+  try {
+    const allDemands = await getDemandsFromDec25();
+    const { from, to } = parsePeriodMongo(period);
+    const today = todayStr();
+    const fmtR = n => Math.round(n);
+
+    let demands = allDemands.filter(d => {
+      const date = (d.moment || '').slice(0, 10);
+      return date >= from && date <= to;
+    });
+    if (filter) {
+      const re = new RegExp(filter.replace(/^customer:/, ''), 'i');
+      demands = demands.filter(d => re.test(agentName(d)));
+    }
+
+    // ── GROWTH RATE ───────────────────────────────────────────────────────
+    if (analysis_type === 'growth_rate') {
+      const now = new Date();
+      // Last 8 weeks week-by-week
+      const weeks = [];
+      for (let w = 7; w >= 0; w--) {
+        const wEnd   = new Date(); wEnd.setDate(wEnd.getDate() - w * 7);
+        const wStart = new Date(wEnd); wStart.setDate(wStart.getDate() - 6);
+        const wFrom = localDateStr(wStart), wTo = localDateStr(wEnd);
+        const wDem = allDemands.filter(d => { const dt=(d.moment||'').slice(0,10); return dt>=wFrom&&dt<=wTo; });
+        const wRev = wDem.reduce((a,d) => a+fmtR((d.sum||0)/100), 0);
+        weeks.push({ week: `${wFrom} → ${wTo}`, revenue: wRev, shipments: wDem.length });
+      }
+      const wowGrowth = weeks.length >= 2 && weeks[weeks.length-2].revenue > 0
+        ? ((weeks[weeks.length-1].revenue - weeks[weeks.length-2].revenue) / weeks[weeks.length-2].revenue * 100).toFixed(1) + '%'
+        : 'N/A';
+
+      // Last 6 months MoM
+      const months = [];
+      for (let m = 5; m >= 0; m--) {
+        const mDate  = new Date(now.getFullYear(), now.getMonth() - m, 1);
+        const moKey  = `${mDate.getFullYear()}-${String(mDate.getMonth()+1).padStart(2,'0')}`;
+        const pDate  = new Date(mDate.getFullYear(), mDate.getMonth() - 1, 1);
+        const prevKey= `${pDate.getFullYear()}-${String(pDate.getMonth()+1).padStart(2,'0')}`;
+        const mRev   = allDemands.filter(d2 => (d2.moment||'').slice(0,7) === moKey).reduce((a,d2) => a+fmtR((d2.sum||0)/100), 0);
+        const pRev   = allDemands.filter(d2 => (d2.moment||'').slice(0,7) === prevKey).reduce((a,d2) => a+fmtR((d2.sum||0)/100), 0);
+        const mCount = allDemands.filter(d2 => (d2.moment||'').slice(0,7) === moKey).length;
+        months.push({ month: moKey, revenue: mRev, shipments: mCount, mom_growth: pRev > 0 ? ((mRev-pRev)/pRev*100).toFixed(1)+'%' : 'N/A' });
+      }
+      return JSON.stringify({ analysis_type: 'growth_rate', source: 'MoySklad Live API', week_over_week_latest: wowGrowth, weekly_trend: weeks, monthly_trend: months });
+    }
+
+    // ── AVG ORDER VALUE ──────────────────────────────────────────────────
+    if (analysis_type === 'avg_order_value') {
+      const aov = demands.length > 0 ? fmtR(demands.reduce((a,d) => a+(d.sum||0)/100, 0) / demands.length) : 0;
+      const monthMap = {};
+      allDemands.forEach(d => {
+        const mo = (d.moment||'').slice(0,7);
+        if (!mo || mo.length < 7) return;
+        if (!monthMap[mo]) monthMap[mo] = { revenue: 0, count: 0 };
+        monthMap[mo].revenue += (d.sum||0)/100; monthMap[mo].count++;
+      });
+      const aovByMonth = Object.entries(monthMap).sort(([a],[b]) => a.localeCompare(b)).map(([mo, s]) => ({
+        month: mo, avg_order_value: fmtR(s.count > 0 ? s.revenue/s.count : 0), shipments: s.count, revenue: fmtR(s.revenue)
+      }));
+      const buckets = { 'under_10k': 0, '10k_50k': 0, '50k_100k': 0, '100k_500k': 0, 'over_500k': 0 };
+      demands.forEach(d => {
+        const v = (d.sum||0)/100;
+        if (v < 10000) buckets['under_10k']++;
+        else if (v < 50000) buckets['10k_50k']++;
+        else if (v < 100000) buckets['50k_100k']++;
+        else if (v < 500000) buckets['100k_500k']++;
+        else buckets['over_500k']++;
+      });
+      return JSON.stringify({ analysis_type: 'avg_order_value', period, source: 'MoySklad Live API', current_period_aov: aov, shipments: demands.length, revenue_distribution_by_order_size: buckets, monthly_aov_trend: aovByMonth });
+    }
+
+    // ── CUSTOMER FREQUENCY ───────────────────────────────────────────────
+    if (analysis_type === 'customer_frequency') {
+      const custDates = {};
+      demands.forEach(d => {
+        const name = agentName(d) || '—';
+        const date = (d.moment||'').slice(0,10);
+        if (!custDates[name]) custDates[name] = { dates: new Set(), revenue: 0, orders: 0 };
+        custDates[name].dates.add(date);
+        custDates[name].revenue += fmtR((d.sum||0)/100);
+        custDates[name].orders++;
+      });
+      const custStats = Object.entries(custDates).map(([name, v]) => {
+        const sortedDts = [...v.dates].sort();
+        const gaps = sortedDts.slice(1).map((dt, i) => Math.round((new Date(dt) - new Date(sortedDts[i])) / 864e5));
+        return {
+          customer: name, orders: v.orders, unique_order_days: sortedDts.length,
+          total_revenue: v.revenue,
+          avg_days_between_orders: gaps.length ? Math.round(gaps.reduce((a,g)=>a+g,0)/gaps.length) : null,
+          first_order: sortedDts[0], last_order: sortedDts[sortedDts.length-1]
+        };
+      }).sort((a, b) => b.orders - a.orders);
+      const repeat = custStats.filter(c => c.orders > 1).length;
+      return JSON.stringify({
+        analysis_type: 'customer_frequency', period, source: 'MoySklad Live API',
+        summary: { total_customers: custStats.length, repeat_customers: repeat, one_time_customers: custStats.length - repeat, repeat_rate: custStats.length > 0 ? (repeat/custStats.length*100).toFixed(1)+'%' : '0%' },
+        top_customers: custStats.slice(0, 20)
+      });
+    }
+
+    // ── DAY OF WEEK ──────────────────────────────────────────────────────
+    if (analysis_type === 'day_of_week') {
+      const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const dowStats  = Array.from({ length: 7 }, (_, i) => ({ day: DOW[i], total_revenue: 0, total_shipments: 0 }));
+      const dowDates  = Array.from({ length: 7 }, () => new Set());
+      demands.forEach(d => {
+        const date = (d.moment||'').slice(0,10);
+        if (!date) return;
+        const dow = new Date(date + 'T00:00:00').getDay();
+        dowStats[dow].total_revenue += fmtR((d.sum||0)/100);
+        dowStats[dow].total_shipments++;
+        dowDates[dow].add(date);
+      });
+      dowStats.forEach((s, i) => {
+        const cnt = dowDates[i].size || 1;
+        s.distinct_days = cnt;
+        s.avg_daily_revenue = fmtR(s.total_revenue / cnt);
+        s.avg_shipments_per_day = +(s.total_shipments / cnt).toFixed(1);
+      });
+      const ranked = [...dowStats].sort((a, b) => b.avg_daily_revenue - a.avg_daily_revenue);
+      return JSON.stringify({ analysis_type: 'day_of_week', period, source: 'MoySklad Live API', best_day: ranked[0]?.day, slowest_day: ranked[ranked.length-1]?.day, by_day: dowStats, ranked_by_revenue: ranked });
+    }
+
+    // ── SLOW MOVING INVENTORY ────────────────────────────────────────────
+    if (analysis_type === 'slow_moving') {
+      const d30   = new Date(); d30.setDate(d30.getDate() - 30);
+      const f30   = `${localDateStr(d30)} 00:00:00`;
+      const t30   = `${today} 23:59:59`;
+      const [stockRows, sold30] = await Promise.all([
+        getStock(),
+        cached(`slow_30d_${localDateStr(d30)}`, 5*60*1000, () =>
+          ms(`/report/profit/byproduct?momentFrom=${enc(f30)}&momentTo=${enc(t30)}&limit=100`).then(r => r.rows || [])
+        )
+      ]);
+      const soldNames = new Set(sold30.map(r => (r.assortment?.name || '').toLowerCase()));
+      const inStock   = stockRows.filter(s => (s.quantity || 0) > 0);
+      const slowItems = inStock
+        .filter(s => !soldNames.has((s.assortment?.name || s.name || '').toLowerCase()))
+        .map(s => ({
+          name: s.assortment?.name || s.name || '—',
+          qty: Math.round(s.quantity || 0),
+          inventory_value: Math.round((s.quantity || 0) * (s.price || 0) / 100)
+        })).sort((a, b) => b.inventory_value - a.inventory_value);
+      return JSON.stringify({
+        analysis_type: 'slow_moving', source: 'MoySklad Live API',
+        note: 'Items in stock with ZERO sales in the last 30 days',
+        summary: { slow_moving_count: slowItems.length, total_in_stock_skus: inStock.length, tied_up_value: slowItems.reduce((a,s)=>a+s.inventory_value,0) },
+        slow_moving_items: slowItems.slice(0, 50)
+      });
+    }
+
+    // ── PEAK HOURS ───────────────────────────────────────────────────────
+    if (analysis_type === 'peak_hours') {
+      const hourStats = Array.from({ length: 24 }, (_, i) => ({ hour: `${String(i).padStart(2,'0')}:00`, shipments: 0, revenue: 0 }));
+      demands.forEach(d => {
+        const hr = parseInt((d.moment || '').slice(11, 13), 10);
+        if (isNaN(hr) || hr < 0 || hr > 23) return;
+        hourStats[hr].shipments++;
+        hourStats[hr].revenue += fmtR((d.sum||0)/100);
+      });
+      const active = hourStats.filter(h => h.shipments > 0).sort((a, b) => b.shipments - a.shipments);
+      return JSON.stringify({ analysis_type: 'peak_hours', period, source: 'MoySklad Live API', busiest_hour: active[0]?.hour, top_5_hours: active.slice(0, 5), hourly_breakdown: hourStats });
+    }
+
+    // ── TOP DAYS ─────────────────────────────────────────────────────────
+    if (analysis_type === 'top_days') {
+      const dayRevMap = {}, dayShipMap = {};
+      allDemands.forEach(d => {
+        const date = (d.moment||'').slice(0,10);
+        if (!date) return;
+        dayRevMap[date]  = (dayRevMap[date]  || 0) + fmtR((d.sum||0)/100);
+        dayShipMap[date] = (dayShipMap[date] || 0) + 1;
+      });
+      const byRev  = Object.entries(dayRevMap).map(([date,rev]) => ({ date, revenue: rev, shipments: dayShipMap[date]||0 })).sort((a,b)=>b.revenue-a.revenue);
+      const byShip = Object.entries(dayShipMap).map(([date,ship]) => ({ date, shipments: ship, revenue: dayRevMap[date]||0 })).sort((a,b)=>b.shipments-a.shipments);
+      return JSON.stringify({ analysis_type: 'top_days', source: 'MoySklad Live API', top_10_by_revenue: byRev.slice(0,10), top_10_by_shipments: byShip.slice(0,10) });
+    }
+
+    // ── HEALTH REPORT ────────────────────────────────────────────────────
+    if (analysis_type === 'health_report') {
+      const now       = new Date();
+      const curMonKey = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+      const prevDt    = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const prevMonKey= `${prevDt.getFullYear()}-${String(prevDt.getMonth()+1).padStart(2,'0')}`;
+
+      const curDem   = allDemands.filter(d => (d.moment||'').slice(0,7) === curMonKey);
+      const prevDem  = allDemands.filter(d => (d.moment||'').slice(0,7) === prevMonKey);
+      const todayDem = allDemands.filter(d => (d.moment||'').startsWith(today));
+
+      const curRev   = curDem.reduce((a,d) => a+fmtR((d.sum||0)/100), 0);
+      const prevRev  = prevDem.reduce((a,d) => a+fmtR((d.sum||0)/100), 0);
+      const todayRev = todayDem.reduce((a,d) => a+fmtR((d.sum||0)/100), 0);
+      const momNum   = prevRev > 0 ? (curRev - prevRev) / prevRev * 100 : null;
+      const aov      = curDem.length > 0 ? fmtR(curRev / curDem.length) : 0;
+
+      const [stockRows, allOrders, sMap] = await Promise.all([getStock(), getAllOrders(), getOrderStateMap()]);
+      const stockStatus = stockRows.map(s => (s.quantity||0) <= 0 ? 'out' : (s.quantity||0) < 100 ? 'low' : 'ok');
+      const pending = allOrders.filter(o => !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(resolveState(o, sMap).toLowerCase()));
+
+      // Last 7 days revenue
+      const last7 = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const ds = localDateStr(d);
+        last7.push({ date: ds, revenue: allDemands.filter(dd => (dd.moment||'').startsWith(ds)).reduce((a,dd)=>a+fmtR((dd.sum||0)/100),0), shipments: allDemands.filter(dd => (dd.moment||'').startsWith(ds)).length });
+      }
+
+      const curCusts  = new Set(curDem.map(d => agentName(d)).filter(n => n !== '—'));
+      const prevCusts = new Set(prevDem.map(d => agentName(d)).filter(n => n !== '—'));
+      const newCusts  = [...curCusts].filter(c => !prevCusts.has(c)).length;
+
+      return JSON.stringify({
+        analysis_type: 'health_report', source: 'MoySklad Live API', as_of: `${today} (live)`,
+        today:      { revenue: todayRev, shipments: todayDem.length },
+        this_month: { revenue: curRev, shipments: curDem.length, unique_customers: curCusts.size, new_customers: newCusts, avg_order_value: aov, mom_growth: momNum !== null ? momNum.toFixed(1)+'%' : 'N/A' },
+        last_month: { revenue: prevRev, shipments: prevDem.length, unique_customers: prevCusts.size },
+        inventory:  { total_skus: stockRows.length, ok: stockStatus.filter(s=>s==='ok').length, low: stockStatus.filter(s=>s==='low').length, out_of_stock: stockStatus.filter(s=>s==='out').length },
+        pipeline:   { pending_orders: pending.length, pending_value: pending.reduce((a,o)=>a+fmtR((o.sum||0)/100),0) },
+        last_7_days: last7,
+        health_score: {
+          revenue_trend:  momNum === null ? '⚪ No prev data' : momNum > 5 ? '✅ Growing' : momNum < -10 ? '🔴 Declining' : '🟡 Stable',
+          stock_health:   stockStatus.filter(s=>s==='out').length > 10 ? '🔴 Many out of stock' : stockStatus.filter(s=>s==='low').length > 20 ? '🟡 Several low stock' : '✅ Good',
+          order_pipeline: pending.length > 50 ? '🟡 High pending count' : '✅ Manageable'
+        }
+      });
+    }
+
+    return JSON.stringify({ error: `Unknown analysis_type: "${analysis_type}". Use: health_report, growth_rate, avg_order_value, customer_frequency, day_of_week, slow_moving, peak_hours, top_days` });
+  } catch (e) { return JSON.stringify({ error: e.message }); }
+}
+
+// ── Period helpers used by dashboard pages and chatbot tools ───────────────
 function resolvePeriod(period) {
   const now = new Date();
   if (!period || period === 'this_month') return { from: monthStart(), to: `${todayStr()} 23:59:59` };
@@ -2095,23 +2558,24 @@ function resolvePeriod(period) {
 const CHAT_TOOLS = [
   {
     name: 'query_moysklad',
-    description: `Query MoySklad business data from MongoDB (fast — no live API calls).
+    description: `Query MoySklad business data LIVE from the MoySklad API (cached, always fresh — not MongoDB).
 
 data_type options:
 • "demands"   → shipment/sales records. Combine with group_by for breakdowns.
 • "orders"    → customer orders (not yet shipped). Use for pending/outstanding orders.
-• "stock"     → current inventory levels from latest sync.
-• "customers" → customer list/details.
+• "stock"     → current live inventory levels.
+• "customers" → top customers by revenue for the period.
 
 group_by (for demands only):
-• "product"  → revenue + qty by product model (fast). Default.
-• "sku"      → flavour/variant breakdown (unwinds positions). Use for "sku wise", "flavour wise", "variant wise".
-• "customer" → revenue + shipments by customer.
-• "day"      → daily trend.
-• "month"    → monthly trend across all history.
-• "none"     → single total (revenue, count) for the period.
+• "product"   → revenue + qty by product model. Default.
+• "sku"       → flavour/variant breakdown. Use for "sku wise", "flavour wise", "variant wise".
+• "customer"  → revenue + shipments by customer.
+• "salesman"  → revenue + shipments by salesman/employee. Use for "top salesman", "who sold most".
+• "day"       → daily trend.
+• "month"     → monthly trend across all history.
+• "none"      → single total (revenue, count) for the period.
 
-period: "today", "this_month", "last_month", "this_year", "all", "YYYY-MM", "YYYY-MM-DD:YYYY-MM-DD"
+period: "today", "this_month", "last_month", "this_year", "YYYY-MM", "YYYY-MM-DD:YYYY-MM-DD"
 filter: partial name match for product or customer (applies to sku/product/customer group_by)
 sort_by: "revenue" (default) | "quantity" | "orders"
 top_n: max results (default 15, max 200)
@@ -2119,6 +2583,7 @@ top_n: max results (default 15, max 200)
 RULES:
 - "sku wise" / "flavour wise" / "variant wise" / "breakdown" → group_by="sku"
 - "which model sold most" / "product totals" → group_by="product"
+- "top salesman" / "best salesman" / "salesman performance" → group_by="salesman"
 - "by customer" / "top customers" → group_by="customer" OR data_type="customers"
 - "monthly trend" / "month by month" → group_by="month"
 - Pending orders / unshipped → data_type="orders"`,
@@ -2127,7 +2592,7 @@ RULES:
       properties: {
         data_type: { type: 'string', enum: ['demands', 'orders', 'stock', 'customers'], description: 'Which collection to query' },
         period: { type: 'string', description: '"today","this_month","last_month","this_year","all","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"' },
-        group_by: { type: 'string', enum: ['product', 'sku', 'customer', 'day', 'month', 'none'], description: 'How to aggregate demands. "sku" for flavour detail.' },
+        group_by: { type: 'string', enum: ['product', 'sku', 'customer', 'salesman', 'day', 'month', 'none'], description: 'How to aggregate demands. "sku" for flavour detail. "salesman" for employee breakdown.' },
         filter: { type: 'string', description: 'Partial name match for product or customer' },
         top_n: { type: 'number', description: 'Max rows to return (default 15)' },
         sort_by: { type: 'string', enum: ['revenue', 'quantity', 'orders'], description: 'Sort field (default: revenue)' }
@@ -2178,6 +2643,57 @@ Use this when user asks: "why is there a difference", "reconcile", "tally vs moy
     }
   },
   {
+    name: 'predict_sales',
+    description: `Predict future sales revenue using MoySklad live historical data.
+Uses day-of-week patterns + moving averages + weekly momentum trend.
+
+horizon: "tomorrow" (default) | "next_week" | "next_month"
+filter: optional "customer:NAME" to forecast for a specific customer
+
+Use for: "predict tomorrow sales", "what will revenue be next week", "sales forecast", "expected revenue", "sales outlook", "will we hit target"`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        horizon: { type: 'string', enum: ['tomorrow', 'next_week', 'next_month'], description: 'Forecast horizon' },
+        filter:  { type: 'string', description: 'Optional customer filter e.g. "customer:Acme"' }
+      }
+    }
+  },
+  {
+    name: 'analyze',
+    description: `Deep business analytics and intelligence from MoySklad live data.
+
+analysis_type options:
+• "health_report"      → FULL business snapshot: today + month + MoM growth + stock + pipeline + last 7 days. Use for general health/overview questions.
+• "growth_rate"        → Week-over-week and month-over-month revenue growth rates with trend table.
+• "avg_order_value"    → Average shipment value trend over time + revenue distribution buckets.
+• "customer_frequency" → Repeat rate, avg days between orders, customer loyalty metrics.
+• "day_of_week"        → Which days generate most revenue/shipments (Mon–Sun heatmap).
+• "slow_moving"        → SKUs in stock with ZERO sales in last 30 days (tied-up capital).
+• "peak_hours"         → Hour-of-day analysis — when are shipments processed most.
+• "top_days"           → Top 10 highest revenue days and busiest shipment days ever.
+
+period: "today","this_month","last_month","this_year","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"
+filter: optional "customer:NAME"
+
+ROUTING:
+- "health report" / "how are we doing" / "business overview" → health_report
+- "slow moving" / "dead stock" / "not selling" / "sitting in warehouse" → slow_moving
+- "growth" / "trend" / "month over month" / "week over week" → growth_rate
+- "busy day" / "best day" / "weekday" / "weekend" → day_of_week
+- "repeat customers" / "loyalty" / "how often" → customer_frequency
+- "average order" / "ticket size" → avg_order_value`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        analysis_type: { type: 'string', enum: ['health_report', 'growth_rate', 'avg_order_value', 'customer_frequency', 'day_of_week', 'slow_moving', 'peak_hours', 'top_days'], description: 'Type of analysis' },
+        period: { type: 'string', description: 'Period: "this_month","last_month","this_year","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"' },
+        filter: { type: 'string', description: 'Optional customer filter' }
+      },
+      required: ['analysis_type']
+    }
+  },
+  {
     name: 'web_search',
     description: 'Search the internet for EXTERNAL information only: market trends, regulations, competitor data, industry news, GST/tax rates, global pricing. Do NOT use for internal business data — use query_moysklad or query_tally instead.',
     input_schema: {
@@ -2191,32 +2707,12 @@ Use this when user asks: "why is there a difference", "reconcile", "tally vs moy
 ];
 
 // ── MoySklad sync endpoints ───────────────────────────────────────────────
-let _msSyncRunning = false;
-
-app.post('/api/ms/sync', async (req, res) => {
-  if (_msSyncRunning) return res.json({ ok: false, message: 'Sync already running' });
-  res.json({ ok: true, message: 'Sync started' });
-  _msSyncRunning = true;
-  try {
-    const { runSync } = require('./sync-ms-data');
-    await runSync({ verbose: true });
-    console.log('[MS sync] completed');
-  } catch (e) {
-    console.error('[MS sync] failed:', e.message);
-  } finally {
-    _msSyncRunning = false;
-  }
+app.post('/api/ms/sync', (req, res) => {
+  res.status(410).json({ ok: false, message: 'MoySklad database sync is disabled' });
 });
 
-app.get('/api/ms/sync/status', async (req, res) => {
-  try {
-    const db = await getMongoDb();
-    if (!db) return res.json({ ok: false, error: 'MongoDB not connected' });
-    const meta = await db.collection('ms_sync_meta').findOne({ _id: 'main' });
-    res.json({ ok: true, running: _msSyncRunning, meta: meta || null });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
+app.get('/api/ms/sync/status', (req, res) => {
+  res.json({ ok: true, running: false, meta: null, disabled: true });
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -2247,6 +2743,8 @@ app.post('/api/chat', async (req, res) => {
             if (t.name === 'query_moysklad')   return toolQueryMoysklad(t.input);
             if (t.name === 'query_tally')      return toolQueryTally(t.input);
             if (t.name === 'compare_sources')  return toolCompareSources(t.input);
+            if (t.name === 'predict_sales')    return toolPredictSales(t.input);
+            if (t.name === 'analyze')          return toolAnalytics(t.input);
             return Promise.resolve(JSON.stringify({ error: 'Unknown tool: ' + t.name }));
           }));
           const toolResults = toolUses.map((t, i) => ({
@@ -2350,34 +2848,19 @@ app.get('/tally', async (req, res) => {
     monthsWithData = (await dbEarly.collection('tally_vouchers').distinct('month')).sort();
   }
 
-  // Build dropdown: only months with data + current month (always shown for syncing)
-  let dropdownMonths = [...new Set([...monthsWithData, currentMonth])].sort().reverse();
-  if (dropdownMonths.length === 0) {
-    // Fallback: show last 12 months so user can still sync
-    for (let i = 0; i < 12; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      dropdownMonths.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
-    }
-  }
-  // Helper: Indian FY label for a YYYY-MM string
-  const fyLabel = v => {
-    const [y, m] = v.split('-').map(Number);
-    return m >= 4 ? `FY ${y}-${String(y+1).slice(2)}` : `FY ${y-1}-${String(y).slice(2)}`;
-  };
-  const monthOpts = dropdownMonths.map(v => {
-    const d = new Date(v + '-02');
-    return { value: v, label: d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }), fy: fyLabel(v) };
-  });
-
-  // Default to latest month with data (not current month if it has no data)
-  const latestWithData = monthsWithData.length > 0 ? monthsWithData[monthsWithData.length - 1] : currentMonth;
-  const requestedMonth = (req.query.month || '').slice(0, 7);
-  let selMonth;
-  if (requestedMonth) {
-    selMonth = requestedMonth; // user explicitly chose a month — honour it
-  } else {
-    selMonth = latestWithData; // default: latest month with real data
-  }
+  // ── Date-range selection (always date-based, no month dropdown) ──
+  const todayStr       = now.toISOString().slice(0, 10);
+  const firstOfMonth   = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+  const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+  // Default: current month start → today
+  const customFrom     = isDate(req.query.from) ? String(req.query.from) : firstOfMonth;
+  const customTo       = isDate(req.query.to)   ? String(req.query.to)   : todayStr;
+  const isCustomRange  = customFrom <= customTo;
+  const selMonth       = customFrom.slice(0, 7);
+  const periodQuery    = { dateStr: { $gte: customFrom, $lte: customTo } };
+  const periodStartDate = customFrom;
+  const periodEndDate   = customTo;
+  const periodLabel = `${customFrom.split('-').reverse().join('/')} – ${customTo.split('-').reverse().join('/')}`;
 
   // ── Live Tally data (balances) ──────────────────────────────
   let result;
@@ -2388,6 +2871,28 @@ app.get('/tally', async (req, res) => {
     if (result.connected) {
       saveTallySnapshot(result).catch(e => console.error('Mongo save:', e.message));
       syncedAt = now;
+      // ── Auto stock snapshot: save today's stock silently on every page load ──
+      // Builds up daily history so opening/closing stock calc works automatically.
+      setImmediate(async () => {
+        try {
+          const dbS = await getMongoDb();
+          if (!dbS) return;
+          const todayKey = now.toISOString().slice(0, 10);
+          const alreadySaved = await dbS.collection('tally_stock_history').findOne({ _id: todayKey });
+          if (!alreadySaved) {
+            const items = await fetchTallyStock();
+            if (items.length > 0) {
+              const totalValue = items.reduce((s, i) => s + (i.value || 0), 0);
+              await dbS.collection('tally_stock_history').replaceOne(
+                { _id: todayKey },
+                { _id: todayKey, date: now, month: todayKey.slice(0, 7), totalValue, auto: true },
+                { upsert: true }
+              );
+              console.log(`[stock] Auto-saved snapshot for ${todayKey}: ₹${Math.round(totalValue).toLocaleString('en-IN')}`);
+            }
+          }
+        } catch(e) { console.error('[stock] Auto-snapshot error:', e.message); }
+      });
     }
   } catch(e) {
     result = {
@@ -2425,6 +2930,9 @@ app.get('/tally', async (req, res) => {
   let creditors        = result.creditors || [];
   let expenseBreakdown = [];
   let openingStock = 0, closingStock = 0;
+  let openingStockDate = null, closingStockDate = null;
+  let hasValidStockRange = false;
+  let refStockValue = null, refStockDate = null;
   let topCustSales     = [];
   let topSuppPurchase  = [];
   let stockItems       = [];
@@ -2436,8 +2944,8 @@ app.get('/tally', async (req, res) => {
     hasDbData = true;
 
     // Period vouchers (selected month)
-    const pv = await db.collection('tally_vouchers').find({ month: selMonth }).sort({ date: -1 }).toArray();
-    periodVouchers    = pv.slice(0, 100);
+    const pv = await db.collection('tally_vouchers').find(periodQuery).sort({ date: -1 }).toArray();
+    periodVouchers    = pv;
     const isCollection = v => (v.type === 'Journal' || /receipt/i.test(v.type)) && !/stock journal/i.test(v.type);
     periodSales       = pv.filter(v => /sales/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
     periodPurchases   = pv.filter(v => /purchase/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
@@ -2475,14 +2983,14 @@ app.get('/tally', async (req, res) => {
 
     // Top customers by collections this period (Journal = money received)
     topCustSales = await db.collection('tally_vouchers').aggregate([
-      { $match: { month: selMonth, type: { $in: ['Sales', 'Journal', 'Receipt'] }, party: { $gt: '' } } },
+      { $match: { ...periodQuery, type: { $in: ['Sales', 'Journal', 'Receipt'] }, party: { $gt: '' } } },
       { $group: { _id: '$party', total: { $sum: '$amount' } } },
       { $sort: { total: -1 } }, { $limit: 10 }
     ]).toArray();
 
     // Top suppliers by purchases this period
     topSuppPurchase = await db.collection('tally_vouchers').aggregate([
-      { $match: { month: selMonth, type: { $regex: /purchase/i }, party: { $gt: '' } } },
+      { $match: { ...periodQuery, type: { $regex: /purchase/i }, party: { $gt: '' } } },
       { $group: { _id: '$party', total: { $sum: '$amount' } } },
       { $sort: { total: -1 } }, { $limit: 10 }
     ]).toArray();
@@ -2491,19 +2999,31 @@ app.get('/tally', async (req, res) => {
     stockItems      = await db.collection('tally_stock').find({}).sort({ value: -1 }).limit(25).toArray();
     totalStockValue = stockItems.reduce((s, i) => s + (i.value || 0), 0);
 
-    // Opening & closing stock for selected month (from daily history snapshots)
-    const monthEnd   = selMonth + '-31'; // past end of month, fine for lte
-    const monthStart2 = selMonth + '-01';
-    const [closingSnap, openingSnap] = await Promise.all([
-      // Closing = latest snapshot on or before end of selected month
-      db.collection('tally_stock_history')
-        .find({ _id: { $lte: monthEnd } }).sort({ _id: -1 }).limit(1).toArray(),
-      // Opening = latest snapshot strictly before the 1st of selected month
-      db.collection('tally_stock_history')
-        .find({ _id: { $lt: monthStart2 } }).sort({ _id: -1 }).limit(1).toArray(),
+    // Opening & closing stock for selected period.
+    // For a valid stock-adjusted GP we need TWO DISTINCT snapshots —
+    // one at/before period start and a DIFFERENT one at/before period end.
+    // We always pass refStockValue/refStockDate so the modal can show latest
+    // known stock as a reference even when a proper range isn't available.
+    const stockHistory = db.collection('tally_stock_history');
+    const [openingBefore, closingBefore, latestSnaps] = await Promise.all([
+      stockHistory.find({ _id: { $lte: periodStartDate } }).sort({ _id: -1 }).limit(1).toArray(),
+      stockHistory.find({ _id: { $lte: periodEndDate   } }).sort({ _id: -1 }).limit(1).toArray(),
+      stockHistory.find({}).sort({ _id: -1 }).limit(1).toArray(),
     ]);
-    closingStock = closingSnap[0]?.totalValue ?? totalStockValue;
-    openingStock = openingSnap[0]?.totalValue ?? 0;
+    const openingSnap = openingBefore[0] || null;
+    const closingSnap = closingBefore[0]  || null;
+    // Need two DIFFERENT boundary snapshots for a proper range
+    hasValidStockRange = !!(
+      openingSnap && closingSnap && openingSnap._id !== closingSnap._id
+    );
+    openingStock     = hasValidStockRange ? (openingSnap.totalValue ?? 0) : 0;
+    closingStock     = hasValidStockRange ? (closingSnap.totalValue  ?? 0) : 0;
+    openingStockDate = hasValidStockRange ? openingSnap._id : null;
+    closingStockDate = hasValidStockRange ? closingSnap._id  : null;
+    // Reference stock — latest available snapshot (for display even when range invalid)
+    const refSnap = closingSnap || latestSnaps[0] || null;
+    refStockValue = refSnap ? (refSnap.totalValue ?? null) : null;
+    refStockDate  = refSnap ? refSnap._id : null;
 
     hasDbData = monthsWithData.length > 0;
 
@@ -2538,13 +3058,14 @@ app.get('/tally', async (req, res) => {
 
   res.render('tally', {
     ...c, active: 'tally', ...result,
-    fromCache, syncedAt, selMonth, monthOpts,
+    fromCache, syncedAt, selMonth,
+    isCustomRange, customFrom, customTo, periodLabel,
     periodSales, periodPurchases, periodCollections, periodPayments,
     periodVouchers, monthlyTrend,
     debtors, creditors, totalOutstanding, supplierDues,
     expenseBreakdown, topCustSales, topSuppPurchase,
-    stockItems, totalStockValue, openingStock, closingStock, aging, hasDbData,
-    monthsWithData
+    stockItems, totalStockValue, openingStock, closingStock, openingStockDate, closingStockDate,
+    hasValidStockRange, refStockValue, refStockDate, aging, hasDbData, monthsWithData
   });
 });
 
@@ -2557,6 +3078,26 @@ app.get('/api/tally/voucher-types', async (req, res) => {
     { $sort: { count: -1 } }
   ]).toArray();
   res.json(types);
+});
+
+// ── Manual stock snapshot for a specific date (or today) ─────
+// POST /api/tally/stock-snapshot?date=YYYY-MM-DD
+app.post('/api/tally/stock-snapshot', async (req, res) => {
+  try {
+    const dateKey = (req.query.date || req.body?.date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return res.status(400).json({ ok: false, error: 'Invalid date' });
+    const items = await fetchTallyStock();
+    if (!items.length) return res.status(500).json({ ok: false, error: 'No stock items returned from Tally' });
+    const totalValue = items.reduce((s, i) => s + (i.value || 0), 0);
+    const db = await getMongoDb();
+    if (!db) return res.status(500).json({ ok: false, error: 'MongoDB unavailable' });
+    await db.collection('tally_stock_history').replaceOne(
+      { _id: dateKey },
+      { _id: dateKey, date: new Date(), month: dateKey.slice(0, 7), totalValue, items: items.length },
+      { upsert: true }
+    );
+    res.json({ ok: true, date: dateKey, totalValue, items: items.length });
+  } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 // Sync button — full save: snapshot + ledgers + current+prev month vouchers + stock
@@ -2608,6 +3149,7 @@ app.post('/api/tally/sync', async (req, res) => {
 
       const allVouchers = [...vCur, ...vPrev];
       if (allVouchers.length > 0) {
+        await db.collection('tally_vouchers').deleteMany({ month: { $in: [curMonthStart.slice(0, 7), prevMonthStart.slice(0, 7)] } });
         const ops = allVouchers.map(v => ({ replaceOne: { filter: { _id: v._id }, replacement: v, upsert: true } }));
         await db.collection('tally_vouchers').bulkWrite(ops, { ordered: false });
       }
@@ -2706,24 +3248,6 @@ function startServer(port) {
     console.log(`  Local:   http://localhost:${port}`);
     console.log(`  Network: http://${ip}:${port}\n`);
 
-    // Background MoySklad auto-sync every 4 hours
-    const MS_SYNC_INTERVAL = 4 * 60 * 60 * 1000;
-    async function scheduleSync() {
-      if (!_msSyncRunning) {
-        _msSyncRunning = true;
-        try {
-          const { runSync } = require('./sync-ms-data');
-          await runSync({ verbose: false });
-          console.log('[MS auto-sync] completed');
-        } catch (e) {
-          console.error('[MS auto-sync] failed:', e.message);
-        } finally {
-          _msSyncRunning = false;
-        }
-      }
-      setTimeout(scheduleSync, MS_SYNC_INTERVAL);
-    }
-    setTimeout(scheduleSync, MS_SYNC_INTERVAL);
   });
 
   server.on('error', (err) => {

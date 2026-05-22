@@ -121,7 +121,7 @@ function parseVouchers(xml) {
     const num    = stripXml(getTag(blk, 'VOUCHERNUMBER'));
     const party  = stripXml(getTag(blk, 'PARTYLEDGERNAME'));
     const amount = Math.abs(parseTallyAmount(getTag(blk, 'AMOUNT')));
-    const raw    = `${dateStr}|${type}|${num || (party + '|' + amount)}`;
+    const raw    = `${dateStr}|${type}|${num}|${party}|${amount}`;
     const _id    = raw.replace(/[^a-zA-Z0-9|._-]/g, '_').slice(0, 120);
     out.push({
       _id, dateStr,
@@ -164,7 +164,7 @@ async function fetchVouchers() {
   return rows;
 }
 
-// ── Fetch stock items ─────────────────────────────────────────
+// ── Fetch stock items (current) ───────────────────────────────
 async function fetchStock() {
   process.stdout.write('  Fetching stock items ... ');
   const xml = await tallyPost(envelope('StockItems', `
@@ -183,6 +183,49 @@ async function fetchStock() {
   }
   console.log(`${rows.length} items`);
   return rows;
+}
+
+// ── Fetch total stock value as-of a specific date ─────────────
+// Tally respects SVTODATE and returns ClosingValue as of that date.
+async function fetchStockValueAsOf(dateISO) {
+  const xml = await tallyPost(envelope('StockSnap', `
+<COLLECTION NAME="StockSnap" ISMODIFY="No">
+  <TYPE>Stock Item</TYPE>
+  <FETCH>Name,ClosingValue</FETCH>
+</COLLECTION>`, '20000101', dateISO));   // fromDate far past so nothing is excluded
+  let total = 0;
+  let count = 0;
+  for (const blk of blocks(xml, 'STOCKITEM')) {
+    const value = Math.abs(parseTallyAmount(stripXml(getTag(blk, 'CLOSINGVALUE'))));
+    if (value > 0) { total += value; count++; }
+  }
+  return { totalValue: total, itemCount: count };
+}
+
+// ── Build list of snapshot dates (1st of each month + today) ──
+// Returns YYYY-MM-DD strings from fyStart up to today.
+function buildSnapshotDates(fyStartISO) {
+  const dates = [];
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const todayISO = today.toISOString().slice(0,10);
+
+  // First day of each month from fyStart to current month
+  let cur = new Date(fyStartISO);
+  cur.setDate(1);
+  while (cur <= today) {
+    const iso = cur.toISOString().slice(0,10);
+    // Add 1st of month
+    dates.push(iso);
+    // Add last day of month (except if that is in the future)
+    const lastDay = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+    const lastISO = lastDay.toISOString().slice(0,10);
+    if (lastISO < todayISO) dates.push(lastISO);
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  // Always include today
+  if (!dates.includes(todayISO)) dates.push(todayISO);
+  return [...new Set(dates)].sort();
 }
 
 // ── Main ──────────────────────────────────────────────────────
@@ -233,6 +276,7 @@ async function main() {
   console.log('[ 2 / 4 ]  Syncing vouchers ...');
   const vouchers = await fetchVouchers();
   if (vouchers.length > 0) {
+    await db.collection('tally_vouchers').deleteMany({});
     const ops = vouchers.map(v => ({ replaceOne: { filter: { _id: v._id }, replacement: v, upsert: true } }));
     const BATCH = 500;
     for (let i = 0; i < ops.length; i += BATCH) {
@@ -272,8 +316,8 @@ async function main() {
   }
   console.log(`           ✓  ${receiptAgg.length} customer · ${purchaseAgg.length} supplier dates updated\n`);
 
-  // 7. Sync stock items
-  console.log('[ 4 / 5 ]  Syncing stock items ...');
+  // 7. Sync stock items (current)
+  console.log('[ 4 / 6 ]  Syncing stock items (current) ...');
   const stockItems = await fetchStock();
   if (stockItems.length > 0) {
     const ops = stockItems.map(s => ({ replaceOne: { filter: { _id: s._id }, replacement: s, upsert: true } }));
@@ -281,8 +325,42 @@ async function main() {
   }
   console.log(`           ✓  ${stockItems.length} stock items saved\n`);
 
-  // 8. Save summary snapshot
-  console.log('[ 5 / 5 ]  Saving snapshot ...');
+  // 8. Build historical stock snapshots (1st + last day of every month since FY2024)
+  //    These power the opening/closing stock calculation in the Gross Profit modal.
+  console.log('[ 5 / 6 ]  Building stock history snapshots ...');
+  console.log('           Querying Tally for closing stock value on each date.');
+  console.log('           This may take a minute — Tally answers one date at a time.\n');
+
+  const FY_START   = '2024-04-01';                    // change if your books start earlier
+  const snapDates  = buildSnapshotDates(FY_START);
+  const histCol    = db.collection('tally_stock_history');
+
+  // Find which dates already have snapshots so we can skip them
+  const existing   = new Set(
+    (await histCol.find({ _id: { $in: snapDates } }, { projection: { _id: 1 } }).toArray()).map(d => d._id)
+  );
+
+  let saved = 0, skipped = 0, failed = 0;
+  for (const dateISO of snapDates) {
+    if (existing.has(dateISO)) { skipped++; continue; }
+    try {
+      const { totalValue, itemCount } = await fetchStockValueAsOf(dateISO);
+      await histCol.replaceOne(
+        { _id: dateISO },
+        { _id: dateISO, date: new Date(dateISO), month: dateISO.slice(0,7), totalValue, itemCount, source: 'full-sync' },
+        { upsert: true }
+      );
+      process.stdout.write(`           ✓  ${dateISO}  ₹${Math.round(totalValue).toLocaleString('en-IN')}  (${itemCount} items)\n`);
+      saved++;
+    } catch(e) {
+      process.stdout.write(`           ✗  ${dateISO}  ${e.message}\n`);
+      failed++;
+    }
+  }
+  console.log(`\n           Done: ${saved} saved · ${skipped} already existed · ${failed} failed\n`);
+
+  // 10. Save summary snapshot
+  console.log('[ 6 / 6 ]  Saving snapshot ...');
   const debtors   = ledgers.filter(l => l.type === 'debtor'   && l.balance > 0).sort((a,b) => b.balance - a.balance);
   const creditors = ledgers.filter(l => l.type === 'creditor' && l.balance > 0).sort((a,b) => b.balance - a.balance);
   const snap = {
@@ -311,20 +389,23 @@ async function main() {
     { $group: { _id: '$type', n: { $sum: 1 } } }, { $sort: { n: -1 } }
   ]).toArray();
 
+  const stockSnapCount = await db.collection('tally_stock_history').countDocuments();
   console.log('╔════════════════════════════════════════╗');
   console.log('║          SYNC  COMPLETE                ║');
   console.log('╠════════════════════════════════════════╣');
-  console.log(`║  Ledgers  : ${String(ledgers.length).padEnd(27)}║`);
-  console.log(`║  Vouchers : ${String(totalV).padEnd(27)}║`);
-  console.log(`║  Stock    : ${String(stockItems.length).padEnd(27)}║`);
-  console.log('║  Breakdown:                            ║');
+  console.log(`║  Ledgers       : ${String(ledgers.length).padEnd(22)}║`);
+  console.log(`║  Vouchers      : ${String(totalV).padEnd(22)}║`);
+  console.log(`║  Stock items   : ${String(stockItems.length).padEnd(22)}║`);
+  console.log(`║  Stock history : ${String(stockSnapCount + ' snapshots').padEnd(22)}║`);
+  console.log('║  Voucher types :                       ║');
   typeCounts.forEach(v => {
     const line = `    ${v._id} : ${v.n}`;
     console.log(`║  ${line.padEnd(38)}║`);
   });
   console.log('╚════════════════════════════════════════╝');
-  console.log('\nDatabase ready.');
-  console.log('Use the "Sync to DB" button daily to keep data current.\n');
+  console.log('\n✓  Database ready. Gross Profit opening/closing stock will now');
+  console.log('   work for any date range from April 2024 onwards.');
+  console.log('   Use "Sync to DB" button daily to keep data current.\n');
 
   await client.close();
 }
