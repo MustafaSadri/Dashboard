@@ -1108,30 +1108,30 @@ app.get('/customers', async (req, res) => {
       momentTo = `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}-01 00:00:00`;
     }
 
-    // Fetch orders with positions expanded (to get actual qty per customer)
-    // and total counterparty count in parallel
+    // Fetch DEMANDS (shipments) with agent + positions — same data source as Dashboard revenue
+    // so totals match across all pages (filter by SHIPMENT date, not order date)
     const filterParts = [];
     if (momentFrom) filterParts.push(`moment>${momentFrom}`);
     if (momentTo)   filterParts.push(`moment<${momentTo}`);
     const filterStr = filterParts.join(';');
-    const ordersUrl = `/entity/customerorder?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent,positions&limit=100&order=moment,desc`;
+    const demUrl = `/entity/demand?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent,positions&limit=100&order=moment,desc`;
 
-    const custOrdKey = `cust_orders_${filterStr}`;
-    const [allOrders, totalCustomers] = await Promise.all([
-      cached(custOrdKey, 2*60*1000, () => msAll(ordersUrl).then(r => r.rows || [])),
+    const custDemKey = `cust_demands_${filterStr}`;
+    const [allDemands, totalCustomers] = await Promise.all([
+      cached(custDemKey, 2*60*1000, () => msAll(demUrl).then(r => r.rows || [])),
       cached('counterparty_count', 10*60*1000, () => ms('/entity/counterparty?limit=1').then(r => r.meta?.size || 0)),
     ]);
 
-    // Aggregate per customer from orders + their positions
+    // Aggregate per customer from shipments + their positions
     const custMap = {};
-    allOrders.forEach(order => {
-      const name = order.agent?.name || '—';
+    allDemands.forEach(demand => {
+      const name = demand.agent?.name || '—';
       if (name === '—') return;
-      const id = (order.agent?.meta?.href || '').split('/').pop();
+      const id = (demand.agent?.meta?.href || '').split('/').pop();
       if (!custMap[name]) custMap[name] = { id, name, orders: 0, totalQty: 0, totalVal: 0 };
       custMap[name].orders++;
-      custMap[name].totalVal += (order.sum || 0) / 100;
-      (order.positions?.rows || []).forEach(pos => {
+      custMap[name].totalVal += (demand.sum || 0) / 100;
+      (demand.positions?.rows || []).forEach(pos => {
         custMap[name].totalQty += Math.round(pos.quantity || 0);
       });
     });
