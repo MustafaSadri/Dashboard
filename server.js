@@ -1108,35 +1108,61 @@ app.get('/customers', async (req, res) => {
       momentTo = `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}-01 00:00:00`;
     }
 
-    // Fetch DEMANDS (shipments) with agent + positions — same data source as Dashboard revenue
-    // so totals match across all pages (filter by SHIPMENT date, not order date)
-    const filterParts = [];
-    if (momentFrom) filterParts.push(`moment>${momentFrom}`);
-    if (momentTo)   filterParts.push(`moment<${momentTo}`);
-    const filterStr = filterParts.join(';');
-    const demUrl = `/entity/demand?${filterStr ? 'filter='+enc(filterStr)+'&' : ''}expand=agent,positions&limit=100&order=moment,desc`;
-
-    const custDemKey = `cust_demands_${filterStr}`;
-    const [allDemands, totalCustomers] = await Promise.all([
-      cached(custDemKey, 2*60*1000, () => msAll(demUrl).then(r => r.rows || [])),
+    // ── Revenue: reuse the exact same demand cache as the dashboard monthly chart
+    // so customers "Total Revenue" always matches dashboard (guaranteed, same data source).
+    // ── Qty: pulled from MongoDB ms_demands which has embedded positions from the last sync.
+    const [allDemandsFull, totalCustomers] = await Promise.all([
+      getDemandsFromDec25(),
       cached('counterparty_count', 10*60*1000, () => ms('/entity/counterparty?limit=1').then(r => r.meta?.size || 0)),
     ]);
 
-    // Aggregate per customer from shipments + their positions
-    const custMap = {};
-    allDemands.forEach(demand => {
-      const name = demand.agent?.name || '—';
-      if (name === '—') return;
-      const id = (demand.agent?.meta?.href || '').split('/').pop();
-      if (!custMap[name]) custMap[name] = { id, name, orders: 0, totalQty: 0, totalVal: 0 };
-      custMap[name].orders++;
-      custMap[name].totalVal += (demand.sum || 0) / 100;
-      (demand.positions?.rows || []).forEach(pos => {
-        custMap[name].totalQty += Math.round(pos.quantity || 0);
-      });
+    // Filter to selected period by moment string comparison (same format: "YYYY-MM-DD HH:MM:SS")
+    const filteredDemands = allDemandsFull.filter(d => {
+      const mom = d.moment || '';
+      if (momentFrom && mom < momentFrom) return false;
+      if (momentTo   && mom >= momentTo)  return false;
+      return true;
     });
 
+    // Counterparty name map: UUID → name (cached 15 min — avoids per-demand expand)
+    const cpNameMap = await cached('cp_name_map_v1', 15*60*1000, async () => {
+      const { rows = [] } = await msAll('/entity/counterparty?limit=1000');
+      return Object.fromEntries(rows.map(r => [r.id, r.name || '']));
+    });
+
+    // Aggregate revenue per customer (ALL demands, including those without an agent)
+    const custMap = {};
+    filteredDemands.forEach(demand => {
+      const agentId = (demand.agent?.meta?.href || '').split('/').pop().split('?')[0] || '';
+      const name    = agentId ? (cpNameMap[agentId] || '—') : '—';
+      const key     = agentId || '__no_agent__';
+      if (!custMap[key]) custMap[key] = { id: agentId, name, orders: 0, totalQty: 0, totalVal: 0 };
+      custMap[key].orders++;
+      custMap[key].totalVal += (demand.sum || 0) / 100;
+    });
+
+    // Overlay qty from MongoDB ms_demands (has embedded positions from last sync — best effort)
+    try {
+      const db = await getMongoDb();
+      if (db) {
+        const qFilter = {};
+        if (momentFrom) qFilter.moment = { $gte: momentFrom };
+        if (momentTo)   (qFilter.moment = qFilter.moment || {}).$lt = momentTo;
+        const mongoDemands = await db.collection('ms_demands')
+          .find(qFilter, { projection: { customerId: 1, positions: 1 } })
+          .toArray();
+        mongoDemands.forEach(d => {
+          const key = d.customerId || '__no_agent__';
+          if (custMap[key]) {
+            const qty = (d.positions || []).reduce((a, p) => a + Math.round(p.quantity || 0), 0);
+            custMap[key].totalQty += qty;
+          }
+        });
+      }
+    } catch (_) { /* MongoDB unavailable — qty shows 0, revenue unaffected */ }
+
     const customers = Object.values(custMap)
+      .filter(x => x.id && x.name !== '—')   // exclude no-agent demands from list
       .map(x => ({
         ...x,
         avgQty: x.orders > 0 ? +(x.totalQty / x.orders).toFixed(1) : 0,
