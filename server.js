@@ -135,6 +135,23 @@ async function fetchTallyStock() {
   return items;
 }
 
+// Fetch total stock value from Tally AS OF a specific date.
+// Tally respects SVTODATE for ClosingValue (balance-type field) — gives stock as of that day.
+// Returns total rupee value, or null if Tally is unreachable.
+async function fetchTallyStockTotal(asOfDate) {
+  // fromDate far in past so Tally computes full opening; toDate = the date we want
+  const xml = await tallyCollection('StockAsOf', `
+<COLLECTION NAME="StockAsOf" ISMODIFY="No">
+  <TYPE>Stock Item</TYPE>
+  <FETCH>Name,ClosingValue</FETCH>
+</COLLECTION>`, { fromDate: '2020-01-01', toDate: asOfDate });
+  let total = 0;
+  for (const blk of blocks(xml, 'STOCKITEM')) {
+    total += Math.abs(parseTallyAmount(stripXml(getTag(blk, 'CLOSINGVALUE'))));
+  }
+  return total;
+}
+
 // ── Auth credentials ─────────────────────────────────────
 const PASSCODE = process.env.PASSCODE || '1990';
 
@@ -2849,12 +2866,22 @@ app.get('/tally', async (req, res) => {
   }
 
   // ── Date-range selection (always date-based, no month dropdown) ──
-  const todayStr       = now.toISOString().slice(0, 10);
-  const firstOfMonth   = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+  const todayStr     = now.toISOString().slice(0, 10);
   const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
-  // Default: current month start → today
-  const customFrom     = isDate(req.query.from) ? String(req.query.from) : firstOfMonth;
-  const customTo       = isDate(req.query.to)   ? String(req.query.to)   : todayStr;
+
+  // Smart default: use current month if DB has data for it,
+  // otherwise fall back to the most recent month that does have data.
+  const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  const lastKnownMonth  = monthsWithData.length > 0 ? monthsWithData[monthsWithData.length - 1] : currentMonthStr;
+  const defaultMonth    = monthsWithData.includes(currentMonthStr) ? currentMonthStr : lastKnownMonth;
+  const firstOfMonth    = `${defaultMonth}-01`;
+  // Last day of defaultMonth
+  const [dy, dm]        = defaultMonth.split('-').map(Number);
+  const lastOfMonth     = new Date(dy, dm, 0).toISOString().slice(0, 10);
+  const defaultTo       = defaultMonth === currentMonthStr ? todayStr : lastOfMonth;
+
+  const customFrom  = isDate(req.query.from) ? String(req.query.from) : firstOfMonth;
+  const customTo    = isDate(req.query.to)   ? String(req.query.to)   : defaultTo;
   const isCustomRange  = customFrom <= customTo;
   const selMonth       = customFrom.slice(0, 7);
   const periodQuery    = { dateStr: { $gte: customFrom, $lte: customTo } };
@@ -2943,8 +2970,29 @@ app.get('/tally', async (req, res) => {
   if (db) {
     hasDbData = true;
 
-    // Period vouchers (selected month)
-    const pv = await db.collection('tally_vouchers').find(periodQuery).sort({ date: -1 }).toArray();
+    // Period vouchers — MongoDB first, live Tally fallback if empty
+    let pv = await db.collection('tally_vouchers').find(periodQuery).sort({ date: -1 }).toArray();
+
+    // MongoDB has no data for this period (e.g. new FY) — fetch live from Tally + filter by date in JS
+    if (pv.length === 0 && result.connected) {
+      try {
+        const liveXml = await tallyCollection('PeriodVouchers', `
+<COLLECTION NAME="PeriodVouchers" ISMODIFY="No">
+  <TYPE>Voucher</TYPE>
+  <FETCH>Date,VoucherNumber,VoucherTypeName,PartyLedgerName,Amount,Narration</FETCH>
+</COLLECTION>`, { fromDate: customFrom, toDate: customTo });
+        // Always filter in JS — Tally ignores SVFROMDATE/SVTODATE
+        const live = parseVouchersFromXml(liveXml)
+          .filter(v => v.dateStr >= customFrom && v.dateStr <= customTo);
+        if (live.length > 0) {
+          pv = live;
+          // Save to MongoDB so next page load is instant
+          const ops = live.map(v => ({ replaceOne: { filter: { _id: v._id }, replacement: v, upsert: true } }));
+          db.collection('tally_vouchers').bulkWrite(ops, { ordered: false }).catch(() => {});
+        }
+      } catch(_) { /* Tally live fetch failed — stay with empty */ }
+    }
+
     periodVouchers    = pv;
     const isCollection = v => (v.type === 'Journal' || /receipt/i.test(v.type)) && !/stock journal/i.test(v.type);
     periodSales       = pv.filter(v => /sales/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
@@ -2952,21 +3000,32 @@ app.get('/tally', async (req, res) => {
     periodCollections = pv.filter(isCollection).reduce((s,v) => s + (v.amount||0), 0);
     periodPayments    = pv.filter(v => /payment/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
 
-    // Monthly trend — last 6 months
+    // Monthly trend — last 6 months from MongoDB
     const sixAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
     const trend  = await db.collection('tally_vouchers').aggregate([
       { $match: { date: { $gte: sixAgo } } },
       { $group: { _id: { month: '$month', type: '$type' }, total: { $sum: '$amount' } } }
     ]).toArray();
     const tMap = {};
+    // If current month missing from DB trend (new FY), inject from the live pv we just fetched
+    const curMonthKey = now.toISOString().slice(0, 7);
     trend.forEach(row => {
       const m = row._id.month;
       if (!tMap[m]) tMap[m] = { month: m, sales: 0, collections: 0, purchases: 0, payments: 0 };
-      if (/sales/i.test(row._id.type))    tMap[m].sales       += row.total;
-      if (row._id.type === 'Journal' || /receipt/i.test(row._id.type)) tMap[m].collections += row.total;
-      if (/purchase/i.test(row._id.type)) tMap[m].purchases   += row.total;
-      if (/payment/i.test(row._id.type))  tMap[m].payments    += row.total;
+      if (/sales/i.test(row._id.type))                                    tMap[m].sales       += row.total;
+      if (row._id.type === 'Journal' || /receipt/i.test(row._id.type))    tMap[m].collections += row.total;
+      if (/purchase/i.test(row._id.type))                                 tMap[m].purchases   += row.total;
+      if (/payment/i.test(row._id.type))                                  tMap[m].payments    += row.total;
     });
+    if (!tMap[curMonthKey] && pv.length > 0) {
+      tMap[curMonthKey] = {
+        month: curMonthKey,
+        sales:       pv.filter(v => /sales/i.test(v.type)).reduce((s,v) => s+(v.amount||0), 0),
+        collections: pv.filter(v => v.type==='Journal'||/receipt/i.test(v.type)).reduce((s,v) => s+(v.amount||0), 0),
+        purchases:   pv.filter(v => /purchase/i.test(v.type)).reduce((s,v) => s+(v.amount||0), 0),
+        payments:    pv.filter(v => /payment/i.test(v.type)).reduce((s,v) => s+(v.amount||0), 0),
+      };
+    }
     monthlyTrend = Object.values(tMap).sort((a,b) => a.month.localeCompare(b.month));
 
     // Debtors + creditors with last payment dates from tally_ledgers
@@ -3084,20 +3143,208 @@ app.get('/api/tally/voucher-types', async (req, res) => {
 // POST /api/tally/stock-snapshot?date=YYYY-MM-DD
 app.post('/api/tally/stock-snapshot', async (req, res) => {
   try {
-    const dateKey = (req.query.date || req.body?.date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const dateKey  = (req.query.date || req.body?.date || new Date().toISOString().slice(0, 10)).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return res.status(400).json({ ok: false, error: 'Invalid date' });
-    const items = await fetchTallyStock();
+    const monthKey = dateKey.slice(0, 7); // 'YYYY-MM'
+    const items    = await fetchTallyStock();
     if (!items.length) return res.status(500).json({ ok: false, error: 'No stock items returned from Tally' });
     const totalValue = items.reduce((s, i) => s + (i.value || 0), 0);
     const db = await getMongoDb();
     if (!db) return res.status(500).json({ ok: false, error: 'MongoDB unavailable' });
+    const now = new Date();
+    // Save to daily history
     await db.collection('tally_stock_history').replaceOne(
       { _id: dateKey },
-      { _id: dateKey, date: new Date(), month: dateKey.slice(0, 7), totalValue, items: items.length },
+      { _id: dateKey, date: now, month: monthKey, totalValue, itemCount: items.length },
       { upsert: true }
     );
-    res.json({ ok: true, date: dateKey, totalValue, items: items.length });
+    // Save to monthly collection — GP modal reads from here
+    await db.collection('tally_stock_monthly').replaceOne(
+      { _id: monthKey },
+      { _id: monthKey, month: monthKey, stockValue: totalValue, syncDate: dateKey, syncedAt: now, itemCount: items.length },
+      { upsert: true }
+    );
+    res.json({ ok: true, date: dateKey, month: monthKey, totalValue, items: items.length });
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ── Gross Profit API — month-by-month data for the GP modal ──
+// GET /api/tally/gross-profit?month=YYYY-MM
+app.get('/api/tally/gross-profit', async (req, res) => {
+  try {
+    const db = await getMongoDb();
+    if (!db) return res.status(503).json({ ok: false, error: 'MongoDB unavailable' });
+
+    const now = new Date();
+    const curMonthStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+
+    // Validate / default requested month
+    const rawMonth = String(req.query.month || curMonthStr);
+    const month    = /^\d{4}-\d{2}$/.test(rawMonth) ? rawMonth : curMonthStr;
+    const [my, mm] = month.split('-').map(Number);
+    const firstDay = `${month}-01`;
+    const lastDay  = new Date(my, mm, 0).toISOString().slice(0, 10); // last day of month
+
+    // Build list of last 20 months for the selector (newest first)
+    const availableMonths = [];
+    for (let i = 0; i < 20; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      availableMonths.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+    }
+
+    const stockMonthly = db.collection('tally_stock_monthly');
+    const stockHistory = db.collection('tally_stock_history');
+    const vouchersCol  = db.collection('tally_vouchers');
+
+    // Previous month key (opening stock = closing stock of prev month)
+    const prevMonthDate = new Date(my, mm - 2, 1); // mm is 1-based, -2 goes back 1 month
+    const prevMonth     = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth()+1).padStart(2,'0')}`;
+
+    // Parallel: voucher totals + monthly stock records (primary) + daily history fallback
+    const [salesAgg, openingMonthly, closingMonthly, latestMonthly] = await Promise.all([
+      vouchersCol.aggregate([
+        { $match: { dateStr: { $gte: firstDay, $lte: lastDay } } },
+        { $group: { _id: '$type', total: { $sum: '$amount' } } }
+      ]).toArray(),
+      // Opening stock = the monthly record for the PREVIOUS month
+      stockMonthly.findOne({ _id: prevMonth }),
+      // Closing stock = the monthly record for THIS month
+      stockMonthly.findOne({ _id: month }),
+      // Latest sync ever (for reference card)
+      stockMonthly.find({}).sort({ _id: -1 }).limit(1).toArray()
+    ]);
+
+    // Aggregate voucher totals
+    let sales = 0, purchases = 0, collections = 0, payments = 0;
+    for (const row of salesAgg) {
+      const t = (row._id || '').toLowerCase();
+      if (t.includes('sales'))                            sales       += row.total;
+      else if (t.includes('purchase'))                    purchases   += row.total;
+      else if (t === 'journal' || t.includes('receipt'))  collections += row.total;
+      else if (t.includes('payment'))                     payments    += row.total;
+    }
+
+    // --- Primary: tally_stock_monthly (set by sync / Save Stock buttons) ---
+    let openingStock = 0, closingStock = 0;
+    let openingStockDate = null, closingStockDate = null;
+    let hasStockData = false;
+    let stockSource = 'db'; // 'db' | 'tally_live' | 'none'
+
+    if (openingMonthly && closingMonthly) {
+      // Both boundaries exist in DB — use them
+      hasStockData     = true;
+      openingStock     = openingMonthly.stockValue ?? 0;
+      closingStock     = closingMonthly.stockValue  ?? 0;
+      openingStockDate = `${openingMonthly.month} (synced ${openingMonthly.syncDate})`;
+      closingStockDate = `${closingMonthly.month} (synced ${closingMonthly.syncDate})`;
+      stockSource      = 'db';
+    } else {
+      // --- Try live Tally fetch for whichever boundary is missing ─────────────────
+      // prevMonthLastDay = last day of previous month = opening balance date for this month
+      const prevMonthLastDay = new Date(my, mm - 1, 0).toISOString().slice(0, 10);
+
+      let tallyOpenVal = openingMonthly ? openingMonthly.stockValue : null;
+      let tallyCloseVal = closingMonthly ? closingMonthly.stockValue : null;
+      let fetchedFromTally = false;
+
+      try {
+        // Fetch missing values from live Tally (single queries — won't crash Tally)
+        const fetches = [];
+        if (tallyOpenVal === null)  fetches.push(fetchTallyStockTotal(prevMonthLastDay).catch(() => null));
+        else                        fetches.push(Promise.resolve(null)); // already have it
+        if (tallyCloseVal === null) fetches.push(fetchTallyStockTotal(lastDay).catch(() => null));
+        else                        fetches.push(Promise.resolve(null));
+
+        const [fetchedOpen, fetchedClose] = await Promise.all(fetches);
+
+        if (fetchedOpen  !== null && tallyOpenVal  === null) { tallyOpenVal  = fetchedOpen;  fetchedFromTally = true; }
+        if (fetchedClose !== null && tallyCloseVal === null) { tallyCloseVal = fetchedClose; fetchedFromTally = true; }
+
+        // Auto-save fetched values to tally_stock_monthly so future loads use DB
+        if (fetchedFromTally) {
+          const saveOps = [];
+          if (fetchedOpen !== null && !openingMonthly) {
+            saveOps.push(stockMonthly.replaceOne(
+              { _id: prevMonth },
+              { _id: prevMonth, month: prevMonth, stockValue: fetchedOpen, syncDate: prevMonthLastDay, syncedAt: new Date(), itemCount: 0, source: 'tally_live' },
+              { upsert: true }
+            ));
+          }
+          if (fetchedClose !== null && !closingMonthly) {
+            saveOps.push(stockMonthly.replaceOne(
+              { _id: month },
+              { _id: month, month, stockValue: fetchedClose, syncDate: lastDay, syncedAt: new Date(), itemCount: 0, source: 'tally_live' },
+              { upsert: true }
+            ));
+          }
+          if (saveOps.length) await Promise.all(saveOps).catch(() => {});
+        }
+      } catch(_) { /* Tally offline — fall through to DB fallback */ }
+
+      if (tallyOpenVal !== null && tallyCloseVal !== null) {
+        hasStockData     = true;
+        openingStock     = tallyOpenVal;
+        closingStock     = tallyCloseVal;
+        openingStockDate = `${prevMonth} end (live from Tally)`;
+        closingStockDate = `${lastDay} (live from Tally)`;
+        stockSource      = fetchedFromTally ? 'tally_live' : 'db';
+      } else if (openingMonthly || closingMonthly) {
+        // Only one boundary exists — use what we have
+        openingStock     = openingMonthly ? openingMonthly.stockValue : 0;
+        closingStock     = closingMonthly ? closingMonthly.stockValue : 0;
+        openingStockDate = openingMonthly ? `${openingMonthly.month} (synced ${openingMonthly.syncDate})` : null;
+        closingStockDate = closingMonthly ? `${closingMonthly.month} (synced ${closingMonthly.syncDate})` : null;
+        hasStockData     = false; // incomplete — warn user
+        stockSource      = 'db';
+      } else {
+        // Absolute fallback: tally_stock_history (date-based daily snapshots)
+        const [openingSnaps, closingSnaps] = await Promise.all([
+          stockHistory.find({ _id: { $lte: firstDay } }).sort({ _id: -1 }).limit(1).toArray(),
+          stockHistory.find({ _id: { $lte: lastDay  } }).sort({ _id: -1 }).limit(1).toArray(),
+        ]);
+        const openingSnap = openingSnaps[0] || null;
+        const closingSnap = closingSnaps[0] || null;
+        if (openingSnap && closingSnap && openingSnap._id !== closingSnap._id) {
+          hasStockData     = true;
+          openingStock     = openingSnap.totalValue ?? 0;
+          closingStock     = closingSnap.totalValue  ?? 0;
+          openingStockDate = openingSnap._id;
+          closingStockDate = closingSnap._id;
+          stockSource      = 'db';
+        }
+      }
+    }
+
+    // Gross Profit = Sales − Opening Stock − Purchases + Closing Stock
+    const grossProfit = sales - openingStock - purchases + closingStock;
+    const grossMargin = sales > 0 ? Math.round(grossProfit / sales * 100) : 0;
+
+    // Latest sync for reference card — prefer monthly, then daily
+    const latestRef = latestMonthly[0] || null;
+
+    // Which months have monthly stock records (for status info)
+    const stockMonths = await stockMonthly.distinct('_id');
+
+    res.json({
+      ok: true,
+      month, firstDay, lastDay, prevMonth,
+      sales, purchases, collections, payments,
+      openingStock, openingStockDate,
+      closingStock,  closingStockDate,
+      hasStockData,
+      hasOpeningRecord: !!(openingMonthly || (stockSource === 'tally_live' && hasStockData)),
+      hasClosingRecord: !!(closingMonthly || (stockSource === 'tally_live' && hasStockData)),
+      stockSource,   // 'db' | 'tally_live' | 'none'
+      grossProfit, grossMargin,
+      refStockValue: latestRef ? (latestRef.stockValue ?? null) : null,
+      refStockDate:  latestRef ? latestRef.syncDate : null,
+      stockMonths,
+      availableMonths
+    });
+  } catch(e) {
+    console.error('[GP API]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // Sync button — full save: snapshot + ledgers + current+prev month vouchers + stock
@@ -3157,19 +3404,29 @@ app.post('/api/tally/sync', async (req, res) => {
       // ── 5. Update last payment dates ────────────────────────
       await updateLastPaymentDates(db);
 
-      // ── 6. Stock items + save daily stock value snapshot ────
+      // ── 6. Stock items + save daily + monthly stock snapshots ──
       try {
         const stockItems = await fetchTallyStock();
         if (stockItems.length > 0) {
           const ops = stockItems.map(s => ({ replaceOne: { filter: { _id: s._id }, replacement: s, upsert: true } }));
           await db.collection('tally_stock').bulkWrite(ops, { ordered: false });
-          // Save daily stock value so we can compute opening/closing stock per month
           const totalValue = stockItems.reduce((s, i) => s + (i.value || 0), 0);
+          const curMonth   = today.slice(0, 7); // 'YYYY-MM'
+          // Daily snapshot (fine-grained, used as fallback)
           await db.collection('tally_stock_history').replaceOne(
             { _id: today },
-            { _id: today, date: syncedAt, month: today.slice(0, 7), totalValue },
+            { _id: today, date: syncedAt, month: curMonth, totalValue, itemCount: stockItems.length },
             { upsert: true }
           );
+          // Monthly snapshot — one record per month, always overwritten with latest sync
+          // GP modal reads: opening stock of M = tally_stock_monthly[M-1]
+          //                 closing stock of M = tally_stock_monthly[M]
+          await db.collection('tally_stock_monthly').replaceOne(
+            { _id: curMonth },
+            { _id: curMonth, month: curMonth, stockValue: totalValue, syncDate: today, syncedAt, itemCount: stockItems.length },
+            { upsert: true }
+          );
+          console.log(`[stock] Saved monthly snapshot for ${curMonth}: ₹${Math.round(totalValue).toLocaleString('en-IN')}`);
         }
       } catch(e) { console.error('Stock sync error:', e.message); }
 

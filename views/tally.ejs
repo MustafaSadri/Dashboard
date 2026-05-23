@@ -72,7 +72,7 @@
       <code style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:11px">node sync-tally-full.js</code>
       once to load full history. Then use Sync daily.
     </div>
-    <% } else if(periodVouchers.length===0 && monthsWithData.length>0){ %>
+    <% } else if(periodVouchers.length===0 && monthsWithData.length>0 && !connected){ %>
     <div style="margin-top:10px;padding:9px 13px;background:rgba(136,145,181,.07);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text2)">
       <i class="fas fa-calendar-xmark" style="margin-right:5px"></i>
       No Tally data for <strong><%- selMonthLabel %></strong>.
@@ -103,13 +103,10 @@
       <div class="stat-sub">COGS</div>
       <i class="fas fa-cart-flatbed stat-icon"></i>
     </div>
-    <div class="stat-card <%- grossProfit>=0?'success':'danger' %>" onclick="openProfitDetail()" style="cursor:pointer" title="Click for full profit breakdown">
-      <div class="stat-label">Gross Profit <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.5;margin-left:3px"></i></div>
-      <div class="stat-value"><%- fmtShort(Math.abs(grossProfit)) %></div>
-      <div class="stat-sub" title="Click for full breakdown">
-        Margin <%- grossMargin %>%
-        · <% if(hasValidStockRange){ %><span style="color:var(--accent2);font-size:10px">Stock adjusted</span><% } else { %><span style="color:var(--warn);font-size:10px">No stock data</span><% } %>
-      </div>
+    <div class="stat-card" style="opacity:.55;cursor:default;pointer-events:none">
+      <div class="stat-label">Gross Profit</div>
+      <div style="font-size:13px;font-weight:600;color:var(--text2);margin:8px 0 4px">🚧 Still building</div>
+      <div class="stat-sub">Coming soon</div>
       <i class="fas fa-chart-pie stat-icon"></i>
     </div>
     <div class="stat-card" onclick="showVoucherType('receipt')" style="cursor:pointer" title="Click to view collection entries">
@@ -562,14 +559,6 @@
 </div><!-- /main -->
 
 <!-- ══ GROSS PROFIT DETAIL MODAL ══════════════════════════════ -->
-<%
-  var cogs = periodPurchases + openingStock - closingStock;
-  var grossProfitAbs = Math.abs(grossProfit);
-  var isLoss = grossProfit < 0;
-  var netProfitAbs = Math.abs(ytdProfit);
-  var isNetLoss = ytdProfit < 0;
-  var contributionMargin = periodSales > 0 ? Math.round((periodSales - periodPurchases) / periodSales * 100) : 0;
-%>
 <div id="profitDetailOverlay" onclick="if(event.target===this)closeProfitDetail()" style="
   display:none;position:fixed;inset:0;z-index:9999;
   background:rgba(10,12,28,.75);backdrop-filter:blur(4px);
@@ -580,200 +569,43 @@
     box-shadow:0 24px 64px rgba(0,0,0,.5)">
 
     <!-- Header -->
-    <div style="padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
-      <div style="width:38px;height:38px;border-radius:10px;background:rgba(0,212,170,.12);display:flex;align-items:center;justify-content:center">
+    <div style="padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="width:38px;height:38px;border-radius:10px;background:rgba(0,212,170,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0">
         <i class="fas fa-chart-pie" style="color:var(--accent2);font-size:16px"></i>
       </div>
       <div>
         <div style="font-size:15px;font-weight:700;color:var(--text)">Gross Profit Breakdown</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:2px"><%- selMonthLabel %></div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px" id="gpMonthLabel">Loading…</div>
       </div>
-      <button onclick="closeProfitDetail()" style="margin-left:auto;width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center">
+      <!-- Month selector -->
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+        <label style="font-size:12px;color:var(--text2);white-space:nowrap">Select Month:</label>
+        <select id="gpMonthSelect" onchange="loadGpData(this.value)" style="
+          background:var(--bg3);border:1px solid var(--border);border-radius:8px;
+          color:var(--text);font-size:13px;padding:6px 10px;cursor:pointer;outline:none">
+          <!-- populated by JS -->
+        </select>
+      </div>
+      <button onclick="closeProfitDetail()" style="width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0">
         <i class="fas fa-xmark"></i>
       </button>
     </div>
 
-    <!-- Body -->
-    <div style="padding:24px">
-
-      <!-- Formula banner — always full 4-part formula -->
-      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px 18px;margin-bottom:18px;font-size:12px;color:var(--text2);text-align:center">
-        <code style="color:var(--accent)">Gross Profit = Sales − Opening Stock − Purchases + Closing Stock</code>
+    <!-- Body — fully dynamic -->
+    <div id="gpModalBody" style="padding:24px">
+      <!-- Skeleton loader shown while fetching -->
+      <div id="gpLoader" style="display:flex;flex-direction:column;gap:12px">
+        <div style="height:44px;background:var(--bg3);border-radius:10px;opacity:.5"></div>
+        <div style="height:62px;background:var(--bg3);border-radius:10px;opacity:.4"></div>
+        <div style="height:62px;background:var(--bg3);border-radius:10px;opacity:.35"></div>
+        <div style="height:62px;background:var(--bg3);border-radius:10px;opacity:.3"></div>
+        <div style="height:62px;background:var(--bg3);border-radius:10px;opacity:.25"></div>
+        <div style="height:72px;background:var(--bg3);border-radius:10px;opacity:.5"></div>
       </div>
+      <!-- Actual content injected here -->
+      <div id="gpContent" style="display:none"></div>
+    </div>
 
-      <!-- Stock notice: two states -->
-      <% if(!hasValidStockRange){ %>
-      <div style="display:flex;align-items:flex-start;gap:10px;padding:11px 14px;background:rgba(255,169,77,.07);border:1px solid rgba(255,169,77,.28);border-radius:10px;margin-bottom:16px;font-size:12px">
-        <i class="fas fa-triangle-exclamation" style="color:var(--warn);margin-top:2px;flex-shrink:0"></i>
-        <div style="color:var(--text2);line-height:1.55">
-          <strong style="color:var(--warn)">Opening stock snapshot missing.</strong>
-          No sync was found on or before <strong><%- customFrom.split('-').reverse().join('/') %></strong> —
-          stock rows are set to <strong>₹0</strong> and cancel out of the formula.<br>
-          <span style="margin-top:5px;display:inline-block;opacity:.85">
-            <i class="fas fa-lightbulb" style="color:var(--warn);margin-right:4px"></i>
-            <strong>Fix:</strong> click <strong>Sync to DB</strong> on <strong>the first day</strong> of each period, then again at the end.
-          </span>
-        </div>
-      </div>
-      <% } %>
-
-      <!-- Calculation table — always shows all 4 rows -->
-      <div style="display:flex;flex-direction:column;gap:9px;margin-bottom:22px">
-
-        <!-- Sales (positive) -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:rgba(0,212,170,.06);border:1px solid rgba(0,212,170,.2);border-radius:10px">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:17px;color:var(--accent2);font-weight:700;width:20px;text-align:center">+</span>
-            <div>
-              <div style="font-size:13px;font-weight:600;color:var(--text)">Revenue (Sales)</div>
-              <div style="font-size:11px;color:var(--text2);margin-top:2px">Invoiced sales in the period</div>
-            </div>
-          </div>
-          <div style="font-size:18px;font-weight:700;color:var(--accent2)"><%- fmt(periodSales) %></div>
-        </div>
-
-        <!-- Opening Stock (negative) -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;
-          background:<%- hasValidStockRange?'rgba(136,145,181,.06)':'rgba(136,145,181,.03)' %>;
-          border:1px solid <%- hasValidStockRange?'var(--border)':'rgba(136,145,181,.2)' %>;border-radius:10px;
-          opacity:<%- hasValidStockRange?'1':'.6' %>">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:17px;color:var(--text2);font-weight:700;width:20px;text-align:center">−</span>
-            <div>
-              <div style="font-size:13px;font-weight:600;color:var(--text)">Opening Stock</div>
-              <div style="font-size:11px;color:var(--text2);margin-top:2px">
-                <% if(hasValidStockRange){ %>snapshot as of <%- openingStockDate %>
-                <% } else { %>No snapshot found before <%- customFrom.split('-').reverse().join('/') %> — using ₹0<% } %>
-              </div>
-            </div>
-          </div>
-          <div style="font-size:18px;font-weight:700;color:var(--text)"><%- hasValidStockRange ? fmt(openingStock) : '₹0' %></div>
-        </div>
-
-        <!-- Purchases (negative) -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:rgba(255,184,77,.06);border:1px solid rgba(255,184,77,.2);border-radius:10px">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:17px;color:var(--warn);font-weight:700;width:20px;text-align:center">−</span>
-            <div>
-              <div style="font-size:13px;font-weight:600;color:var(--text)">Purchases (COGS)</div>
-              <div style="font-size:11px;color:var(--text2);margin-top:2px">Goods purchased in the period</div>
-            </div>
-          </div>
-          <div style="font-size:18px;font-weight:700;color:var(--warn)"><%- fmt(periodPurchases) %></div>
-        </div>
-
-        <!-- Closing Stock (positive) -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;
-          background:<%- hasValidStockRange?'rgba(91,141,238,.06)':'rgba(136,145,181,.03)' %>;
-          border:1px solid <%- hasValidStockRange?'rgba(91,141,238,.2)':'rgba(136,145,181,.2)' %>;border-radius:10px;
-          opacity:<%- hasValidStockRange?'1':'.6' %>">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:17px;color:#5b8dee;font-weight:700;width:20px;text-align:center">+</span>
-            <div>
-              <div style="font-size:13px;font-weight:600;color:var(--text)">Closing Stock</div>
-              <div style="font-size:11px;color:var(--text2);margin-top:2px">
-                <% if(hasValidStockRange){ %>snapshot as of <%- closingStockDate %>
-                <% } else { %>No matching boundary snapshot — using ₹0<% } %>
-              </div>
-            </div>
-          </div>
-          <div style="font-size:18px;font-weight:700;color:#5b8dee"><%- hasValidStockRange ? fmt(closingStock) : '₹0' %></div>
-        </div>
-
-        <!-- Divider + Result -->
-        <div style="border-top:2px solid var(--border);margin:3px 0"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 16px;
-          background:<%- isLoss?'rgba(255,77,109,.08)':'rgba(0,212,170,.08)' %>;
-          border:2px solid <%- isLoss?'var(--danger)':'var(--accent2)' %>;border-radius:10px">
-          <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text)">= Gross <%- isLoss?'Loss':'Profit' %></div>
-            <div style="font-size:11px;color:var(--text2);margin-top:3px">
-              Sales − Opening Stock − Purchases + Closing Stock
-            </div>
-          </div>
-          <div>
-            <div style="font-size:24px;font-weight:800;color:<%- isLoss?'var(--danger)':'var(--accent2)' %>">
-              <%- isLoss?'−':'' %><%- fmt(grossProfitAbs) %>
-            </div>
-            <div style="text-align:right;margin-top:3px">
-              <span style="font-size:12px;padding:2px 10px;border-radius:20px;font-weight:600;
-                background:<%- isLoss?'rgba(255,77,109,.15)':'rgba(0,212,170,.15)' %>;
-                color:<%- isLoss?'var(--danger)':'var(--accent2)' %>"><%- grossMargin %>% margin</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Reference stock snapshot (always visible when any sync exists) -->
-      <% if(refStockValue !== null && refStockValue !== undefined){ %>
-      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:22px;display:flex;align-items:center;gap:12px">
-        <div style="width:34px;height:34px;border-radius:8px;background:rgba(91,141,238,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-boxes-stacked" style="color:#5b8dee;font-size:14px"></i>
-        </div>
-        <div style="flex:1">
-          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:3px">
-            Latest Stock Snapshot <% if(!hasValidStockRange){ %><span style="font-weight:400;font-size:10px;color:var(--warn)">(reference only — not used in formula above)</span><% } %>
-          </div>
-          <div style="display:flex;align-items:center;gap:12px">
-            <span style="font-size:16px;font-weight:700;color:var(--text)"><%- fmt(refStockValue) %></span>
-            <span style="font-size:12px;color:var(--text2)">as of <%- refStockDate.split('-').reverse().join('/') %></span>
-            <% if(!hasValidStockRange){ %>
-            <span style="font-size:11px;color:var(--text2);background:rgba(255,169,77,.1);padding:2px 8px;border-radius:4px;border:1px solid rgba(255,169,77,.2)">
-              Sync on <%- customFrom.split('-').reverse().join('/') %> to use as opening stock
-            </span>
-            <% } %>
-          </div>
-        </div>
-      </div>
-      <% } %>
-
-      <!-- Metrics row -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
-        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
-          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Contribution Margin</div>
-          <div style="font-size:20px;font-weight:700;color:var(--text)"><%- contributionMargin %>%</div>
-          <div style="font-size:11px;color:var(--text2);margin-top:3px">(Sales − Purchases) / Sales</div>
-        </div>
-        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
-          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">COGS Total</div>
-          <div style="font-size:20px;font-weight:700;color:var(--warn)"><%- fmt(Math.max(0,cogs)) %></div>
-          <div style="font-size:11px;color:var(--text2);margin-top:3px">Purchases + OS − CS</div>
-        </div>
-        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
-          <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Collections</div>
-          <div style="font-size:20px;font-weight:700;color:#5b8dee"><%- fmt(periodCollections) %></div>
-          <div style="font-size:11px;color:var(--text2);margin-top:3px">Cash received this period</div>
-        </div>
-      </div>
-
-      <!-- YTD P&L summary -->
-      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:16px 18px">
-        <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.7px;font-weight:600;margin-bottom:14px">
-          <i class="fas fa-chart-bar" style="color:var(--accent);margin-right:5px"></i>YTD P&L Summary
-        </div>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="display:flex;justify-content:space-between;font-size:13px">
-            <span style="color:var(--text2)">YTD Sales</span>
-            <strong style="color:var(--accent2)"><%- fmt(totalSales) %></strong>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:13px">
-            <span style="color:var(--text2)">YTD Purchases</span>
-            <strong style="color:var(--warn)">− <%- fmt(totalPurchases) %></strong>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:13px">
-            <span style="color:var(--text2)">YTD Expenses</span>
-            <strong style="color:var(--danger)">− <%- fmt(totalExpenses) %></strong>
-          </div>
-          <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:2px;display:flex;justify-content:space-between;font-size:14px">
-            <span style="font-weight:600;color:var(--text)">YTD Net <%- isNetLoss?'Loss':'Profit' %></span>
-            <strong style="font-size:16px;color:<%- isNetLoss?'var(--danger)':'var(--accent2)' %>">
-              <%- isNetLoss?'−':'' %><%- fmt(netProfitAbs) %>
-            </strong>
-          </div>
-        </div>
-      </div>
-
-    </div><!-- /body -->
   </div>
 </div>
 
@@ -829,10 +661,285 @@ async function saveStockSnapshot() {
   }
 }
 
+// ── Gross Profit Modal ────────────────────────────────────
+var _gpCurrentMonth = null;
+var _gpLoaded = false;
+
+function _gpFmtINR(v) {
+  if (v === null || v === undefined || isNaN(v)) return '₹0';
+  return '₹' + Math.round(Math.abs(v)).toLocaleString('en-IN');
+}
+
+function _gpMonthLabel(m) {
+  // m = 'YYYY-MM' → e.g. 'January 2025'
+  var d = new Date(m + '-01');
+  return d.toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+}
+
+function _gpBuildMonthOptions(months, selected) {
+  var sel = document.getElementById('gpMonthSelect');
+  sel.innerHTML = '';
+  months.forEach(function(m) {
+    var opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = _gpMonthLabel(m);
+    if (m === selected) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+function _gpRenderContent(d) {
+  var isLoss = d.grossProfit < 0;
+  var cm     = d.sales > 0 ? Math.round((d.sales - d.purchases) / d.sales * 100) : 0;
+  var cogs   = d.purchases + d.openingStock - d.closingStock;
+
+  // Stock status for each boundary
+  var osOk = d.hasOpeningRecord; // prev month has a record in tally_stock_monthly
+  var csOk = d.hasClosingRecord; // this month has a record in tally_stock_monthly
+
+  // Warning banner — only shown when either boundary is missing
+  var stockWarning = (osOk && csOk) ? '' : (function() {
+    var parts = [];
+    if (!osOk) parts.push('<strong>' + _gpMonthLabel(d.prevMonth) + '</strong> opening stock');
+    if (!csOk) parts.push('<strong>' + _gpMonthLabel(d.month) + '</strong> closing stock');
+    return `
+    <div style="display:flex;align-items:flex-start;gap:10px;padding:11px 14px;
+      background:rgba(255,169,77,.07);border:1px solid rgba(255,169,77,.28);
+      border-radius:10px;margin-bottom:16px;font-size:12px">
+      <i class="fas fa-triangle-exclamation" style="color:var(--warn);margin-top:2px;flex-shrink:0"></i>
+      <div style="color:var(--text2);line-height:1.55">
+        <strong style="color:var(--warn)">Missing: ${parts.join(' &amp; ')}.</strong>
+        Stock values set to <strong>₹0</strong>.<br>
+        <span style="margin-top:5px;display:inline-block;opacity:.85">
+          <i class="fas fa-lightbulb" style="color:var(--warn);margin-right:4px"></i>
+          Use the <strong>Save Stock</strong> buttons below — sync Tally first, then save for each missing month.
+        </span>
+      </div>
+    </div>`;
+  })();
+
+  // Reference card — latest sync ever
+  var refCard = (d.refStockValue !== null && d.refStockValue !== undefined) ? `
+    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px 16px;
+      margin-bottom:18px;display:flex;align-items:center;gap:10px">
+      <i class="fas fa-boxes-stacked" style="color:#5b8dee;font-size:16px;flex-shrink:0"></i>
+      <div>
+        <span style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Latest stock sync — </span>
+        <strong style="color:var(--text);font-size:13px">${_gpFmtINR(d.refStockValue)}</strong>
+        <span style="font-size:11px;color:var(--text2)"> synced on ${d.refStockDate || '—'}</span>
+      </div>
+    </div>` : '';
+
+  // Row appearance helpers
+  function rowStyle(ok, bg, border) {
+    return 'display:flex;align-items:center;justify-content:space-between;padding:13px 16px;' +
+      'background:' + (ok ? bg : 'rgba(136,145,181,.03)') + ';' +
+      'border:1px solid ' + (ok ? border : 'rgba(136,145,181,.2)') + ';border-radius:10px;' +
+      (ok ? '' : 'opacity:.6');
+  }
+
+  var liveBadge = d.stockSource === 'tally_live'
+    ? '<span style="font-size:10px;color:#00d4aa;background:rgba(0,212,170,.12);padding:1px 7px;border-radius:4px;margin-left:6px;border:1px solid rgba(0,212,170,.25)">⚡ live from Tally</span>'
+    : '';
+  var osNote = osOk
+    ? ((d.openingStockDate || (_gpMonthLabel(d.prevMonth) + ' end')))
+    : ('No record for ' + _gpMonthLabel(d.prevMonth) + ' — using ₹0');
+  var csNote = csOk
+    ? ((d.closingStockDate || (_gpMonthLabel(d.month))))
+    : ('No record for ' + _gpMonthLabel(d.month) + ' — using ₹0');
+
+  return `
+    <!-- Formula banner -->
+    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;
+      padding:12px 18px;margin-bottom:18px;font-size:12px;color:var(--text2);text-align:center">
+      <code style="color:var(--accent)">Gross Profit = Sales − Opening Stock − Purchases + Closing Stock</code>
+      ${liveBadge}
+    </div>
+
+    ${stockWarning}
+    ${refCard}
+
+    <!-- Calculation table -->
+    <div style="display:flex;flex-direction:column;gap:9px;margin-bottom:22px">
+
+      <!-- Sales -->
+      <div style="${rowStyle(true,'rgba(0,212,170,.06)','rgba(0,212,170,.2)')}">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:17px;color:var(--accent2);font-weight:700;width:20px;text-align:center">+</span>
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--text)">Revenue (Sales)</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px">Invoiced sales in ${_gpMonthLabel(d.month)}</div>
+          </div>
+        </div>
+        <div style="font-size:18px;font-weight:700;color:var(--accent2)">${_gpFmtINR(d.sales)}</div>
+      </div>
+
+      <!-- Opening Stock -->
+      <div style="${rowStyle(osOk,'rgba(136,145,181,.06)','var(--border)')}">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:17px;color:var(--text2);font-weight:700;width:20px;text-align:center">−</span>
+          <div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:13px;font-weight:600;color:var(--text)">Opening Stock</span>
+              ${osOk ? '<span style="font-size:10px;color:var(--accent2);background:rgba(0,212,170,.1);padding:1px 6px;border-radius:4px">✓ saved</span>' : '<span style="font-size:10px;color:var(--warn);background:rgba(255,169,77,.1);padding:1px 6px;border-radius:4px">missing</span>'}
+            </div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px">${osNote}</div>
+          </div>
+        </div>
+        <div style="font-size:18px;font-weight:700;color:var(--text)">${osOk ? _gpFmtINR(d.openingStock) : '₹0'}</div>
+      </div>
+
+      <!-- Purchases -->
+      <div style="${rowStyle(true,'rgba(255,184,77,.06)','rgba(255,184,77,.2)')}">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:17px;color:var(--warn);font-weight:700;width:20px;text-align:center">−</span>
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--text)">Purchases (COGS)</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px">Goods purchased in ${_gpMonthLabel(d.month)}</div>
+          </div>
+        </div>
+        <div style="font-size:18px;font-weight:700;color:var(--warn)">${_gpFmtINR(d.purchases)}</div>
+      </div>
+
+      <!-- Closing Stock -->
+      <div style="${rowStyle(csOk,'rgba(91,141,238,.06)','rgba(91,141,238,.2)')}">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:17px;color:#5b8dee;font-weight:700;width:20px;text-align:center">+</span>
+          <div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:13px;font-weight:600;color:var(--text)">Closing Stock</span>
+              ${csOk ? '<span style="font-size:10px;color:var(--accent2);background:rgba(0,212,170,.1);padding:1px 6px;border-radius:4px">✓ saved</span>' : '<span style="font-size:10px;color:var(--warn);background:rgba(255,169,77,.1);padding:1px 6px;border-radius:4px">missing</span>'}
+            </div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px">${csNote}</div>
+          </div>
+        </div>
+        <div style="font-size:18px;font-weight:700;color:#5b8dee">${csOk ? _gpFmtINR(d.closingStock) : '₹0'}</div>
+      </div>
+
+      <!-- Result -->
+      <div style="border-top:2px solid var(--border);margin:3px 0"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 16px;
+        background:${isLoss?'rgba(255,77,109,.08)':'rgba(0,212,170,.08)'};
+        border:2px solid ${isLoss?'var(--danger)':'var(--accent2)'};border-radius:10px">
+        <div>
+          <div style="font-size:14px;font-weight:700;color:var(--text)">= Gross ${isLoss?'Loss':'Profit'}</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">Sales − Opening Stock − Purchases + Closing Stock</div>
+        </div>
+        <div>
+          <div style="font-size:24px;font-weight:800;color:${isLoss?'var(--danger)':'var(--accent2)'}">${isLoss?'−':''}${_gpFmtINR(d.grossProfit)}</div>
+          <div style="text-align:right;margin-top:3px">
+            <span style="font-size:12px;padding:2px 10px;border-radius:20px;font-weight:600;
+              background:${isLoss?'rgba(255,77,109,.15)':'rgba(0,212,170,.15)'};
+              color:${isLoss?'var(--danger)':'var(--accent2)'}">
+              ${d.grossMargin}% margin
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metrics row -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px">
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Contribution Margin</div>
+        <div style="font-size:20px;font-weight:700;color:var(--text)">${cm}%</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:3px">(Sales − Purchases) / Sales</div>
+      </div>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">COGS Total</div>
+        <div style="font-size:20px;font-weight:700;color:var(--warn)">${_gpFmtINR(Math.max(0,cogs))}</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:3px">Purchases + OS − CS</div>
+      </div>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Collections</div>
+        <div style="font-size:20px;font-weight:700;color:#5b8dee">${_gpFmtINR(d.collections)}</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:3px">Cash received this month</div>
+      </div>
+    </div>
+
+    <!-- Save stock panel — shows two buttons: prev month (opening) + this month (closing) -->
+    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:10px">
+        <i class="fas fa-database" style="color:#5b8dee;margin-right:5px"></i>
+        Save Stock Snapshots to Database
+        <span style="font-weight:400;font-size:11px;color:var(--text2);margin-left:6px">— sync Tally first, then save for each month</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <!-- Opening: save to PREVIOUS month -->
+        <div style="border:1px solid ${osOk?'rgba(0,212,170,.3)':'rgba(255,169,77,.3)'};border-radius:8px;padding:10px 12px">
+          <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
+            Opening Stock → saves to <strong>${_gpMonthLabel(d.prevMonth)}</strong>
+            ${osOk?'<span style="color:var(--accent2);margin-left:4px">✓ exists</span>':'<span style="color:var(--warn);margin-left:4px">missing</span>'}
+          </div>
+          <button onclick="gpSaveStockSnapshot('${d.prevMonth}', 'os')" id="gpOsBtn" style="
+            width:100%;display:flex;align-items:center;justify-content:center;gap:6px;
+            padding:7px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;
+            border:1px solid ${osOk?'rgba(0,212,170,.3)':'rgba(255,169,77,.4)'};
+            background:${osOk?'rgba(0,212,170,.08)':'rgba(255,169,77,.08)'};
+            color:${osOk?'var(--accent2)':'var(--warn)'}">
+            <i class="fas fa-floppy-disk" id="gpOsIcon"></i>
+            <span id="gpOsText">${osOk?'Re-save Opening Stock':'Save Opening Stock'}</span>
+          </button>
+        </div>
+        <!-- Closing: save to THIS month -->
+        <div style="border:1px solid ${csOk?'rgba(0,212,170,.3)':'rgba(255,169,77,.3)'};border-radius:8px;padding:10px 12px">
+          <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
+            Closing Stock → saves to <strong>${_gpMonthLabel(d.month)}</strong>
+            ${csOk?'<span style="color:var(--accent2);margin-left:4px">✓ exists</span>':'<span style="color:var(--warn);margin-left:4px">missing</span>'}
+          </div>
+          <button onclick="gpSaveStockSnapshot('${d.month}', 'cs')" id="gpCsBtn" style="
+            width:100%;display:flex;align-items:center;justify-content:center;gap:6px;
+            padding:7px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;
+            border:1px solid ${csOk?'rgba(0,212,170,.3)':'rgba(255,169,77,.4)'};
+            background:${csOk?'rgba(0,212,170,.08)':'rgba(255,169,77,.08)'};
+            color:${csOk?'var(--accent2)':'var(--warn)'}">
+            <i class="fas fa-floppy-disk" id="gpCsIcon"></i>
+            <span id="gpCsText">${csOk?'Re-save Closing Stock':'Save Closing Stock'}</span>
+          </button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function loadGpData(month) {
+  _gpCurrentMonth = month;
+  document.getElementById('gpLoader').style.display  = 'flex';
+  document.getElementById('gpContent').style.display = 'none';
+  document.getElementById('gpLoader').style.flexDirection = 'column';
+  try {
+    var resp = await fetch('/api/tally/gross-profit?month=' + encodeURIComponent(month));
+    var d    = await resp.json();
+    if (!d.ok) throw new Error(d.error || 'API error');
+
+    // Populate month selector if not yet done
+    if (!_gpLoaded) {
+      _gpBuildMonthOptions(d.availableMonths, month);
+      _gpLoaded = true;
+    }
+
+    document.getElementById('gpMonthLabel').textContent = _gpMonthLabel(d.month) + ' Gross Profit';
+    document.getElementById('gpContent').innerHTML = _gpRenderContent(d);
+    document.getElementById('gpLoader').style.display  = 'none';
+    document.getElementById('gpContent').style.display = 'block';
+  } catch(e) {
+    document.getElementById('gpLoader').style.display  = 'none';
+    document.getElementById('gpContent').style.display = 'block';
+    document.getElementById('gpContent').innerHTML =
+      '<div style="padding:24px;text-align:center;color:var(--danger)">' +
+      '<i class="fas fa-circle-exclamation" style="font-size:24px;margin-bottom:8px;display:block"></i>' +
+      'Failed to load: ' + e.message + '</div>';
+  }
+}
+
 function openProfitDetail() {
   const el = document.getElementById('profitDetailOverlay');
   el.style.display = 'flex';
   document.body.style.overflow = 'hidden';
+  // Determine default month: current dashboard "selMonth" or today's month
+  var defaultMonth = '<%- selMonth %>' || (function(){
+    var n = new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0');
+  })();
+  loadGpData(defaultMonth);
 }
 function closeProfitDetail() {
   const el = document.getElementById('profitDetailOverlay');
@@ -842,6 +949,57 @@ function closeProfitDetail() {
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeProfitDetail();
 });
+
+// gpSaveStockSnapshot(monthOrDate, which)
+// monthOrDate: 'YYYY-MM' (saves current stock to that month) or 'YYYY-MM-DD' (legacy)
+// which: 'os' (opening stock button) or 'cs' (closing stock button)
+async function gpSaveStockSnapshot(monthOrDate, which) {
+  which = which || 'cs';
+  var btnId  = which === 'os' ? 'gpOsBtn'  : 'gpCsBtn';
+  var iconId = which === 'os' ? 'gpOsIcon' : 'gpCsIcon';
+  var txtId  = which === 'os' ? 'gpOsText' : 'gpCsText';
+  var btn  = document.getElementById(btnId);
+  var icon = document.getElementById(iconId);
+  var txt  = document.getElementById(txtId);
+  if (!btn) return;
+
+  btn.disabled = true;
+  if (icon) icon.className = 'fas fa-spinner fa-spin';
+  if (txt)  txt.textContent = 'Saving…';
+
+  // Use last day of the month as the snapshot date so it saves to that month's record
+  var snapDate = monthOrDate;
+  if (/^\d{4}-\d{2}$/.test(monthOrDate)) {
+    // It's a YYYY-MM — use last day of that month as the date key, month key for monthly record
+    var parts = monthOrDate.split('-').map(Number);
+    var lastDay = new Date(parts[0], parts[1], 0); // last day
+    snapDate = lastDay.getFullYear() + '-' +
+               String(lastDay.getMonth()+1).padStart(2,'0') + '-' +
+               String(lastDay.getDate()).padStart(2,'0');
+  }
+
+  try {
+    var resp = await (await fetch('/api/tally/stock-snapshot?date=' + snapDate, { method: 'POST' })).json();
+    if (resp.ok) {
+      if (icon) icon.className = 'fas fa-check';
+      if (txt)  txt.textContent = 'Saved · ₹' + Math.round(resp.totalValue).toLocaleString('en-IN');
+      // Reload GP data to reflect new snapshot
+      setTimeout(function() { loadGpData(_gpCurrentMonth); }, 1500);
+    } else {
+      if (icon) icon.className = 'fas fa-xmark';
+      if (txt)  txt.textContent = 'Failed';
+      btn.disabled = false;
+      alert('Stock snapshot failed: ' + (resp.error || 'Unknown'));
+      setTimeout(function() { if(icon)icon.className='fas fa-floppy-disk'; if(txt)txt.textContent='Save Stock'; }, 2000);
+    }
+  } catch(e) {
+    if (icon) icon.className = 'fas fa-xmark';
+    if (txt)  txt.textContent = 'Error';
+    btn.disabled = false;
+    alert('Error: ' + e.message);
+    setTimeout(function() { if(icon)icon.className='fas fa-floppy-disk'; if(txt)txt.textContent='Save Stock'; }, 2000);
+  }
+}
 
 async function syncNow() {
   const btn=document.getElementById('syncBtn'), icon=document.getElementById('syncIcon'), txt=document.getElementById('syncText');
