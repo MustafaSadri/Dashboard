@@ -157,6 +157,15 @@
   margin-top: 6px; padding: 0 4px;
 }
 
+/* Streaming cursor — blinks while text is arriving */
+.ws-bbl-bot.ws-streaming::after {
+  content: '▋';
+  color: #6c63ff;
+  animation: wsCursor .7s step-end infinite;
+  margin-left: 2px;
+}
+@keyframes wsCursor { 0%,100%{opacity:1} 50%{opacity:0} }
+
 /* ── Typing indicator ── */
 .ws-typing {
   display: flex; gap: 5px; align-items: center;
@@ -558,30 +567,136 @@ Ask me anything about your business! 🌐</div>
     var isWeb = !!window._wsIsWeb; window._wsIsWeb = false;
     busy = true;
     document.getElementById('ws-send').disabled = true;
-    document.getElementById('ws-status').textContent = isWeb ? 'Searching web…' : 'Thinking…';
+    document.getElementById('ws-status').textContent = 'Thinking…';
     showTyping(isWeb);
+
+    var accumulated = '';   // full text collected so far
+    var botRow = null;      // DOM row created once first chunk arrives
+
+    function done_cleanup() {
+      busy = false;
+      document.getElementById('ws-send').disabled = false;
+      document.getElementById('ws-status').textContent = 'Live data · Web search enabled';
+    }
+
+    // Create the bot bubble on first chunk (replaces typing indicator)
+    function ensureBotBubble() {
+      if (botRow) return;
+      hideTyping();
+      var msgs = document.getElementById('ws-msgs');
+      botRow = document.createElement('div');
+      botRow.className = 'ws-row ws-bot';
+      botRow.innerHTML =
+        '<div class="ws-av ws-av-bot"><i class="fas fa-robot"></i></div>' +
+        '<div class="ws-col">' +
+          '<div class="ws-bbl ws-bbl-bot ws-streaming" id="ws-stream-bbl"></div>' +
+          '<div class="ws-ts" id="ws-stream-ts"></div>' +
+        '</div>';
+      msgs.appendChild(botRow);
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    function getBubble() { return document.getElementById('ws-stream-bbl'); }
 
     fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: history.slice(-20) })
     })
-    .then(function(r){ return r.json(); })
-    .then(function(d) {
-      hideTyping();
-      var reply = d.reply || d.error || 'Something went wrong.';
-      history.push({ role: 'assistant', content: reply });
-      appendBot(reply);
-      document.getElementById('ws-status').textContent = 'Live data · Web search enabled';
+    .then(function(response) {
+      var reader  = response.body.getReader();
+      var decoder = new TextDecoder();
+      var sseBuffer = '';
+
+      function processLine(line) {
+        if (!line.startsWith('data: ')) return;
+        var json = line.slice(6).trim();
+        if (!json) return;
+        var evt;
+        try { evt = JSON.parse(json); } catch(e) { return; }
+        var msgs = document.getElementById('ws-msgs');
+
+        if (evt.type === 'chunk') {
+          // Text arriving — show it immediately with a blinking cursor
+          ensureBotBubble();
+          accumulated += evt.text;
+          var bbl = getBubble();
+          if (bbl) {
+            // During streaming: show plain text (fast), cursor blinks via CSS
+            bbl.textContent = accumulated;
+            msgs.scrollTop = msgs.scrollHeight;
+          }
+
+        } else if (evt.type === 'clear') {
+          // Claude made a tool call after some pre-reasoning text — reset
+          accumulated = '';
+          var bbl = getBubble();
+          if (bbl) bbl.textContent = '';
+
+        } else if (evt.type === 'status') {
+          // Show which data is being fetched inside the typing indicator
+          var typingEl = document.getElementById('ws-typing');
+          if (typingEl) {
+            typingEl.querySelector('.ws-col').innerHTML =
+              '<div class="ws-searching"><i class="fas fa-circle-notch"></i> ' + escH(evt.text) + '</div>';
+          }
+          document.getElementById('ws-status').textContent = evt.text;
+
+        } else if (evt.type === 'done') {
+          // All done — render markdown and finalize
+          hideTyping();
+          if (accumulated) {
+            ensureBotBubble();
+            var bbl = getBubble();
+            if (bbl) {
+              bbl.classList.remove('ws-streaming');
+              bbl.removeAttribute('id');
+              bbl.innerHTML = fmtReply(accumulated); // full markdown render
+            }
+            var tsEl = document.getElementById('ws-stream-ts');
+            if (tsEl) { tsEl.textContent = nowTime(); tsEl.removeAttribute('id'); }
+            if (!isOpen) {
+              unread++;
+              var b = document.getElementById('ws-badge');
+              b.textContent = unread > 9 ? '9+' : unread;
+              b.style.display = 'flex';
+            }
+          } else {
+            // No text was streamed (shouldn't happen, but guard)
+            if (!botRow) appendBot('Done.');
+          }
+          history.push({ role: 'assistant', content: accumulated });
+          msgs.scrollTop = msgs.scrollHeight;
+          done_cleanup();
+
+        } else if (evt.type === 'error') {
+          hideTyping();
+          if (botRow) {
+            var bbl = getBubble();
+            if (bbl) { bbl.classList.remove('ws-streaming'); bbl.removeAttribute('id'); bbl.innerHTML = '⚠️ ' + escH(evt.text); }
+          } else {
+            appendBot('⚠️ ' + escH(evt.text), true);
+          }
+          done_cleanup();
+        }
+      }
+
+      function pump() {
+        return reader.read().then(function(result) {
+          if (result.done) { done_cleanup(); return; }
+          sseBuffer += decoder.decode(result.value, { stream: true });
+          var lines = sseBuffer.split('\n');
+          sseBuffer = lines.pop(); // keep partial line in buffer
+          lines.forEach(processLine);
+          return pump();
+        });
+      }
+      return pump();
     })
     .catch(function(e) {
       hideTyping();
-      appendBot('⚠️ Error: ' + escH(e.message));
-      document.getElementById('ws-status').textContent = 'Live data · Web search enabled';
-    })
-    .finally(function() {
-      busy = false;
-      document.getElementById('ws-send').disabled = false;
+      appendBot('⚠️ Network error: ' + escH(e.message), true);
+      done_cleanup();
     });
   }
   window.wsSend = wsSend;

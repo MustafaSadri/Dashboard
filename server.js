@@ -814,7 +814,7 @@ app.get('/orders-status', async (req, res) => {
       }
       let dispatchTime = null;
       if (demand?.moment && createdDate) {
-        const diff = Math.floor((new Date(demand.moment) - new Date(createdDate)) / 86400000);
+        const diff = Math.round((new Date(demand.moment) - new Date(createdDate)) / 3600000 * 10) / 10;
         if (diff >= 0) dispatchTime = diff;
       }
 
@@ -1892,43 +1892,150 @@ async function toolQueryMoysklad({ data_type = 'demands', period = 'this_month',
 // ── Chatbot tool: query Tally data from MongoDB ───────────────────────────
 async function toolQueryTally({ data_type = 'snapshot', period, filter } = {}) {
   try {
-    if (data_type === 'snapshot' || data_type === 'debtors' || data_type === 'creditors') {
-      const snap = await loadTallySnapshot();
-      if (!snap) return JSON.stringify({ error: 'No Tally data. Open Financial Dashboard with Tally running to sync.' });
-      if (data_type === 'debtors')   return JSON.stringify({ total: Math.round(snap.totalOutstanding||0), debtors: (snap.debtors||[]).map(d=>({ name:d.name, balance:Math.round(d.balance) })) });
-      if (data_type === 'creditors') return JSON.stringify({ total: Math.round(snap.supplierDues||0), creditors: (snap.creditors||[]).map(c=>({ name:c.name, balance:Math.round(c.balance) })) });
-      return JSON.stringify({
-        syncedAt: snap.syncedAt,
-        totalSales:       Math.round(snap.totalSales||0),
-        totalPurchases:   Math.round(snap.totalPurchases||0),
-        totalExpenses:    Math.round(snap.totalExpenses||0),
-        netProfit:        Math.round((snap.totalSales-snap.totalPurchases-snap.totalExpenses)||0),
-        totalOutstanding: Math.round(snap.totalOutstanding||0),
-        supplierDues:     Math.round(snap.supplierDues||0),
-        cashBalance:      Math.round(snap.cashBalance||0),
-        bankBalance:      Math.round(snap.bankBalance||0),
-        debtors:   (snap.debtors||[]).slice(0,15).map(d=>({ name:d.name, balance:Math.round(d.balance) })),
-        creditors: (snap.creditors||[]).slice(0,15).map(c=>({ name:c.name, balance:Math.round(c.balance) })),
-      });
-    }
     const db = await getMongoDb();
+
+    // ── Snapshot / debtors / creditors (from live Tally or saved snapshot) ──
+    if (data_type === 'snapshot' || data_type === 'debtors' || data_type === 'creditors') {
+      // Try DB ledgers first (more accurate than snapshot)
+      if (db) {
+        const [expLed, salesLed, purchLed, debtorLed, credLed] = await Promise.all([
+          db.collection('tally_ledgers').find({ type: 'expense',  balance: { $gt: 0 } }).sort({ balance: -1 }).toArray(),
+          db.collection('tally_ledgers').find({ type: 'sales' }).toArray(),
+          db.collection('tally_ledgers').find({ type: 'purchase', balance: { $gt: 0 } }).toArray(),
+          db.collection('tally_ledgers').find({ type: 'debtor',   balance: { $ne: 0 } }).sort({ balance: -1 }).toArray(),
+          db.collection('tally_ledgers').find({ type: 'creditor', balance: { $ne: 0 } }).sort({ balance: -1 }).toArray(),
+        ]);
+        const totalSales     = salesLed.reduce((s, l) => s + Math.abs(l.balance || 0), 0);
+        const totalPurchases = purchLed.reduce((s, l) => s + Math.abs(l.balance || 0), 0);
+        const totalExpenses  = expLed.reduce((s, l) => s + (l.balance || 0), 0);
+        const totalOutstanding = debtorLed.filter(d => d.balance > 0).reduce((s, l) => s + l.balance, 0);
+        const supplierDues     = credLed.filter(c => c.balance > 0).reduce((s, l) => s + l.balance, 0);
+        if (data_type === 'debtors') return JSON.stringify({
+          total: Math.round(totalOutstanding),
+          count: debtorLed.filter(d => d.balance > 0).length,
+          debtors: debtorLed.filter(d => d.balance > 0).slice(0, 30).map(d => ({ name: d.name, balance: Math.round(d.balance), lastPayment: d.lastPaymentDate || null }))
+        });
+        if (data_type === 'creditors') return JSON.stringify({
+          total: Math.round(supplierDues),
+          creditors: credLed.filter(c => c.balance > 0).slice(0, 20).map(c => ({ name: c.name, balance: Math.round(c.balance) }))
+        });
+        return JSON.stringify({
+          source: 'tally_ledgers (DB)',
+          totalSales: Math.round(totalSales), totalPurchases: Math.round(totalPurchases),
+          totalExpenses: Math.round(totalExpenses),
+          netProfit: Math.round(totalSales - totalPurchases - totalExpenses),
+          totalOutstanding: Math.round(totalOutstanding), supplierDues: Math.round(supplierDues),
+          topDebtors: debtorLed.filter(d => d.balance > 0).slice(0, 15).map(d => ({ name: d.name, balance: Math.round(d.balance), lastPayment: d.lastPaymentDate || null })),
+          topCreditors: credLed.filter(c => c.balance > 0).slice(0, 10).map(c => ({ name: c.name, balance: Math.round(c.balance) })),
+          topExpenses: expLed.slice(0, 10).map(e => ({ name: e.name, balance: Math.round(e.balance) })),
+        });
+      }
+      // Fallback: snapshot
+      const snap = await loadTallySnapshot();
+      if (!snap) return JSON.stringify({ error: 'No Tally data. Sync from Tally dashboard first.' });
+      if (data_type === 'debtors')   return JSON.stringify({ total: Math.round(snap.totalOutstanding||0), debtors: (snap.debtors||[]).map(d=>({ name:d.name, balance:Math.round(d.balance) })) });
+      if (data_type === 'creditors') return JSON.stringify({ total: Math.round(snap.supplierDues||0),   creditors: (snap.creditors||[]).map(c=>({ name:c.name, balance:Math.round(c.balance) })) });
+      return JSON.stringify({ syncedAt: snap.syncedAt, totalSales: Math.round(snap.totalSales||0), totalPurchases: Math.round(snap.totalPurchases||0), totalExpenses: Math.round(snap.totalExpenses||0), netProfit: Math.round((snap.totalSales-snap.totalPurchases-snap.totalExpenses)||0), totalOutstanding: Math.round(snap.totalOutstanding||0), supplierDues: Math.round(snap.supplierDues||0) });
+    }
+
     if (!db) return JSON.stringify({ error: 'MongoDB not connected' });
+
+    // ── Vouchers: period + optional party/type filter ──
     if (data_type === 'vouchers') {
       const { from, to } = parsePeriodMongo(period || 'this_month');
       const q = { dateStr: { $gte: from.slice(0,10), $lte: to.slice(0,10) } };
-      if (filter) q.$or = [{ party: { $regex: filter, $options:'i' } }, { type: { $regex: filter, $options:'i' } }];
+      if (filter) q.$or = [{ party: { $regex: filter, $options:'i' } }, { type: { $regex: filter, $options:'i' } }, { narration: { $regex: filter, $options:'i' } }];
       const [vouchers, summary] = await Promise.all([
-        db.collection('tally_vouchers').find(q).sort({ dateStr:-1 }).limit(100).toArray(),
-        db.collection('tally_vouchers').aggregate([{ $match: q }, { $group: { _id:'$type', count:{ $sum:1 }, total:{ $sum:'$amount' } } }]).toArray()
+        db.collection('tally_vouchers').find(q).sort({ dateStr:-1 }).limit(150).toArray(),
+        db.collection('tally_vouchers').aggregate([{ $match: q }, { $group: { _id:'$type', count:{ $sum:1 }, total:{ $sum:'$amount' } } }, { $sort: { total: -1 } }]).toArray()
       ]);
-      return JSON.stringify({ period, from: from.slice(0,10), to: to.slice(0,10), count: vouchers.length, vouchers: vouchers.map(v=>({ date:v.dateStr, type:v.type, party:v.party, amount:Math.round(v.amount||0), narration:v.narration })), summary });
+      return JSON.stringify({ period, from: from.slice(0,10), to: to.slice(0,10), totalVouchers: vouchers.length, summary, vouchers: vouchers.map(v=>({ date:v.dateStr, type:v.type, party:v.party, amount:Math.round(v.amount||0), narration:v.narration })) });
     }
+
+    // ── Ledgers: all or filtered by name/type ──
     if (data_type === 'ledgers') {
-      const q = filter ? { name:{ $regex:filter, $options:'i' } } : {};
-      const ledgers = await db.collection('tally_ledgers').find(q).sort({ balance:-1 }).limit(50).toArray();
-      return JSON.stringify({ ledgers: ledgers.map(l=>({ name:l.name, type:l.type, balance:Math.round(l.balance||0), lastPayment:l.lastPaymentDate })) });
+      const q = {};
+      if (filter) q.$or = [{ name:{ $regex:filter, $options:'i' } }, { type:{ $regex:filter, $options:'i' } }];
+      const ledgers = await db.collection('tally_ledgers').find(q).sort({ balance:-1 }).limit(80).toArray();
+      return JSON.stringify({ count: ledgers.length, ledgers: ledgers.map(l=>({ name:l.name, type:l.type, balance:Math.round(l.balance||0), lastPayment:l.lastPaymentDate })) });
     }
-    return JSON.stringify({ error: `Unknown data_type: ${data_type}` });
+
+    // ── Month-by-month Tally sales from vouchers ──
+    if (data_type === 'monthly_sales') {
+      const rows = await db.collection('tally_vouchers').aggregate([
+        { $group: { _id: { month: '$month', type: '$type' }, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        { $sort: { '_id.month': 1 } }
+      ]).toArray();
+      const monthMap = {};
+      rows.forEach(r => {
+        const m = r._id.month; const t = (r._id.type||'').toLowerCase();
+        if (!monthMap[m]) monthMap[m] = { month: m, sales: 0, purchases: 0, collections: 0, payments: 0, vouchers: 0 };
+        if (t.includes('sales'))                              monthMap[m].sales       += Math.round(r.total);
+        else if (t.includes('purchase'))                      monthMap[m].purchases   += Math.round(r.total);
+        else if (t === 'journal' || t.includes('receipt'))    monthMap[m].collections += Math.round(r.total);
+        else if (t.includes('payment'))                       monthMap[m].payments    += Math.round(r.total);
+        monthMap[m].vouchers += r.count;
+      });
+      const months = Object.values(monthMap).sort((a,b) => a.month.localeCompare(b.month));
+      return JSON.stringify({ months, note: 'All figures in ₹ from tally_vouchers DB' });
+    }
+
+    // ── Expense breakdown from ledgers ──
+    if (data_type === 'expense_breakdown') {
+      const expenses = await db.collection('tally_ledgers').find({ type: 'expense', balance: { $gt: 0 } }).sort({ balance: -1 }).toArray();
+      const total = expenses.reduce((s, e) => s + (e.balance || 0), 0);
+      return JSON.stringify({ totalExpenses: Math.round(total), count: expenses.length, breakdown: expenses.map(e => ({ name: e.name, amount: Math.round(e.balance), pct: total > 0 ? +((e.balance/total)*100).toFixed(1) : 0 })) });
+    }
+
+    // ── Stock inventory from tally_stock ──
+    if (data_type === 'stock') {
+      const q = filter ? { name: { $regex: filter, $options: 'i' } } : {};
+      const items = await db.collection('tally_stock').find(q).sort({ value: -1 }).limit(100).toArray();
+      const totalValue = items.reduce((s, i) => s + (i.value || 0), 0);
+      const totalQty   = items.reduce((s, i) => s + (i.qty   || 0), 0);
+      return JSON.stringify({ totalItems: items.length, totalValue: Math.round(totalValue), totalQty: Math.round(totalQty), items: items.map(i => ({ name: i.name, qty: Math.round(i.qty||0), value: Math.round(i.value||0) })) });
+    }
+
+    // ── Customer-specific voucher history ──
+    if (data_type === 'customer_history') {
+      if (!filter) return JSON.stringify({ error: 'Provide filter=customer name to search' });
+      const { from, to } = parsePeriodMongo(period || 'this_year');
+      const q = { party: { $regex: filter, $options: 'i' }, dateStr: { $gte: from.slice(0,10), $lte: to.slice(0,10) } };
+      const [vouchers, summary] = await Promise.all([
+        db.collection('tally_vouchers').find(q).sort({ dateStr: -1 }).limit(200).toArray(),
+        db.collection('tally_vouchers').aggregate([{ $match: q }, { $group: { _id: '$type', total: { $sum: '$amount' }, count: { $sum: 1 } } }]).toArray()
+      ]);
+      const debtor = await db.collection('tally_ledgers').findOne({ name: { $regex: filter, $options: 'i' }, type: 'debtor' });
+      return JSON.stringify({ customer: filter, period, from: from.slice(0,10), to: to.slice(0,10), outstandingBalance: debtor ? Math.round(debtor.balance) : null, lastPayment: debtor?.lastPaymentDate || null, totalVouchers: vouchers.length, summary, recentVouchers: vouchers.slice(0,30).map(v=>({ date:v.dateStr, type:v.type, amount:Math.round(v.amount||0), narration:v.narration })) });
+    }
+
+    // ── Purchase/supplier history ──
+    if (data_type === 'purchase_history') {
+      const { from, to } = parsePeriodMongo(period || 'this_year');
+      const q = { type: { $regex: 'purchase', $options: 'i' }, dateStr: { $gte: from.slice(0,10), $lte: to.slice(0,10) } };
+      if (filter) q.party = { $regex: filter, $options: 'i' };
+      const [vouchers, bySupplier] = await Promise.all([
+        db.collection('tally_vouchers').find(q).sort({ dateStr: -1 }).limit(150).toArray(),
+        db.collection('tally_vouchers').aggregate([{ $match: q }, { $group: { _id: '$party', total: { $sum: '$amount' }, count: { $sum: 1 } } }, { $sort: { total: -1 } }, { $limit: 20 }]).toArray()
+      ]);
+      return JSON.stringify({ period, from: from.slice(0,10), to: to.slice(0,10), totalPurchases: vouchers.reduce((s,v) => s + (v.amount||0), 0), totalVouchers: vouchers.length, topSuppliers: bySupplier.map(s => ({ supplier: s._id||'Unknown', total: Math.round(s.total), count: s.count })), recentVouchers: vouchers.slice(0,30).map(v=>({ date:v.dateStr, party:v.party, amount:Math.round(v.amount||0), narration:v.narration })) });
+    }
+
+    // ── Overdue receivables (debtors not paid in N days) ──
+    if (data_type === 'overdue') {
+      const debtors = await db.collection('tally_ledgers').find({ type: 'debtor', balance: { $gt: 0 } }).sort({ balance: -1 }).toArray();
+      const today   = new Date();
+      const enriched = debtors.map(d => {
+        const lastPay  = d.lastPaymentDate ? new Date(d.lastPaymentDate) : null;
+        const daysSince = lastPay ? Math.floor((today - lastPay) / 86400000) : null;
+        return { name: d.name, balance: Math.round(d.balance), lastPayment: d.lastPaymentDate || 'Never', daysSincePayment: daysSince, status: daysSince === null ? 'never_paid' : daysSince > 90 ? 'critical' : daysSince > 30 ? 'overdue' : 'recent' };
+      });
+      const critical = enriched.filter(d => d.status === 'critical' || d.status === 'never_paid');
+      const overdue  = enriched.filter(d => d.status === 'overdue');
+      return JSON.stringify({ totalOutstanding: Math.round(enriched.reduce((s,d) => s + d.balance, 0)), criticalCount: critical.length, overdueCount: overdue.length, critical, overdue, all: enriched });
+    }
+
+    return JSON.stringify({ error: `Unknown data_type: ${data_type}. Options: snapshot|debtors|creditors|vouchers|ledgers|monthly_sales|expense_breakdown|stock|customer_history|purchase_history|overdue` });
   } catch (e) { return JSON.stringify({ error: e.message }); }
 }
 
@@ -2010,7 +2117,7 @@ async function toolCompareSources({ comparison_type = 'sales_total', period } = 
   } catch(e) { return JSON.stringify({ error: e.message }); }
 }
 
-// ── Build chatbot context from live MoySklad API (cached 5 min) ──────────
+// ── Build chatbot context ─────────────────────────────────────────────────
 async function buildChatContext() {
   return cached('chatCtx', 5 * 60 * 1000, async () => {
     const now           = new Date();
@@ -2022,151 +2129,244 @@ async function buildChatContext() {
     const curMonthKey   = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
     const prevMonthKey  = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}`;
 
-    const fmtS = n => { if(!n)return '₽0'; const a=Math.abs(n); if(a>=1e9)return `₽${(n/1e9).toFixed(2)}B`; if(a>=1e6)return `₽${(n/1e6).toFixed(2)}M`; if(a>=1e3)return `₽${Math.round(n/1e3)}K`; return `₽${Math.round(n).toLocaleString()}`; };
-    const pct  = (a, b) => b > 0 ? ((a-b)/b*100).toFixed(1)+'%' : 'N/A';
+    const fmtS  = n => { if(!n)return '₽0'; const a=Math.abs(n); if(a>=1e9)return `₽${(n/1e9).toFixed(2)}B`; if(a>=1e6)return `₽${(n/1e6).toFixed(2)}M`; if(a>=1e3)return `₽${Math.round(n/1e3)}K`; return `₽${Math.round(n).toLocaleString()}`; };
+    const fmtINR= n => { if(!n)return '₹0'; const a=Math.abs(n); if(a>=1e7)return `₹${(n/1e7).toFixed(2)}Cr`; if(a>=1e5)return `₹${(n/1e5).toFixed(2)}L`; if(a>=1e3)return `₹${Math.round(n/1e3)}K`; return `₹${Math.round(n).toLocaleString()}`; };
+    const pct   = (a, b) => b > 0 ? ((a-b)/b*100).toFixed(1)+'%' : 'N/A';
 
-    // ── Fetch live data in parallel from MoySklad API ─────────────────────
-    const [demandsR, stockR, profProdR, profCustR, ordersR, stateMapR, tallyR] = await Promise.allSettled([
+    // ── Fetch MoySklad live + Tally DB in parallel ────────────────────────
+    const db = await getMongoDb().catch(() => null);
+    const [demandsR, stockR, profProdR, profCustR, ordersR, stateMapR,
+           tallyLedR, tallyVouchR, tallyStockR, tallyMonthR] = await Promise.allSettled([
       getDemandsFromDec25(),
       getStock(),
       getProfitByProduct(monthStart()),
       getProfitByCounterparty(monthStart()),
       getAllOrders(),
       getOrderStateMap(),
-      loadTallySnapshot().catch(() => null)
+      // Tally ledgers from DB (debtors, creditors, expenses, sales, purchases)
+      db ? db.collection('tally_ledgers').find({}).toArray() : Promise.resolve([]),
+      // Recent Tally vouchers
+      db ? db.collection('tally_vouchers').find({}).sort({ dateStr: -1 }).limit(500).toArray() : Promise.resolve([]),
+      // Tally stock inventory
+      db ? db.collection('tally_stock').find({}).sort({ value: -1 }).limit(50).toArray() : Promise.resolve([]),
+      // Monthly sales summary from Tally vouchers
+      db ? db.collection('tally_vouchers').aggregate([
+        { $group: { _id: { month: '$month', type: '$type' }, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        { $sort: { '_id.month': 1 } }
+      ]).toArray() : Promise.resolve([]),
     ]);
 
-    const allDemands = demandsR.status  === 'fulfilled' ? demandsR.value  : [];
-    const stock      = stockR.status    === 'fulfilled' ? stockR.value    : [];
-    const topProds   = profProdR.status === 'fulfilled' ? profProdR.value : [];
-    const topCusts   = profCustR.status === 'fulfilled' ? profCustR.value : [];
-    const allOrders  = ordersR.status   === 'fulfilled' ? ordersR.value   : [];
-    const sMap       = stateMapR.status === 'fulfilled' ? stateMapR.value : {};
-    const tallySnap  = tallyR.status    === 'fulfilled' ? tallyR.value    : null;
+    const allDemands  = demandsR.status   === 'fulfilled' ? demandsR.value   : [];
+    const stock       = stockR.status     === 'fulfilled' ? stockR.value     : [];
+    const topProds    = profProdR.status  === 'fulfilled' ? profProdR.value  : [];
+    const topCusts    = profCustR.status  === 'fulfilled' ? profCustR.value  : [];
+    const allOrders   = ordersR.status    === 'fulfilled' ? ordersR.value    : [];
+    const sMap        = stateMapR.status  === 'fulfilled' ? stateMapR.value  : {};
+    const tallyLed    = tallyLedR.status  === 'fulfilled' ? tallyLedR.value  : [];
+    const tallyVouch  = tallyVouchR.status=== 'fulfilled' ? tallyVouchR.value: [];
+    const tallyStock  = tallyStockR.status=== 'fulfilled' ? tallyStockR.value: [];
+    const tallyMonthRows = tallyMonthR.status === 'fulfilled' ? tallyMonthR.value : [];
 
-    // ── Compute stats from live demands ───────────────────────────────────
+    // ── MoySklad stats ────────────────────────────────────────────────────
     const todayDemands   = allDemands.filter(d => (d.moment||'').startsWith(today));
     const curMonDemands  = allDemands.filter(d => (d.moment||'').slice(0,7) === curMonthKey);
     const prevMonDemands = allDemands.filter(d => (d.moment||'').slice(0,7) === prevMonthKey);
-
-    const todayRevenue   = todayDemands.reduce((a, d) => a + Math.round((d.sum||0)/100), 0);
-    const todayShipments = todayDemands.length;
-    const curRevenue     = curMonDemands.reduce((a, d) => a + Math.round((d.sum||0)/100), 0);
-    const curShipments   = curMonDemands.length;
-    const prevRevenue    = prevMonDemands.reduce((a, d) => a + Math.round((d.sum||0)/100), 0);
-    const prevShipments  = prevMonDemands.length;
-
-    // Monthly history
+    const todayRevenue   = todayDemands.reduce((a,d) => a + Math.round((d.sum||0)/100), 0);
+    const curRevenue     = curMonDemands.reduce((a,d) => a + Math.round((d.sum||0)/100), 0);
+    const prevRevenue    = prevMonDemands.reduce((a,d) => a + Math.round((d.sum||0)/100), 0);
     const monthMap = {};
     allDemands.forEach(d => {
-      const mo = (d.moment||'').slice(0, 7);
-      if (!mo || mo.length < 7) return;
-      if (!monthMap[mo]) monthMap[mo] = { revenue: 0, shipments: 0 };
-      monthMap[mo].revenue  += Math.round((d.sum||0)/100);
-      monthMap[mo].shipments++;
+      const mo = (d.moment||'').slice(0,7); if (!mo || mo.length < 7) return;
+      if (!monthMap[mo]) monthMap[mo] = { revenue:0, shipments:0 };
+      monthMap[mo].revenue += Math.round((d.sum||0)/100); monthMap[mo].shipments++;
     });
-    const monthlyHistory = Object.entries(monthMap).sort(([a],[b]) => a.localeCompare(b));
+    const stockWithStatus = stock.map(s => ({ name:s.assortment?.name||s.name||'—', qty:s.quantity||0, status:(s.quantity||0)<=0?'out':(s.quantity||0)<100?'low':'ok' }));
+    const pendingOrders = allOrders.filter(o => !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(resolveState(o,sMap).toLowerCase()));
 
-    // Pending orders
-    const pendingOrders = allOrders.filter(o => {
-      const s = resolveState(o, sMap).toLowerCase();
-      return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
-    });
+    // ── Tally ledger aggregations ─────────────────────────────────────────
+    const debtors   = tallyLed.filter(l => l.type === 'debtor'   && (l.balance||0) > 0).sort((a,b) => b.balance - a.balance);
+    const creditors = tallyLed.filter(l => l.type === 'creditor' && (l.balance||0) > 0).sort((a,b) => b.balance - a.balance);
+    const expenses  = tallyLed.filter(l => l.type === 'expense'  && (l.balance||0) > 0).sort((a,b) => b.balance - a.balance);
+    const salesLed  = tallyLed.filter(l => l.type === 'sales');
+    const purchLed  = tallyLed.filter(l => l.type === 'purchase' && (l.balance||0) > 0);
+    const tSales    = salesLed.reduce((s,l) => s + Math.abs(l.balance||0), 0);
+    const tPurch    = purchLed.reduce((s,l) => s + (l.balance||0), 0);
+    const tExp      = expenses.reduce((s,l) => s + (l.balance||0), 0);
+    const tOutstanding = debtors.reduce((s,l) => s + l.balance, 0);
+    const tSupplier    = creditors.reduce((s,l) => s + l.balance, 0);
 
-    // Stock with status
-    const stockWithStatus = stock.map(s => {
-      const qty = s.quantity || 0;
-      return { name: s.assortment?.name || s.name || '—', qty, status: qty <= 0 ? 'out' : qty < 100 ? 'low' : 'ok' };
+    // ── Tally monthly summary ─────────────────────────────────────────────
+    const tMonthMap = {};
+    tallyMonthRows.forEach(r => {
+      const m = r._id.month; const t = (r._id.type||'').toLowerCase();
+      if (!m) return;
+      if (!tMonthMap[m]) tMonthMap[m] = { month:m, sales:0, purchases:0, collections:0, payments:0 };
+      if (t.includes('sales'))                           tMonthMap[m].sales       += Math.round(r.total);
+      else if (t.includes('purchase'))                   tMonthMap[m].purchases   += Math.round(r.total);
+      else if (t === 'journal' || t.includes('receipt')) tMonthMap[m].collections += Math.round(r.total);
+      else if (t.includes('payment'))                    tMonthMap[m].payments    += Math.round(r.total);
     });
-    const lowStock = stockWithStatus.filter(s => s.status === 'low').sort((a,b) => a.qty - b.qty);
-    const outStock = stockWithStatus.filter(s => s.status === 'out');
+    const tMonthly = Object.values(tMonthMap).sort((a,b) => a.month.localeCompare(b.month));
+
+    // ── Recent Tally vouchers (last 30 days) ─────────────────────────────
+    const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate()-30);
+    const thirtyKey = thirtyDaysAgo.toISOString().slice(0,10);
+    const recentTallyVouch = tallyVouch.filter(v => v.dateStr >= thirtyKey);
 
     const L   = [];
     const sec = t => L.push('', `── ${t} ──`);
 
     L.push(
-      `You are PLATINA AI — a sharp Business Intelligence assistant.`,
-      `Today: ${today} | Month: ${curMonthName} | ${daysIntoMonth} days elapsed | Currency: ₽`,
-      `All MoySklad data is fetched LIVE from the MoySklad API (cached, refreshes every 5 min). Data available from Dec 2025.`,
+      `You are PLATINA AI — the Business Intelligence assistant for PLATINA, a wholesale trading company.`,
+      `Today: ${today} | Month: ${curMonthName} | ${daysIntoMonth} days elapsed`,
+      `Currency: MoySklad data in ₽ (Russian Ruble) | Tally data in ₹ (Indian Rupee)`,
       ``,
-      `━━━ TOOLS (USE FOR ALL DATA QUESTIONS) ━━━`,
+      `━━━ DATA SOURCES ━━━`,
+      `• MoySklad: Live API — shipments, orders, inventory, customers, salesmen (data from Dec 2025)`,
+      `• Tally: MongoDB DB — vouchers (Jan 2024+), ledgers, stock, debtors, creditors, expenses`,
+      ``,
+      `━━━ TOOLS — ALWAYS USE TOOLS FOR DATA QUESTIONS ━━━`,
+      ``,
       `1. query_moysklad(data_type, period, group_by, filter, top_n, sort_by)`,
       `   data_type: "demands"|"stock"|"customers"|"orders"`,
-      `   group_by:  "product"(model totals) | "sku"(variant/flavour) | "customer" | "day" | "month" | "salesman" | "none"`,
+      `   group_by:  "product"|"sku"|"customer"|"day"|"month"|"salesman"|"none"`,
       `   period:    "today"|"this_month"|"last_month"|"this_year"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"`,
       `   filter:    "product:NAME" | "customer:NAME" | "status:low" | "status:out"`,
       ``,
       `2. query_tally(data_type, period, filter)`,
-      `   data_type: "snapshot"|"debtors"|"creditors"|"vouchers"|"ledgers"`,
+      `   data_type options:`,
+      `   • "snapshot"          → P&L summary (sales, purchases, expenses, net profit, cash, bank)`,
+      `   • "debtors"           → All debtors with outstanding balance + last payment date`,
+      `   • "creditors"         → All supplier dues`,
+      `   • "vouchers"          → Period vouchers (sales/purchase/payment/receipt/journal)`,
+      `   • "ledgers"           → All ledger accounts with balances`,
+      `   • "monthly_sales"     → Month-by-month sales, purchases, collections from DB`,
+      `   • "expense_breakdown" → All expense heads with amounts and % of total`,
+      `   • "stock"             → Tally stock inventory with quantities and values`,
+      `   • "customer_history"  → All vouchers for a specific customer (use filter=customer name)`,
+      `   • "purchase_history"  → Purchase vouchers by period or supplier (use filter=supplier name)`,
+      `   • "overdue"           → Debtors overdue >30 or >90 days with payment status`,
+      `   period: "this_month"|"last_month"|"this_year"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"`,
+      `   filter: customer name / supplier name / ledger name / voucher type`,
       ``,
       `3. compare_sources(comparison_type, period)`,
       `   comparison_type: "sales_total"|"customer_outstanding"|"monthly_trend"`,
       ``,
-      `4. web_search(query) — external data only (market trends, regulations, etc.)`,
-      `5. predict_sales(horizon) — forecast tomorrow / next-week / next-month revenue from historical patterns`,
-      `   horizon: "tomorrow" | "next_week" | "next_month" | filter: "customer:NAME"`,
-      `6. analyze(analysis_type, period) — deep analytics on live data`,
-      `   types: "health_report" | "growth_rate" | "slow_moving" | "day_of_week" | "avg_order_value" | "customer_frequency" | "peak_hours" | "top_days"`,
+      `4. web_search(query) — market trends, regulations, prices, external data only`,
       ``,
-      `━━━ RULES ━━━`,
-      `- ALL MoySklad data (sales, stock, orders, customers, salesman) comes from LIVE API.`,
-      `- For outstanding receivables / purchase bills → query_tally ONLY (Tally/MongoDB).`,
-      `- For top salesman / salesman breakdown → query_moysklad with group_by="salesman".`,
-      `- For flavour/SKU breakdown → group_by="sku". For product model totals → group_by="product".`,
-      `- For predictions / sales forecast → predict_sales.`,
-      `- For "health report" / "how are we doing" / "business overview" → analyze with analysis_type="health_report".`,
-      `- For slow-moving / dead stock / not selling → analyze with analysis_type="slow_moving".`,
-      `- For growth / MoM trends / weekly trend → analyze with analysis_type="growth_rate".`,
-      `- For P&L / net profit → query_tally with data_type="snapshot".`,
-      `- For Tally vs MoySklad difference → compare_sources.`,
-      `- Lead with the answer. Use markdown tables for multi-row data. No preamble.`,
+      `5. predict_sales(horizon, filter)`,
+      `   horizon: "tomorrow"|"next_week"|"next_month" | filter: "customer:NAME"`,
       ``,
-      `${'═'.repeat(60)}`,
-      `LIVE SNAPSHOT (refreshed ${new Date().toLocaleString('en-IN')})`,
-      `${'═'.repeat(60)}`
+      `6. analyze(analysis_type, period)`,
+      `   types: "health_report"|"growth_rate"|"slow_moving"|"day_of_week"|"avg_order_value"|"customer_frequency"|"peak_hours"|"top_days"`,
+      ``,
+      `━━━ DECISION RULES ━━━`,
+      `- MoySklad shipments/orders/customers/stock/salesmen → query_moysklad`,
+      `- Tally: outstanding receivables, debtors, payments, purchases, expenses, P&L → query_tally`,
+      `- "Who owes us money" / overdue / receivables → query_tally data_type="overdue" or "debtors"`,
+      `- "Which customer hasn't paid" → query_tally data_type="overdue"`,
+      `- "Expense breakdown" / "what are our costs" → query_tally data_type="expense_breakdown"`,
+      `- "Show purchases from [supplier]" → query_tally data_type="purchase_history" filter=supplier`,
+      `- "History for [customer]" → query_tally data_type="customer_history" filter=customer`,
+      `- "Monthly Tally trend" → query_tally data_type="monthly_sales"`,
+      `- "Tally stock" / "inventory value" → query_tally data_type="stock"`,
+      `- "Salesman performance" → query_moysklad group_by="salesman"`,
+      `- "SKU / flavour breakdown" → query_moysklad group_by="sku"`,
+      `- "Sales forecast" → predict_sales`,
+      `- "Business health" → analyze analysis_type="health_report"`,
+      `- "Slow moving stock" → analyze analysis_type="slow_moving"`,
+      `- MoySklad vs Tally comparison → compare_sources`,
+      `- Always use tools. Never guess numbers. Lead with the answer. Tables for multi-row data.`,
+      ``,
+      `${'═'.repeat(70)}`,
+      `LIVE SNAPSHOT (${new Date().toLocaleString('en-IN')})`,
+      `${'═'.repeat(70)}`
     );
 
-    sec(`TODAY — ${today}`);
-    L.push(`Shipments: ${todayShipments} | Revenue: ${fmtS(todayRevenue)}`);
+    // ── MoySklad section ──
+    sec(`TODAY — ${today} (MoySklad)`);
+    L.push(`Shipments: ${todayDemands.length} | Revenue: ${fmtS(todayRevenue)}`);
 
-    sec('INVENTORY');
-    L.push(`${stockWithStatus.length} SKUs | In Stock: ${stockWithStatus.filter(s=>s.status==='ok').length} | Low (≤100): ${lowStock.length} | Out: ${outStock.length}`);
-    if (lowStock.length)  L.push('Low stock: '  + lowStock.slice(0,15).map(s=>`${s.name}(${s.qty})`).join(', '));
-    if (outStock.length)  L.push('Out of stock: '+ outStock.slice(0,15).map(s=>s.name).join(', '));
+    sec(`MOYSKLAD INVENTORY`);
+    const lowStock = stockWithStatus.filter(s=>s.status==='low').sort((a,b)=>a.qty-b.qty);
+    const outStock = stockWithStatus.filter(s=>s.status==='out');
+    L.push(`${stockWithStatus.length} SKUs | OK: ${stockWithStatus.filter(s=>s.status==='ok').length} | Low(≤100): ${lowStock.length} | Out: ${outStock.length}`);
+    if (lowStock.length) L.push('Low: '+lowStock.slice(0,12).map(s=>`${s.name}(${s.qty})`).join(', '));
+    if (outStock.length) L.push('Out: '+outStock.slice(0,12).map(s=>s.name).join(', '));
 
-    sec(`SALES — ${curMonthName}`);
-    const mom = prevRevenue > 0 ? ` (${pct(curRevenue, prevRevenue)} vs last month)` : '';
-    L.push(`Shipments: ${curShipments} | Revenue: ${fmtS(curRevenue)}${mom}`);
+    sec(`MOYSKLAD SALES — ${curMonthName}`);
+    const mom = prevRevenue > 0 ? ` (${pct(curRevenue,prevRevenue)} vs last month)` : '';
+    L.push(`Shipments: ${curMonDemands.length} | Revenue: ${fmtS(curRevenue)}${mom}`);
+    sec(`MOYSKLAD SALES — ${prevMonthName}`);
+    L.push(`Shipments: ${prevMonDemands.length} | Revenue: ${fmtS(prevRevenue)}`);
 
-    sec(`SALES — ${prevMonthName}`);
-    L.push(`Shipments: ${prevShipments} | Revenue: ${fmtS(prevRevenue)}`);
+    sec(`TOP PRODUCTS — ${curMonthName} (MoySklad)`);
+    topProds.slice(0,10).forEach((p,i) => L.push(`${i+1}. ${p.assortment?.name||'—'} — ${fmtS((p.sellSum||0)/100)} | ${Math.round(p.sellQuantity||0)} pcs`));
 
-    sec(`TOP PRODUCTS — ${curMonthName}`);
-    if (topProds.length) topProds.slice(0,15).forEach((p,i) => L.push(`${i+1}. ${p.assortment?.name||'—'} — ${fmtS((p.sellSum||0)/100)} | ${Math.round(p.sellQuantity||0).toLocaleString()} pcs`));
-    else L.push('No product data yet.');
+    sec(`TOP CUSTOMERS — ${curMonthName} (MoySklad)`);
+    topCusts.slice(0,10).forEach((c,i) => L.push(`${i+1}. ${c.counterparty?.name||'—'} — ${fmtS((c.sellSum||0)/100)} | ${c.salesCount||0} orders`));
 
-    sec(`TOP CUSTOMERS — ${curMonthName}`);
-    if (topCusts.length) topCusts.slice(0,15).forEach((c,i) => L.push(`${i+1}. ${c.counterparty?.name||'—'} — ${fmtS((c.sellSum||0)/100)} | ${c.salesCount||0} orders`));
-    else L.push('No customer data yet.');
-
-    if (monthlyHistory.length) {
-      sec('MONTHLY HISTORY (Dec 2025 onwards)');
-      monthlyHistory.forEach(([mo, stats]) => {
-        const d = new Date(mo + '-02');
-        L.push(`${d.toLocaleString('en', { month: 'short', year: 'numeric' })}: ${fmtS(stats.revenue)} (${stats.shipments} shipments)`);
+    if (Object.keys(monthMap).length) {
+      sec('MOYSKLAD MONTHLY HISTORY');
+      Object.entries(monthMap).sort(([a],[b])=>a.localeCompare(b)).forEach(([mo,s]) => {
+        L.push(`${mo}: ${fmtS(s.revenue)} (${s.shipments} shipments)`);
       });
     }
 
-    sec(`PENDING ORDERS (${pendingOrders.length} not dispatched)`);
-    if (pendingOrders.length) pendingOrders.slice(0,15).forEach(o => L.push(`  • ${o.name||'—'} | ${agentName(o)} | ${resolveState(o,sMap)||'—'} | ${fmtS((o.sum||0)/100)}`));
-    else L.push('No pending orders.');
+    sec(`PENDING ORDERS — ${pendingOrders.length} not dispatched (MoySklad)`);
+    pendingOrders.slice(0,10).forEach(o => L.push(`  • ${o.name||'—'} | ${agentName(o)} | ${resolveState(o,sMap)||'—'} | ${fmtS((o.sum||0)/100)}`));
 
-    if (tallySnap) {
-      sec('TALLY FINANCIAL SUMMARY');
-      L.push(`Sales: ${fmtS(tallySnap.totalSales)} | Purchases: ${fmtS(tallySnap.totalPurchases)} | Expenses: ${fmtS(tallySnap.totalExpenses)}`);
-      L.push(`Net Profit: ${fmtS(tallySnap.totalSales-tallySnap.totalPurchases-tallySnap.totalExpenses)} | Outstanding: ${fmtS(tallySnap.totalOutstanding)} | Supplier Dues: ${fmtS(tallySnap.supplierDues)}`);
-      if (tallySnap.debtors?.length) L.push('Top debtors: '+tallySnap.debtors.slice(0,5).map((d,i)=>`${i+1}.${d.name}(${fmtS(d.balance)})`).join(' | '));
-      if (tallySnap.syncedAt) L.push(`Tally synced: ${new Date(tallySnap.syncedAt).toLocaleString('en-IN')}`);
+    // ── Tally section ──
+    if (tallyLed.length > 0) {
+      sec('TALLY FINANCIAL SUMMARY (from DB ledgers)');
+      L.push(`Sales: ${fmtINR(tSales)} | Purchases: ${fmtINR(tPurch)} | Expenses: ${fmtINR(tExp)}`);
+      L.push(`Net Profit: ${fmtINR(tSales-tPurch-tExp)} | Outstanding Receivables: ${fmtINR(tOutstanding)} | Supplier Dues: ${fmtINR(tSupplier)}`);
+
+      sec(`TALLY DEBTORS — ${debtors.length} customers owe us ${fmtINR(tOutstanding)}`);
+      debtors.slice(0,20).forEach((d,i) => {
+        const lastPay = d.lastPaymentDate || 'never';
+        const daysSince = d.lastPaymentDate ? Math.floor((now - new Date(d.lastPaymentDate))/86400000) : null;
+        const overdue = daysSince ? (daysSince > 90 ? ' ⚠️CRITICAL' : daysSince > 30 ? ' ⚠️OVERDUE' : '') : ' ⚠️NEVER PAID';
+        L.push(`${i+1}. ${d.name} — ${fmtINR(d.balance)} | Last paid: ${lastPay}${overdue}`);
+      });
+
+      if (creditors.length) {
+        sec(`TALLY CREDITORS — ${creditors.length} suppliers, dues: ${fmtINR(tSupplier)}`);
+        creditors.slice(0,10).forEach((c,i) => L.push(`${i+1}. ${c.name} — ${fmtINR(c.balance)}`));
+      }
+
+      if (expenses.length) {
+        sec(`TALLY EXPENSE BREAKDOWN (total: ${fmtINR(tExp)})`);
+        expenses.slice(0,15).forEach((e,i) => {
+          const pctVal = tExp > 0 ? ((e.balance/tExp)*100).toFixed(1) : 0;
+          L.push(`${i+1}. ${e.name}: ${fmtINR(e.balance)} (${pctVal}%)`);
+        });
+      }
+    }
+
+    if (tMonthly.length) {
+      sec('TALLY MONTHLY TREND (from voucher DB)');
+      tMonthly.forEach(m => L.push(`${m.month}: Sales ${fmtINR(m.sales)} | Purchases ${fmtINR(m.purchases)} | Collections ${fmtINR(m.collections)}`));
+    }
+
+    if (tallyStock.length) {
+      const totalStockVal = tallyStock.reduce((s,i) => s+(i.value||0), 0);
+      sec(`TALLY STOCK INVENTORY — ${tallyStock.length} items, total value: ${fmtINR(totalStockVal)}`);
+      tallyStock.slice(0,20).forEach((s,i) => L.push(`${i+1}. ${s.name}: ${Math.round(s.qty||0)} qty | ${fmtINR(s.value)}`));
+    }
+
+    if (recentTallyVouch.length) {
+      sec(`RECENT TALLY VOUCHERS (last 30 days — ${recentTallyVouch.length} entries)`);
+      // Group by type
+      const typeMap = {};
+      recentTallyVouch.forEach(v => {
+        const t = v.type||'Other';
+        if (!typeMap[t]) typeMap[t] = { count:0, total:0 };
+        typeMap[t].count++; typeMap[t].total += (v.amount||0);
+      });
+      Object.entries(typeMap).sort(([,a],[,b])=>b.total-a.total).forEach(([t,s]) => {
+        L.push(`${t}: ${s.count} vouchers | ${fmtINR(s.total)}`);
+      });
     }
 
     return L.join('\n');
@@ -2622,20 +2822,41 @@ RULES:
     description: `Query Tally accounting data from MongoDB.
 
 data_type options:
-• "snapshot"  → latest Tally P&L snapshot: totalSales, totalPurchases, grossProfit, collections, outstanding, payables
-• "debtors"   → list of customers who owe money (from Tally outstanding)
-• "creditors" → list of suppliers owed (from Tally payables)
-• "vouchers"  → individual Tally voucher transactions for a period
-• "ledgers"   → ledger account balances
+• "snapshot"          → Full P&L summary from tally_ledgers: totalSales, totalPurchases, totalExpenses, netProfit, totalOutstanding, supplierDues, topDebtors, topCreditors, topExpenses
+• "debtors"           → All customers who owe money: name, balance, lastPayment date (sorted by amount)
+• "creditors"         → All suppliers owed: name, balance (sorted by amount)
+• "vouchers"          → Individual Tally voucher transactions (sales, purchase, receipt, journal). Use period + filter
+• "ledgers"           → All ledger account balances (filter by name or type)
+• "monthly_sales"     → Month-by-month trend: sales, purchases, collections, payments per month from tally_vouchers
+• "expense_breakdown" → All expense ledgers with amount + % of total. Use when asked "what are our costs" / "expense breakdown"
+• "stock"             → Tally inventory: item name, qty, value. Use filter for specific product search
+• "customer_history"  → All vouchers for ONE customer (sales invoices, receipts, payments). Requires filter=customer_name. Shows outstanding balance + lastPayment
+• "purchase_history"  → Purchase vouchers by period. Optional filter=supplier_name. Shows top suppliers by spend
+• "overdue"           → Debtors ranked by urgency: daysSincePayment, status (critical >90d / overdue >30d / never_paid). ALWAYS use for "who hasn't paid" / "overdue" / "follow up" questions
 
-Use Tally data for: accounting figures, P&L, collections, outstanding receivables/payables, debtors/creditors.
-Use MoySklad (query_moysklad) for: shipment volumes, SKU sales, order tracking, inventory.`,
+period: "today"|"this_month"|"last_month"|"this_year"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"
+filter: "customer_name" | "supplier_name" | "product_name" (partial match, case-insensitive)
+
+ROUTING GUIDE:
+- "P&L" / "profit and loss" / "net profit" / "how much did we sell" → snapshot
+- "who owes us" / "debtors" / "outstanding" → debtors or overdue
+- "hasn't paid" / "overdue" / "follow up" / "receivables urgent" → overdue
+- "expense" / "costs" / "what are we spending" → expense_breakdown
+- "monthly trend" / "month by month Tally" → monthly_sales
+- "stock value" / "inventory" / "how much stock" → stock
+- "customer history" / "all invoices for [name]" → customer_history + filter
+- "purchases from [supplier]" / "what did we buy" → purchase_history
+- "suppliers owed" / "payables" → creditors`,
     input_schema: {
       type: 'object',
       properties: {
-        data_type: { type: 'string', enum: ['snapshot', 'debtors', 'creditors', 'vouchers', 'ledgers'], description: 'Which Tally data to fetch' },
-        period: { type: 'string', description: 'Period for vouchers/ledgers: "this_month","last_month","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"' },
-        filter: { type: 'string', description: 'Filter by ledger/party name (partial match)' }
+        data_type: {
+          type: 'string',
+          enum: ['snapshot', 'debtors', 'creditors', 'vouchers', 'ledgers', 'monthly_sales', 'expense_breakdown', 'stock', 'customer_history', 'purchase_history', 'overdue'],
+          description: 'Which Tally data to fetch'
+        },
+        period: { type: 'string', description: 'Period: "this_month","last_month","this_year","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"' },
+        filter: { type: 'string', description: 'Partial-match filter: customer name, supplier name, or product name' }
       },
       required: ['data_type']
     }
@@ -2732,61 +2953,105 @@ app.get('/api/ms/sync/status', (req, res) => {
   res.json({ ok: true, running: false, meta: null, disabled: true });
 });
 
+// ── Chat tool status label ────────────────────────────────────────────────
+function getToolStatusText(toolUses) {
+  const labels = toolUses.map(t => {
+    if (t.name === 'query_tally') {
+      const dt = (t.input.data_type || 'data').replace(/_/g, ' ');
+      return `Tally ${dt}`;
+    }
+    if (t.name === 'query_moysklad') {
+      const dt = (t.input.data_type || 'data').replace(/_/g, ' ');
+      return `MoySklad ${dt}`;
+    }
+    if (t.name === 'web_search')      return 'web search';
+    if (t.name === 'analyze')         return `analytics · ${(t.input.analysis_type||'').replace(/_/g,' ')}`;
+    if (t.name === 'predict_sales')   return 'sales forecast';
+    if (t.name === 'compare_sources') return 'comparing Tally vs MoySklad';
+    return t.name;
+  });
+  return `Fetching ${labels.join(' + ')}…`;
+}
+
 app.post('/api/chat', async (req, res) => {
   try {
     const { messages } = req.body;
     if (!Array.isArray(messages) || messages.length === 0)
       return res.status(400).json({ error: 'messages array required' });
 
+    // ── SSE headers — stream reply to client in real time ──
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    const sse = data => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
     const systemPrompt = await buildChatContext();
     let msgHistory = [...messages.slice(-20)];
 
     // Agentic loop: allow up to 5 rounds (each round may have multiple tool calls)
     for (let round = 0; round < 5; round++) {
-      const response = await anthropic.messages.create({
+      let textStreamed = false;
+
+      // ── Stream the response — text chunks arrive immediately ──
+      const stream = anthropic.messages.stream({
         model: 'claude-sonnet-4-6',
-        max_tokens: 8192,
-        system: systemPrompt,
+        max_tokens: 3000,
+        // cache_control caches the large system prompt on Anthropic's side → ~80% faster TTFT
+        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         tools: CHAT_TOOLS,
         messages: msgHistory
       });
 
-      // If Claude wants to use tools, execute ALL tool calls in this response in parallel
-      if (response.stop_reason === 'tool_use') {
-        const toolUses = response.content.filter(c => c.type === 'tool_use');
-        if (toolUses.length > 0) {
-          const toolResults_raw = await Promise.all(toolUses.map(t => {
-            if (t.name === 'web_search')       return webSearch(t.input.query);
-            if (t.name === 'query_moysklad')   return toolQueryMoysklad(t.input);
-            if (t.name === 'query_tally')      return toolQueryTally(t.input);
-            if (t.name === 'compare_sources')  return toolCompareSources(t.input);
-            if (t.name === 'predict_sales')    return toolPredictSales(t.input);
-            if (t.name === 'analyze')          return toolAnalytics(t.input);
-            return Promise.resolve(JSON.stringify({ error: 'Unknown tool: ' + t.name }));
-          }));
-          const toolResults = toolUses.map((t, i) => ({
-            type: 'tool_result',
-            tool_use_id: t.id,
-            content: toolResults_raw[i]
-          }));
-          msgHistory = [
-            ...msgHistory,
-            { role: 'assistant', content: response.content },
-            { role: 'user',      content: toolResults }
-          ];
-          continue;
-        }
+      // Forward text tokens to client as they arrive
+      stream.on('text', text => {
+        textStreamed = true;
+        sse({ type: 'chunk', text });
+      });
+
+      // Wait for the full message (needed to read tool inputs)
+      const finalMsg = await stream.finalMessage();
+
+      if (finalMsg.stop_reason === 'tool_use') {
+        const toolUses = finalMsg.content.filter(c => c.type === 'tool_use');
+        // If Claude streamed any pre-tool reasoning, clear it from client
+        if (textStreamed) sse({ type: 'clear' });
+        // Tell client which data is being fetched
+        sse({ type: 'status', text: getToolStatusText(toolUses) });
+
+        const toolResults_raw = await Promise.all(toolUses.map(t => {
+          if (t.name === 'web_search')       return webSearch(t.input.query);
+          if (t.name === 'query_moysklad')   return toolQueryMoysklad(t.input);
+          if (t.name === 'query_tally')      return toolQueryTally(t.input);
+          if (t.name === 'compare_sources')  return toolCompareSources(t.input);
+          if (t.name === 'predict_sales')    return toolPredictSales(t.input);
+          if (t.name === 'analyze')          return toolAnalytics(t.input);
+          return Promise.resolve(JSON.stringify({ error: 'Unknown tool: ' + t.name }));
+        }));
+
+        const toolResults = toolUses.map((t, i) => ({
+          type: 'tool_result',
+          tool_use_id: t.id,
+          content: toolResults_raw[i]
+        }));
+        msgHistory = [
+          ...msgHistory,
+          { role: 'assistant', content: finalMsg.content },
+          { role: 'user',      content: toolResults }
+        ];
+        continue;
       }
 
-      // Claude finished (end_turn or no tool calls) — extract the text reply
-      const replyText = response.content.find(c => c.type === 'text')?.text || 'No response generated.';
-      return res.json({ reply: replyText });
+      // end_turn — Claude finished, text was already streamed
+      sse({ type: 'done' });
+      return res.end();
     }
 
-    res.json({ reply: 'I completed multiple searches. Please ask your question again for a fresh answer.' });
+    sse({ type: 'done' });
+    res.end();
   } catch (e) {
     console.error('Chat API error:', e.message);
-    res.status(500).json({ error: e.message });
+    try { res.write(`data: ${JSON.stringify({ type: 'error', text: e.message })}\n\n`); res.end(); } catch (_) {}
   }
 });
 
@@ -3036,9 +3301,25 @@ app.get('/tally', async (req, res) => {
     if (dbDebtors.length)   debtors   = dbDebtors;
     if (dbCreditors.length) creditors = dbCreditors;
 
+    // YTD P&L figures — all from tally_ledgers so they're from the SAME sync point in time
+    // (live Tally mixes FY periods; ledgers are always consistent with each other)
+    const [expLedgers, salesLedgers, purchLedgers] = await Promise.all([
+      db.collection('tally_ledgers').find({ type: 'expense',  balance: { $gt: 0 } }).sort({ balance: -1 }).toArray(),
+      db.collection('tally_ledgers').find({ type: 'sales' }).toArray(),
+      db.collection('tally_ledgers').find({ type: 'purchase', balance: { $gt: 0 } }).toArray(),
+    ]);
+
     // Expense breakdown (YTD ledger balances)
-    expenseBreakdown = await db.collection('tally_ledgers')
-      .find({ type: 'expense', balance: { $gt: 0 } }).sort({ balance: -1 }).toArray();
+    expenseBreakdown = expLedgers;
+
+    // Derive consistent YTD totals — override live Tally values which may be period-mismatched
+    const dbTotalExpenses  = expLedgers.reduce((s, l) => s + (l.balance || 0), 0);
+    const dbTotalSales     = salesLedgers.reduce((s, l) => s + Math.abs(l.balance || 0), 0); // sales are Cr → negative balance stored
+    const dbTotalPurchases = purchLedgers.reduce((s, l) => s + (l.balance || 0), 0);
+
+    if (dbTotalExpenses  > 0) result.totalExpenses  = dbTotalExpenses;
+    if (dbTotalSales     > 0) result.totalSales     = dbTotalSales;
+    if (dbTotalPurchases > 0) result.totalPurchases = dbTotalPurchases;
 
     // Top customers by collections this period (Journal = money received)
     topCustSales = await db.collection('tally_vouchers').aggregate([
@@ -3096,9 +3377,11 @@ app.get('/tally', async (req, res) => {
       if (ytd.length > 0) {
         result.totalSales     = ytd.filter(v => /sales/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
         result.totalPurchases = ytd.filter(v => /purchase/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
-        result.totalExpenses  = ytd.filter(v => /expense/i.test(v.type)).reduce((s,v) => s + (v.amount||0), 0);
+        // Expenses don't have their own voucher type in Tally (they're Journal entries)
+        // Use ledger balances from tally_ledgers instead — already loaded in expenseBreakdown
       }
     }
+
   }
 
   const totalOutstanding = debtors.reduce((s,d) => s + (d.balance||0), 0);
