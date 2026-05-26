@@ -127,6 +127,21 @@ function parseLedgers(xml) {
   return out;
 }
 
+// ── Gurmeet Ji debit extractor ────────────────────────────────
+// For Journal vouchers, collections = sum of ALLLEDGERENTRIES.LIST
+// entries where LEDGERNAME matches "gurmeet" AND ISDEEMEDPOSITIVE=Yes
+function extractGurmeetDebit(voucherXml) {
+  const re = /<ALLLEDGERENTRIES\.LIST[\s\S]*?<\/ALLLEDGERENTRIES\.LIST>/gi;
+  let total = 0;
+  for (const m of voucherXml.matchAll(re)) {
+    const entry = m[0];
+    if (!/gurmeet/i.test(stripXml(getTag(entry, 'LEDGERNAME')))) continue;
+    if (!/yes/i.test(stripXml(getTag(entry, 'ISDEEMEDPOSITIVE')))) continue;
+    total += Math.abs(parseTallyAmount(getTag(entry, 'AMOUNT')));
+  }
+  return total;
+}
+
 // ── Parse vouchers ────────────────────────────────────────────
 function parseVouchers(xml, fromFilter) {
   const out = [];
@@ -137,11 +152,15 @@ function parseVouchers(xml, fromFilter) {
     if (fromFilter && dateStr < fromFilter) continue;
     const type = stripXml(getTag(blk, 'VOUCHERTYPENAME')) || attr(blk, 'VCHTYPE');
     if (!type) continue;
-    const num    = stripXml(getTag(blk, 'VOUCHERNUMBER'));
-    const party  = stripXml(getTag(blk, 'PARTYLEDGERNAME'));
-    const amount = Math.abs(parseTallyAmount(getTag(blk, 'AMOUNT')));
-    const raw    = `${dateStr}|${type}|${num}|${party}|${amount}`;
-    const _id    = raw.replace(/[^a-zA-Z0-9|._-]/g, '_').slice(0, 120);
+    const num   = stripXml(getTag(blk, 'VOUCHERNUMBER'));
+    const party = stripXml(getTag(blk, 'PARTYLEDGERNAME'));
+    // Journal: use only Gurmeet Ji debit as collection amount
+    // All other types: use normal voucher-level amount
+    const amount = type.toLowerCase() === 'journal'
+      ? extractGurmeetDebit(blk)
+      : Math.abs(parseTallyAmount(getTag(blk, 'AMOUNT')));
+    const raw = `${dateStr}|${type}|${num}|${party}|${amount}`;
+    const _id = raw.replace(/[^a-zA-Z0-9|._-]/g, '_').slice(0, 120);
     out.push({
       _id, dateStr,
       date:          new Date(dateStr),
@@ -229,7 +248,7 @@ async function main() {
   const vXml    = await tallyPost(envelope('SyncVouchers', `
 <COLLECTION NAME="SyncVouchers" ISMODIFY="No">
   <TYPE>Voucher</TYPE>
-  <FETCH>Date,VoucherNumber,VoucherTypeName,PartyLedgerName,Amount,Narration</FETCH>
+  <FETCH>Date,VoucherNumber,VoucherTypeName,PartyLedgerName,Amount,Narration,ALLLEDGERENTRIES.LIST</FETCH>
 </COLLECTION>`));
   const vouchers = parseVouchers(vXml, FROM_DATE);   // JS date filter applied here
   console.log(`${vouchers.length} vouchers from ${FROM_DATE} onwards`);
