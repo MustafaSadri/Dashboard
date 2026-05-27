@@ -2035,7 +2035,105 @@ async function toolQueryTally({ data_type = 'snapshot', period, filter } = {}) {
       return JSON.stringify({ totalOutstanding: Math.round(enriched.reduce((s,d) => s + d.balance, 0)), criticalCount: critical.length, overdueCount: overdue.length, critical, overdue, all: enriched });
     }
 
-    return JSON.stringify({ error: `Unknown data_type: ${data_type}. Options: snapshot|debtors|creditors|vouchers|ledgers|monthly_sales|expense_breakdown|stock|customer_history|purchase_history|overdue` });
+    // ── Gross Profit month-wise ──────────────────────────────────────────────
+    // Formula: GP = Sales − Opening Stock − Purchases + Closing Stock
+    // Opening stock of month M = tally_stock_monthly[M-1] (closing of prev month)
+    // Closing stock of month M = tally_stock_monthly[M]
+    if (data_type === 'gross_profit') {
+      const stockMonthly = db.collection('tally_stock_monthly');
+      const vouchersCol  = db.collection('tally_vouchers');
+      const now          = new Date();
+
+      // Determine which months to compute
+      let targetMonths = [];
+      if (period && /^\d{4}-\d{2}$/.test(period)) {
+        // Single month requested (e.g. "2025-11" or "last_month")
+        targetMonths = [period];
+      } else if (period === 'last_month') {
+        const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        targetMonths = [`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`];
+      } else if (period === 'this_month') {
+        targetMonths = [`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`];
+      } else {
+        // Default: last 6 months
+        for (let i = 5; i >= 0; i--) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          targetMonths.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+        }
+      }
+
+      // Collect all month keys we need (targets + their prev months for opening stock)
+      const allMonthKeys = new Set();
+      targetMonths.forEach(m => {
+        allMonthKeys.add(m);
+        const [y, mo] = m.split('-').map(Number);
+        const prev = new Date(y, mo - 2, 1);
+        allMonthKeys.add(`${prev.getFullYear()}-${String(prev.getMonth()+1).padStart(2,'0')}`);
+      });
+
+      // Fetch all stock records in one query
+      const stockRecs = await stockMonthly.find({ _id: { $in: [...allMonthKeys] } }).toArray();
+      const stockMap  = Object.fromEntries(stockRecs.map(r => [r._id, r.stockValue ?? 0]));
+
+      // Compute GP per month
+      const results = [];
+      for (const month of targetMonths) {
+        const [y, mo]  = month.split('-').map(Number);
+        const firstDay = `${month}-01`;
+        const lastDay  = new Date(y, mo, 0).toISOString().slice(0, 10);
+
+        const prevMonDate = new Date(y, mo - 2, 1);
+        const prevMonth   = `${prevMonDate.getFullYear()}-${String(prevMonDate.getMonth()+1).padStart(2,'0')}`;
+
+        const openingStock = stockMap[prevMonth] ?? null;
+        const closingStock = stockMap[month]     ?? null;
+        const hasStock     = openingStock !== null && closingStock !== null;
+
+        // Aggregate vouchers for the month
+        const agg = await vouchersCol.aggregate([
+          { $match: { dateStr: { $gte: firstDay, $lte: lastDay } } },
+          { $group: { _id: '$type', total: { $sum: '$amount' } } }
+        ]).toArray();
+
+        let sales = 0, purchases = 0, collections = 0;
+        for (const row of agg) {
+          const t = (row._id || '').toLowerCase();
+          if (t.includes('sales'))                           sales       += row.total;
+          else if (t.includes('purchase'))                   purchases   += row.total;
+          else if (t === 'journal' || t.includes('receipt')) collections += row.total;
+        }
+
+        const grossProfit  = hasStock ? (sales - (openingStock ?? 0) - purchases + (closingStock ?? 0)) : null;
+        const grossMargin  = (hasStock && sales > 0) ? +((grossProfit / sales) * 100).toFixed(1) : null;
+
+        results.push({
+          month,
+          sales:         Math.round(sales),
+          purchases:     Math.round(purchases),
+          collections:   Math.round(collections),
+          openingStock:  openingStock !== null ? Math.round(openingStock)  : 'missing',
+          closingStock:  closingStock !== null ? Math.round(closingStock)  : 'missing',
+          grossProfit:   grossProfit  !== null ? Math.round(grossProfit)   : 'missing_stock_data',
+          grossMarginPct: grossMargin !== null ? grossMargin : 'n/a',
+          status:        hasStock ? (grossProfit >= 0 ? 'profit' : 'loss') : 'incomplete'
+        });
+      }
+
+      return JSON.stringify({
+        formula: 'GP = Sales − Opening Stock − Purchases + Closing Stock',
+        note: 'Opening stock of month M = closing stock saved for month M-1',
+        months: results,
+        summary: {
+          totalSales:       results.reduce((s, r) => s + (r.sales || 0), 0),
+          totalPurchases:   results.reduce((s, r) => s + (r.purchases || 0), 0),
+          totalGrossProfit: results.filter(r => typeof r.grossProfit === 'number').reduce((s, r) => s + r.grossProfit, 0),
+          monthsWithData:   results.filter(r => r.status !== 'incomplete').length,
+          monthsMissingStock: results.filter(r => r.status === 'incomplete').length
+        }
+      });
+    }
+
+    return JSON.stringify({ error: `Unknown data_type: ${data_type}. Options: snapshot|debtors|creditors|vouchers|ledgers|monthly_sales|expense_breakdown|stock|customer_history|purchase_history|overdue|gross_profit` });
   } catch (e) { return JSON.stringify({ error: e.message }); }
 }
 
@@ -2269,7 +2367,8 @@ async function buildChatContext() {
       `- "Show purchases from [supplier]" → query_tally data_type="purchase_history" filter=supplier`,
       `- "History for [customer]" → query_tally data_type="customer_history" filter=customer`,
       `- "Monthly Tally trend" → query_tally data_type="monthly_sales"`,
-      `- "Tally stock" / "inventory value" → query_tally data_type="stock"`,
+      `- "Tally stock" / "inventory value" → query_tally data_type="stock"
+- "gross profit" / "GP" / "margin" / "opening stock" / "closing stock" / "profitability this month" → query_tally data_type="gross_profit"`,
       `- "Salesman performance" → query_moysklad group_by="salesman"`,
       `- "SKU / flavour breakdown" → query_moysklad group_by="sku"`,
       `- "Sales forecast" → predict_sales`,
@@ -2833,6 +2932,7 @@ data_type options:
 • "customer_history"  → All vouchers for ONE customer (sales invoices, receipts, payments). Requires filter=customer_name. Shows outstanding balance + lastPayment
 • "purchase_history"  → Purchase vouchers by period. Optional filter=supplier_name. Shows top suppliers by spend
 • "overdue"           → Debtors ranked by urgency: daysSincePayment, status (critical >90d / overdue >30d / never_paid). ALWAYS use for "who hasn't paid" / "overdue" / "follow up" questions
+• "gross_profit"      → Month-wise gross profit: Sales − Opening Stock − Purchases + Closing Stock. period="YYYY-MM" for one month, omit for last 6 months trend. Formula matches Tally P&L exactly.
 
 period: "today"|"this_month"|"last_month"|"this_year"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"
 filter: "customer_name" | "supplier_name" | "product_name" (partial match, case-insensitive)
@@ -2846,13 +2946,14 @@ ROUTING GUIDE:
 - "stock value" / "inventory" / "how much stock" → stock
 - "customer history" / "all invoices for [name]" → customer_history + filter
 - "purchases from [supplier]" / "what did we buy" → purchase_history
-- "suppliers owed" / "payables" → creditors`,
+- "suppliers owed" / "payables" → creditors
+- "gross profit" / "GP" / "margin" / "opening stock" / "closing stock" / "profitability" → gross_profit`,
     input_schema: {
       type: 'object',
       properties: {
         data_type: {
           type: 'string',
-          enum: ['snapshot', 'debtors', 'creditors', 'vouchers', 'ledgers', 'monthly_sales', 'expense_breakdown', 'stock', 'customer_history', 'purchase_history', 'overdue'],
+          enum: ['snapshot', 'debtors', 'creditors', 'vouchers', 'ledgers', 'monthly_sales', 'expense_breakdown', 'stock', 'customer_history', 'purchase_history', 'overdue', 'gross_profit'],
           description: 'Which Tally data to fetch'
         },
         period: { type: 'string', description: 'Period: "this_month","last_month","this_year","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"' },
