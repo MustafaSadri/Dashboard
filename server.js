@@ -3340,30 +3340,53 @@ app.get('/tally', async (req, res) => {
     totalStockValue = stockItems.reduce((s, i) => s + (i.value || 0), 0);
 
     // Opening & closing stock for selected period.
-    // For a valid stock-adjusted GP we need TWO DISTINCT snapshots —
-    // one at/before period start and a DIFFERENT one at/before period end.
-    // We always pass refStockValue/refStockDate so the modal can show latest
-    // known stock as a reference even when a proper range isn't available.
+    // Opening stock = closing stock of the month BEFORE the period starts.
+    // Closing stock = closing stock of the month in which the period ends.
+    // Primary source: tally_stock_monthly (seeded historically + auto-saved on every sync).
+    // Fallback: tally_stock_history (daily snapshots, for backwards compat).
     const stockHistory = db.collection('tally_stock_history');
-    const [openingBefore, closingBefore, latestSnaps] = await Promise.all([
-      stockHistory.find({ _id: { $lte: periodStartDate } }).sort({ _id: -1 }).limit(1).toArray(),
-      stockHistory.find({ _id: { $lte: periodEndDate   } }).sort({ _id: -1 }).limit(1).toArray(),
+    const stockMonthly = db.collection('tally_stock_monthly');
+
+    // Compute the "previous month" key for opening stock
+    const [_psY, _psM] = periodStartDate.slice(0, 7).split('-').map(Number);
+    const _prevMon     = new Date(_psY, _psM - 2, 1); // JS handles month=-1 → Dec prev year
+    const openMonKey   = `${_prevMon.getFullYear()}-${String(_prevMon.getMonth()+1).padStart(2,'0')}`;
+    const closeMonKey  = periodEndDate.slice(0, 7);
+
+    const [_openMon, _closeMon, _latestMon, _latestSnaps] = await Promise.all([
+      stockMonthly.findOne({ _id: openMonKey }),
+      stockMonthly.findOne({ _id: closeMonKey }),
+      stockMonthly.find({}).sort({ _id: -1 }).limit(1).toArray(),
       stockHistory.find({}).sort({ _id: -1 }).limit(1).toArray(),
     ]);
-    const openingSnap = openingBefore[0] || null;
-    const closingSnap = closingBefore[0]  || null;
-    // Need two DIFFERENT boundary snapshots for a proper range
-    hasValidStockRange = !!(
-      openingSnap && closingSnap && openingSnap._id !== closingSnap._id
-    );
-    openingStock     = hasValidStockRange ? (openingSnap.totalValue ?? 0) : 0;
-    closingStock     = hasValidStockRange ? (closingSnap.totalValue  ?? 0) : 0;
-    openingStockDate = hasValidStockRange ? openingSnap._id : null;
-    closingStockDate = hasValidStockRange ? closingSnap._id  : null;
-    // Reference stock — latest available snapshot (for display even when range invalid)
-    const refSnap = closingSnap || latestSnaps[0] || null;
-    refStockValue = refSnap ? (refSnap.totalValue ?? null) : null;
-    refStockDate  = refSnap ? refSnap._id : null;
+
+    if (_openMon || _closeMon) {
+      // Use monthly records (primary path — always correct after seeding)
+      openingStock     = _openMon  ? (_openMon.stockValue  ?? 0) : 0;
+      closingStock     = _closeMon ? (_closeMon.stockValue ?? 0) : 0;
+      openingStockDate = _openMon  ? _openMon.month  : null;
+      closingStockDate = _closeMon ? _closeMon.month : null;
+      hasValidStockRange = !!(_openMon && _closeMon);
+    } else {
+      // Fallback: daily tally_stock_history snapshots
+      const [_oBefore, _cBefore] = await Promise.all([
+        stockHistory.find({ _id: { $lte: periodStartDate } }).sort({ _id: -1 }).limit(1).toArray(),
+        stockHistory.find({ _id: { $lte: periodEndDate   } }).sort({ _id: -1 }).limit(1).toArray(),
+      ]);
+      const _oSnap = _oBefore[0] || null;
+      const _cSnap = _cBefore[0] || null;
+      hasValidStockRange = !!(_oSnap && _cSnap && _oSnap._id !== _cSnap._id);
+      openingStock     = hasValidStockRange ? (_oSnap.totalValue ?? 0) : 0;
+      closingStock     = hasValidStockRange ? (_cSnap.totalValue ?? 0) : 0;
+      openingStockDate = hasValidStockRange ? _oSnap._id : null;
+      closingStockDate = hasValidStockRange ? _cSnap._id : null;
+    }
+
+    // Reference stock — latest available snapshot (for GP modal reference card)
+    const _refMon = _latestMon[0] || null;
+    const _refHis = _latestSnaps[0] || null;
+    refStockValue = _refMon ? (_refMon.stockValue ?? null) : (_refHis ? (_refHis.totalValue ?? null) : null);
+    refStockDate  = _refMon ? _refMon._id : (_refHis ? _refHis._id : null);
 
     hasDbData = monthsWithData.length > 0;
 
@@ -3507,94 +3530,37 @@ app.get('/api/tally/gross-profit', async (req, res) => {
       else if (t.includes('payment'))                     payments    += row.total;
     }
 
-    // --- Primary: tally_stock_monthly (set by sync / Save Stock buttons) ---
+    // --- Stock from tally_stock_monthly only (no live Tally fetch — avoids crashes) ---
+    // Opening stock = closing stock of PREVIOUS month  → tally_stock_monthly[prevMonth]
+    // Closing stock = closing stock of THIS month       → tally_stock_monthly[month]
+    // Both are seeded historically and auto-saved on every sync going forward.
     let openingStock = 0, closingStock = 0;
     let openingStockDate = null, closingStockDate = null;
     let hasStockData = false;
-    let stockSource = 'db'; // 'db' | 'tally_live' | 'none'
+    let stockSource = 'db';
 
-    if (openingMonthly && closingMonthly) {
-      // Both boundaries exist in DB — use them
-      hasStockData     = true;
-      openingStock     = openingMonthly.stockValue ?? 0;
-      closingStock     = closingMonthly.stockValue  ?? 0;
-      openingStockDate = `${openingMonthly.month} (synced ${openingMonthly.syncDate})`;
-      closingStockDate = `${closingMonthly.month} (synced ${closingMonthly.syncDate})`;
+    if (openingMonthly || closingMonthly) {
+      openingStock     = openingMonthly ? (openingMonthly.stockValue ?? 0) : 0;
+      closingStock     = closingMonthly ? (closingMonthly.stockValue  ?? 0) : 0;
+      openingStockDate = openingMonthly ? `${openingMonthly.month} (synced ${openingMonthly.syncDate})` : null;
+      closingStockDate = closingMonthly ? `${closingMonthly.month} (synced ${closingMonthly.syncDate})` : null;
+      hasStockData     = !!(openingMonthly && closingMonthly);
       stockSource      = 'db';
     } else {
-      // --- Try live Tally fetch for whichever boundary is missing ─────────────────
-      // prevMonthLastDay = last day of previous month = opening balance date for this month
-      const prevMonthLastDay = new Date(my, mm - 1, 0).toISOString().slice(0, 10);
-
-      let tallyOpenVal = openingMonthly ? openingMonthly.stockValue : null;
-      let tallyCloseVal = closingMonthly ? closingMonthly.stockValue : null;
-      let fetchedFromTally = false;
-
-      try {
-        // Fetch missing values from live Tally (single queries — won't crash Tally)
-        const fetches = [];
-        if (tallyOpenVal === null)  fetches.push(fetchTallyStockTotal(prevMonthLastDay).catch(() => null));
-        else                        fetches.push(Promise.resolve(null)); // already have it
-        if (tallyCloseVal === null) fetches.push(fetchTallyStockTotal(lastDay).catch(() => null));
-        else                        fetches.push(Promise.resolve(null));
-
-        const [fetchedOpen, fetchedClose] = await Promise.all(fetches);
-
-        if (fetchedOpen  !== null && tallyOpenVal  === null) { tallyOpenVal  = fetchedOpen;  fetchedFromTally = true; }
-        if (fetchedClose !== null && tallyCloseVal === null) { tallyCloseVal = fetchedClose; fetchedFromTally = true; }
-
-        // Auto-save fetched values to tally_stock_monthly so future loads use DB
-        if (fetchedFromTally) {
-          const saveOps = [];
-          if (fetchedOpen !== null && !openingMonthly) {
-            saveOps.push(stockMonthly.replaceOne(
-              { _id: prevMonth },
-              { _id: prevMonth, month: prevMonth, stockValue: fetchedOpen, syncDate: prevMonthLastDay, syncedAt: new Date(), itemCount: 0, source: 'tally_live' },
-              { upsert: true }
-            ));
-          }
-          if (fetchedClose !== null && !closingMonthly) {
-            saveOps.push(stockMonthly.replaceOne(
-              { _id: month },
-              { _id: month, month, stockValue: fetchedClose, syncDate: lastDay, syncedAt: new Date(), itemCount: 0, source: 'tally_live' },
-              { upsert: true }
-            ));
-          }
-          if (saveOps.length) await Promise.all(saveOps).catch(() => {});
-        }
-      } catch(_) { /* Tally offline — fall through to DB fallback */ }
-
-      if (tallyOpenVal !== null && tallyCloseVal !== null) {
+      // Last-resort fallback: tally_stock_history (daily snapshots)
+      const [_oSnaps, _cSnaps] = await Promise.all([
+        stockHistory.find({ _id: { $lte: firstDay } }).sort({ _id: -1 }).limit(1).toArray(),
+        stockHistory.find({ _id: { $lte: lastDay  } }).sort({ _id: -1 }).limit(1).toArray(),
+      ]);
+      const _oSnap = _oSnaps[0] || null;
+      const _cSnap = _cSnaps[0] || null;
+      if (_oSnap && _cSnap && _oSnap._id !== _cSnap._id) {
         hasStockData     = true;
-        openingStock     = tallyOpenVal;
-        closingStock     = tallyCloseVal;
-        openingStockDate = `${prevMonth} end (live from Tally)`;
-        closingStockDate = `${lastDay} (live from Tally)`;
-        stockSource      = fetchedFromTally ? 'tally_live' : 'db';
-      } else if (openingMonthly || closingMonthly) {
-        // Only one boundary exists — use what we have
-        openingStock     = openingMonthly ? openingMonthly.stockValue : 0;
-        closingStock     = closingMonthly ? closingMonthly.stockValue : 0;
-        openingStockDate = openingMonthly ? `${openingMonthly.month} (synced ${openingMonthly.syncDate})` : null;
-        closingStockDate = closingMonthly ? `${closingMonthly.month} (synced ${closingMonthly.syncDate})` : null;
-        hasStockData     = false; // incomplete — warn user
+        openingStock     = _oSnap.totalValue ?? 0;
+        closingStock     = _cSnap.totalValue  ?? 0;
+        openingStockDate = _oSnap._id;
+        closingStockDate = _cSnap._id;
         stockSource      = 'db';
-      } else {
-        // Absolute fallback: tally_stock_history (date-based daily snapshots)
-        const [openingSnaps, closingSnaps] = await Promise.all([
-          stockHistory.find({ _id: { $lte: firstDay } }).sort({ _id: -1 }).limit(1).toArray(),
-          stockHistory.find({ _id: { $lte: lastDay  } }).sort({ _id: -1 }).limit(1).toArray(),
-        ]);
-        const openingSnap = openingSnaps[0] || null;
-        const closingSnap = closingSnaps[0] || null;
-        if (openingSnap && closingSnap && openingSnap._id !== closingSnap._id) {
-          hasStockData     = true;
-          openingStock     = openingSnap.totalValue ?? 0;
-          closingStock     = closingSnap.totalValue  ?? 0;
-          openingStockDate = openingSnap._id;
-          closingStockDate = closingSnap._id;
-          stockSource      = 'db';
-        }
       }
     }
 
@@ -3615,9 +3581,9 @@ app.get('/api/tally/gross-profit', async (req, res) => {
       openingStock, openingStockDate,
       closingStock,  closingStockDate,
       hasStockData,
-      hasOpeningRecord: !!(openingMonthly || (stockSource === 'tally_live' && hasStockData)),
-      hasClosingRecord: !!(closingMonthly || (stockSource === 'tally_live' && hasStockData)),
-      stockSource,   // 'db' | 'tally_live' | 'none'
+      hasOpeningRecord: !!openingMonthly,
+      hasClosingRecord: !!closingMonthly,
+      stockSource,   // 'db' | 'none'
       grossProfit, grossMargin,
       refStockValue: latestRef ? (latestRef.stockValue ?? null) : null,
       refStockDate:  latestRef ? latestRef.syncDate : null,

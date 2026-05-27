@@ -103,10 +103,20 @@
       <div class="stat-sub">COGS</div>
       <i class="fas fa-cart-flatbed stat-icon"></i>
     </div>
-    <div class="stat-card" style="opacity:.55;cursor:default;pointer-events:none">
-      <div class="stat-label">Gross Profit</div>
-      <div style="font-size:13px;font-weight:600;color:var(--text2);margin:8px 0 4px">🚧 Still building</div>
-      <div class="stat-sub">Coming soon</div>
+    <% var hasStockForGP = (openingStock > 0 || closingStock > 0); %>
+    <div class="stat-card <%= hasStockForGP ? (grossProfit >= 0 ? 'success' : 'danger') : '' %>"
+      onclick="openProfitDetail()" style="cursor:pointer" title="Click for Gross Profit breakdown">
+      <div class="stat-label">Gross Profit <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.5;margin-left:3px"></i></div>
+      <% if(hasStockForGP && hasValidStockRange){ %>
+        <div class="stat-value"><%- fmtShort(Math.abs(grossProfit)) %></div>
+        <div class="stat-sub"><%- grossProfit >= 0 ? '▲ Profit' : '▼ Loss' %> · <%- grossMargin %>% margin</div>
+      <% } else if(hasStockForGP && !hasValidStockRange){ %>
+        <div class="stat-value" style="font-size:14px"><%- fmtShort(openingStock) %></div>
+        <div class="stat-sub">Opening stock · Sync to complete</div>
+      <% } else { %>
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin:8px 0 4px">Click for details</div>
+        <div class="stat-sub">No stock data — seed first</div>
+      <% } %>
       <i class="fas fa-chart-pie stat-icon"></i>
     </div>
     <div class="stat-card" onclick="showVoucherType('receipt')" style="cursor:pointer" title="Click to view collection entries">
