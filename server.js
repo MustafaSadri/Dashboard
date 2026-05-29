@@ -213,7 +213,12 @@ app.get('/api/warm', async (req, res) => {
     const ordersVal   = warmed[2].status === 'fulfilled' ? warmed[2].value : [];
     const stateMapVal = warmed[4].status === 'fulfilled' ? warmed[4].value : {};
     const pendingIds  = ordersVal
-      .filter(r => !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(resolveState(r, stateMapVal).toLowerCase()))
+      .filter(r => {
+        if (!r.state) return false;
+        const s = resolveState(r, stateMapVal).toLowerCase();
+        if (!s || /^draft$|черновик/.test(s)) return false;
+        return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
+      })
       .map(o => o.id);
     if (pendingIds.length) await getPendingPCS(pendingIds).catch(() => {});
     // Pre-warm today's PCS from recent demands (warmed[3])
@@ -642,6 +647,56 @@ function resolveState(r, stateMap) {
 //  ROUTES
 // ════════════════════════════════════════════════════════
 
+// ── Order-Shipment Value Mismatch API ────────────────────
+// Returns orders where total shipped value ≠ order value.
+// Happens when a sales order is edited after its shipment is created.
+app.get('/api/order-shipment-mismatch', async (req, res) => {
+  try {
+    const filterStr = `moment>=2025-12-01 00:00:00`;
+    const [orders, demands] = await Promise.all([
+      cached('mismatch_orders', 5*60*1000, () =>
+        msAll(`/entity/customerorder?filter=${enc(filterStr)}&expand=agent&order=moment,desc`).then(r => r.rows || [])),
+      cached('mismatch_demands', 5*60*1000, () =>
+        msAll(`/entity/demand?filter=${enc(filterStr)}&order=moment,desc`).then(r => r.rows || []))
+    ]);
+
+    // Sum all shipments per order
+    const shippedSum  = {};   // orderId → total shipped (kopecks)
+    const shippedList = {};   // orderId → [{name, sum, date}]
+    demands.forEach(d => {
+      const href = d.customerOrder?.meta?.href || '';
+      if (!href) return;
+      const oid = href.split('/').pop().split('?')[0];
+      shippedSum[oid]  = (shippedSum[oid] || 0) + (d.sum || 0);
+      if (!shippedList[oid]) shippedList[oid] = [];
+      shippedList[oid].push({ name: d.name, sum: Math.round((d.sum || 0) / 100), date: (d.moment || '').slice(0, 10) });
+    });
+
+    const mismatches = [];
+    orders.forEach(o => {
+      if (!shippedSum[o.id]) return;                        // no shipment yet — skip
+      const diff = (o.sum || 0) - shippedSum[o.id];
+      if (Math.abs(diff) < 100) return;                     // within ₹1 — ignore rounding
+      mismatches.push({
+        id:          o.id,
+        name:        o.name,
+        customer:    o.agent?.name || '—',
+        date:        (o.moment || '').slice(0, 10),
+        orderSum:    Math.round((o.sum || 0) / 100),
+        shippedSum:  Math.round(shippedSum[o.id] / 100),
+        difference:  Math.round(diff / 100),
+        shipments:   shippedList[o.id] || []
+      });
+    });
+
+    mismatches.sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference));
+    res.json({ ok: true, count: mismatches.length, mismatches });
+  } catch(e) {
+    console.error('/api/order-shipment-mismatch:', e.message);
+    res.json({ ok: false, error: e.message, count: 0, mismatches: [] });
+  }
+});
+
 // ── DASHBOARD ────────────────────────────────────────────
 app.get('/', async (req, res) => {
   try {
@@ -671,22 +726,22 @@ app.get('/', async (req, res) => {
     const shipmentsToday = todayShipments.length;
     const todayPCS       = await getTodayPCS(todayShipments.map(d => d.id));
 
-    // Pending = NOT dispatched / declined / cancelled.
-    // "ready to dispatch" stays pending. Declined/cancelled are excluded.
+    // Pending = has a named state AND is NOT dispatched / declined / cancelled / draft.
+    // Draft orders (no state, or state named "Draft"/"Черновик") are excluded entirely.
     const pendingOrders = orders.filter(r => {
+      if (!r.state) return false;                                      // no state = draft
       const s = resolveState(r, stateMap).toLowerCase();
+      if (!s) return false;                                            // unresolved state = draft
+      if (/^draft$|черновик/.test(s)) return false;                   // state named "Draft"
       return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
     });
     const pending = pendingOrders.length;
 
     // Count by actual state name for card sub-label
-    // Draft orders (no state) are counted separately and shown after named states
     const stateCountMap = {};
-    let draftCount = 0;
     pendingOrders.forEach(r => {
       const s = resolveState(r, stateMap);
-      if (!s) { draftCount++; return; }  // no state = draft
-      stateCountMap[s] = (stateCountMap[s] || 0) + 1;
+      if (s) stateCountMap[s] = (stateCountMap[s] || 0) + 1;
     });
     const pendingStates = Object.entries(stateCountMap)
       .sort((a, b) => b[1] - a[1])
@@ -725,7 +780,7 @@ app.get('/', async (req, res) => {
     res.render('dashboard', {
       ...c, active: 'dashboard',
       salesToday: salesToday/100, shipmentsToday, todayPCS,
-      pending, pendingStates, pendingValue, pendingPCS, draftCount,
+      pending, pendingStates, pendingValue, pendingPCS,
       totalOrders: orders.length,
       products: products.slice(0,10).map(r=>({
         name: r.assortment?.name||'—',

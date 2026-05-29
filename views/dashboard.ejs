@@ -4,6 +4,38 @@
   <%- include('partials/header', {pageTitle: 'Dashboard'}) %>
   <div class="page">
 
+    <!-- ORDER-SHIPMENT MISMATCH BUTTON -->
+    <div id="mismatchBar" style="display:none;margin-bottom:14px">
+      <button onclick="openMismatchModal()"
+        style="display:flex;align-items:center;gap:9px;width:100%;padding:10px 16px;background:rgba(255,169,77,.1);border:1.5px solid rgba(255,169,77,.4);border-radius:10px;color:#ff9a3c;font-size:13px;font-weight:600;cursor:pointer;text-align:left;transition:all .15s"
+        onmouseover="this.style.background='rgba(255,169,77,.18)'"
+        onmouseout="this.style.background='rgba(255,169,77,.1)'">
+        <i class="fas fa-triangle-exclamation" style="font-size:15px"></i>
+        <span id="mismatchBtnText">Checking order-shipment values…</span>
+        <i class="fas fa-chevron-right" style="margin-left:auto;font-size:11px;opacity:.6"></i>
+      </button>
+    </div>
+
+    <!-- MISMATCH MODAL -->
+    <div id="mismatchModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;overflow-y:auto;padding:20px" onclick="if(event.target===this)closeMismatchModal()">
+      <div style="background:var(--bg2);border-radius:14px;max-width:820px;margin:40px auto;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.35)">
+
+        <!-- modal header -->
+        <div style="display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--border);background:rgba(255,169,77,.07)">
+          <i class="fas fa-triangle-exclamation" style="color:#ff9a3c;font-size:16px"></i>
+          <span style="font-weight:700;font-size:15px">Order vs Shipment Value Mismatch</span>
+          <span id="mismatchModalCount" style="background:rgba(255,169,77,.2);color:#ff9a3c;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-left:4px"></span>
+          <span style="font-size:11px;color:var(--text2);margin-left:6px">Sales order value changed after shipment was created</span>
+          <button onclick="closeMismatchModal()" style="margin-left:auto;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:4px 8px">
+            <i class="fas fa-xmark"></i>
+          </button>
+        </div>
+
+        <!-- modal body -->
+        <div id="mismatchList" style="padding:16px 20px;max-height:65vh;overflow-y:auto"></div>
+      </div>
+    </div>
+
     <!-- STAT CARDS -->
     <div class="stats-grid" style="grid-template-columns:repeat(3,1fr)">
       <a href="/shipments" style="text-decoration:none">
@@ -23,8 +55,8 @@
         </div>
         <div class="stat-sub" style="margin-top:4px">
           <% if(typeof pendingPCS !== 'undefined' && pendingPCS > 0){ %><strong><%- pendingPCS.toLocaleString('en-US') %> pcs</strong> · <% } %>
-          <% if(pendingStates.length===0 && !(draftCount > 0)){ %>No pending orders
-          <% } else { pendingStates.forEach(function(s,i){ %><%- s.name %>: <%- s.count %><%- (i<pendingStates.length-1 || draftCount>0)?' · ':'' %><% }); if(draftCount > 0){ %>Draft: <%- draftCount %><% } } %>
+          <% if(pendingStates.length===0){ %>No pending orders
+          <% } else { pendingStates.forEach(function(s,i){ %><%- s.name %>: <%- s.count %><%- i<pendingStates.length-1?' · ':'' %><% }); } %>
         </div>
         <i class="fas fa-shopping-cart stat-icon"></i>
       </div>
@@ -349,4 +381,62 @@ function switchView(view) {
 
 // Init
 switchView('monthly');
+
+// ── Order-Shipment Mismatch ───────────────────────────────
+function fmtRub(n) {
+  const abs = Math.abs(n);
+  if (abs >= 1e7) return '₽' + (abs/1e7).toFixed(2) + ' Cr';
+  if (abs >= 1e5) return '₽' + (abs/1e5).toFixed(1) + ' L';
+  return (n < 0 ? '-₽' : '₽') + Math.abs(n).toLocaleString('en-IN');
+}
+
+async function loadMismatch() {
+  try {
+    const res  = await fetch('/api/order-shipment-mismatch');
+    const data = await res.json();
+    if (!data.ok || data.count === 0) return;
+
+    document.getElementById('mismatchBar').style.display = 'block';
+    document.getElementById('mismatchBtnText').textContent =
+      `${data.count} Order${data.count > 1 ? 's' : ''} — Shipment value doesn't match sales order value`;
+    document.getElementById('mismatchModalCount').textContent = data.count;
+
+    // Build modal table
+    const rows = data.mismatches.map(m => {
+      const over  = m.difference < 0;  // shipped more than order
+      const color = over ? '#ff5050' : '#ff9a3c';
+      const label = over ? 'Over-shipped by' : 'Short-shipped by';
+      const ships = m.shipments.map(s =>
+        `<div style="font-size:11px;color:var(--text2);padding:2px 0">
+           ${s.date} &nbsp;·&nbsp; ${s.name} &nbsp;·&nbsp; ${fmtRub(s.sum)}
+         </div>`
+      ).join('');
+      return `<div style="padding:12px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <div style="font-weight:700;font-size:13px">${m.name}
+              <span style="font-weight:400;font-size:12px;color:var(--text2);margin-left:6px">${m.customer}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px">${m.date}</div>
+            <div style="margin-top:6px">${ships}</div>
+          </div>
+          <div style="text-align:right;white-space:nowrap">
+            <div style="font-size:12px;color:var(--text2)">Order &nbsp;<strong style="color:var(--text)">${fmtRub(m.orderSum)}</strong></div>
+            <div style="font-size:12px;color:var(--text2);margin-top:2px">Shipped &nbsp;<strong style="color:var(--text)">${fmtRub(m.shippedSum)}</strong></div>
+            <div style="margin-top:4px;font-size:12px;font-weight:700;color:${color}">${label} ${fmtRub(Math.abs(m.difference))}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+
+    document.getElementById('mismatchList').innerHTML = rows ||
+      '<div style="color:var(--text2);text-align:center;padding:20px">No mismatches found</div>';
+  } catch(e) { /* silently skip — non-critical */ }
+}
+
+function openMismatchModal()  { document.getElementById('mismatchModal').style.display = 'block'; document.body.style.overflow = 'hidden'; }
+function closeMismatchModal() { document.getElementById('mismatchModal').style.display = 'none';  document.body.style.overflow = ''; }
+
+// Load on page open (non-blocking)
+loadMismatch();
 </script>
