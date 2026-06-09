@@ -16,9 +16,11 @@
       <a href="/" class="nav-item <%- active==='dashboard'?'active':'' %>" onclick="closeSidebarOnMobile()">
         <i class="fas fa-chart-pie"></i> Dashboard
       </a>
+      <% if(canViewTally){ %>
       <a href="/tally" class="nav-item <%- active==='tally'?'active':'' %>" onclick="closeSidebarOnMobile()">
         <i class="fas fa-building-columns"></i> Tally Dashboard
       </a>
+      <% } %>
     </div>
 
     <div class="nav-section">

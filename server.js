@@ -153,7 +153,8 @@ async function fetchTallyStockTotal(asOfDate) {
 }
 
 // ── Auth credentials ─────────────────────────────────────
-const PASSCODE = process.env.PASSCODE || '1990';
+const PASSCODE         = process.env.PASSCODE || '1990';
+const PASSCODE_LIMITED = '1122';
 
 const TOKEN   = process.env.TOKEN || '';
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
@@ -185,6 +186,12 @@ app.get('/login', (req, res) => {
 app.post('/login', (req, res) => {
   if (req.body.passcode === PASSCODE) {
     req.session.loggedIn = true;
+    req.session.role = 'admin';
+    return res.redirect('/loading');
+  }
+  if (PASSCODE_LIMITED && req.body.passcode === PASSCODE_LIMITED) {
+    req.session.loggedIn = true;
+    req.session.role = 'limited';
     return res.redirect('/loading');
   }
   res.render('login', { error: 'Incorrect passcode. Try again.' });
@@ -244,7 +251,8 @@ app.use((req, res, next) => {
 
 // ── Format helpers available in all EJS templates ────────
 app.use((req, res, next) => {
-  res.locals.active    = '';
+  res.locals.active       = '';
+  res.locals.canViewTally = req.session.role !== 'limited';
   res.locals.empName   = 'Admin';
   res.locals.empLetter = 'A';
   res.locals.empRole   = 'System';
@@ -3275,6 +3283,7 @@ async function fetchLiveTallyData() {
 }
 
 app.get('/tally', async (req, res) => {
+  if (req.session.role === 'limited') return res.redirect('/');
   const c   = await common();
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
@@ -3588,6 +3597,12 @@ app.get('/tally', async (req, res) => {
     stockItems, totalStockValue, openingStock, closingStock, openingStockDate, closingStockDate,
     hasValidStockRange, refStockValue, refStockDate, aging, hasDbData, monthsWithData
   });
+});
+
+// Block all Tally API routes for limited-role users
+app.use('/api/tally', (req, res, next) => {
+  if (req.session.role === 'limited') return res.status(403).json({ ok: false, error: 'Access denied' });
+  next();
 });
 
 // Diagnostic — show all voucher types in DB so we can tune filters
