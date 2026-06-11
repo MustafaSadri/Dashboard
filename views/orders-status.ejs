@@ -143,15 +143,17 @@
 
 </div>
 
-<!-- ── Salesman Performance (coming soon) ── -->
-<div class="card" style="text-align:center;padding:36px 24px">
-  <div style="width:52px;height:52px;border-radius:14px;background:rgba(108,99,255,.12);
-              display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:22px">
-    <i class="fas fa-user-tie" style="color:var(--accent);opacity:.5"></i>
+<!-- ── Tip ── -->
+<div class="card" style="display:flex;align-items:center;gap:16px;padding:18px 22px">
+  <div style="width:42px;height:42px;border-radius:12px;background:rgba(108,99,255,.12);
+              display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:17px">
+    <i class="fas fa-circle-info" style="color:var(--accent)"></i>
   </div>
-  <div style="font-size:15px;font-weight:700;margin-bottom:6px">Salesman Performance</div>
-  <div style="font-size:13px;color:var(--text2);line-height:1.7">
-    Detailed salesman analytics &amp; leaderboard coming soon.
+  <div>
+    <div style="font-size:14px;font-weight:700;margin-bottom:2px">Tip: Click any card above</div>
+    <div style="font-size:12.5px;color:var(--text2);line-height:1.6">
+      Open a detailed list of every order in that status — including order no, customer, PCS, salesman, amount and date.
+    </div>
   </div>
 </div>
 
@@ -242,7 +244,7 @@ function openModal(filter, title, icon, color) {
 
   document.getElementById('modalHead').innerHTML =
     '<tr>' +
-    '<th>Order No</th><th>Customer</th><th>Salesman</th><th>Status</th>' +
+    '<th>Order No</th><th>Customer</th><th style="text-align:center">PCS</th><th>Salesman</th><th>Status</th>' +
     (isDisp ? '<th>Shipment</th>' : '') +
     '<th style="text-align:right">Amount</th><th>Created</th>' +
     (isDelayed ? '<th style="text-align:center">Delay</th>' : '') +
@@ -274,9 +276,13 @@ function renderModalRows(rows, isDelayed, isDisp) {
     var delayCell = isDelayed
       ? '<td style="text-align:center;color:var(--danger);font-weight:700">+' + o.delayDays + 'd</td>'
       : '';
+    var pcsCell = _pcsCache.hasOwnProperty(o.id)
+      ? '<td style="text-align:center;font-weight:600">' + _pcsCache[o.id] + '</td>'
+      : '<td style="text-align:center" data-pcs="' + o.id + '"><i class="fas fa-spinner fa-spin" style="font-size:10px;opacity:.35"></i></td>';
     return '<tr>' +
       '<td><span style="font-weight:600;color:var(--accent)">' + o.name + '</span></td>' +
       '<td>' + o.customer + '</td>' +
+      pcsCell +
       '<td style="color:var(--text2)">' + o.salesman + '</td>' +
       '<td>' + badgeHtml(o.state) + '</td>' +
       shipCell +
@@ -287,6 +293,33 @@ function renderModalRows(rows, isDelayed, isDisp) {
   }).join('');
 
   document.getElementById('modalBody').innerHTML = html;
+  loadPCS(rows);
+}
+
+// ── PCS lookup: fetch order quantities lazily, fill in cells as they arrive ──
+var _pcsCache = {};
+function loadPCS(rows) {
+  var ids = [];
+  rows.forEach(function(o) {
+    if (!_pcsCache.hasOwnProperty(o.id) && ids.indexOf(o.id) === -1) ids.push(o.id);
+  });
+  if (!ids.length) return;
+
+  var CHUNK = 100;
+  for (var i = 0; i < ids.length; i += CHUNK) {
+    var chunk = ids.slice(i, i + CHUNK);
+    fetch('/api/order-pcs?ids=' + chunk.join(','))
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        if (!data.ok) return;
+        Object.keys(data.pcs).forEach(function(id){
+          _pcsCache[id] = data.pcs[id];
+          var cell = document.querySelector('[data-pcs="' + id + '"]');
+          if (cell) { cell.removeAttribute('data-pcs'); cell.style.fontWeight = '600'; cell.textContent = data.pcs[id]; }
+        });
+      })
+      .catch(function(){});
+  }
 }
 
 function filterModal(q) {

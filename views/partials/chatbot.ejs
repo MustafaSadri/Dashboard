@@ -244,6 +244,27 @@
 #ws-send:active { transform: scale(.94); }
 #ws-send:disabled { opacity: .4; cursor: not-allowed; transform: none; }
 
+/* ── Mic button ── */
+#ws-mic {
+  width: 50px; height: 50px; border-radius: 13px; flex-shrink: 0;
+  background: #1c1c30; border: 1.5px solid rgba(108,99,255,.3);
+  color: #b4b0ff; cursor: pointer; font-size: 17px;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform .15s, background .2s, border-color .2s, color .2s;
+}
+#ws-mic:hover { border-color: #6c63ff; color: #fff; }
+#ws-mic:active { transform: scale(.94); }
+#ws-mic.ws-mic-recording {
+  background: linear-gradient(135deg,#ff4d6d,#ff6b6b);
+  border-color: #ff4d6d; color: #fff;
+  animation: wsMicPulse 1.2s ease-in-out infinite;
+}
+@keyframes wsMicPulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(255,77,109,.5); }
+  50%     { box-shadow: 0 0 0 8px rgba(255,77,109,0); }
+}
+#ws-mic:disabled { opacity: .35; cursor: not-allowed; animation: none; }
+
 /* ── FAB ── */
 #ws-fab-wrap {
   position: fixed; bottom: 28px; right: 28px; z-index: 9992;
@@ -343,6 +364,7 @@ Ask me anything about your business! 🌐</div>
   <div id="ws-bar">
     <input id="ws-input" type="text" placeholder="Ask anything about your business or market…"
       onkeydown="if(event.key==='Enter'){event.preventDefault();wsSend();}">
+    <button id="ws-mic" onclick="wsToggleMic()" title="Voice message"><i class="fas fa-microphone"></i></button>
     <button id="ws-send" onclick="wsSend()"><i class="fas fa-paper-plane"></i></button>
   </div>
 
@@ -700,6 +722,65 @@ Ask me anything about your business! 🌐</div>
     });
   }
   window.wsSend = wsSend;
+
+  // ── Voice message — record speech, transcribe in-browser, auto-send ──
+  var recognition  = null;
+  var isRecording  = false;
+
+  function wsToggleMic() {
+    var micBtn = document.getElementById('ws-mic');
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      appendBot('⚠️ Voice input is not supported in this browser. Try Chrome or Edge.', true);
+      return;
+    }
+    if (isRecording) {
+      if (recognition) recognition.stop();
+      return;
+    }
+    if (busy) return;
+
+    recognition = new SR();
+    recognition.lang = 'en-IN';
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    var inp = document.getElementById('ws-input');
+    var finalTranscript = '';
+
+    isRecording = true;
+    micBtn.classList.add('ws-mic-recording');
+    micBtn.querySelector('i').className = 'fas fa-stop';
+    document.getElementById('ws-status').textContent = '🎙️ Listening…';
+
+    recognition.onresult = function(e) {
+      var interim = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        var transcript = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalTranscript += transcript;
+        else interim += transcript;
+      }
+      inp.value = (finalTranscript + interim).trim();
+    };
+
+    recognition.onerror = function(e) {
+      document.getElementById('ws-status').textContent = 'Live data · Web search enabled';
+      if (e.error === 'no-speech' || e.error === 'aborted') return;
+      appendBot('⚠️ Voice recognition error: ' + escH(e.error), true);
+    };
+
+    recognition.onend = function() {
+      isRecording = false;
+      micBtn.classList.remove('ws-mic-recording');
+      micBtn.querySelector('i').className = 'fas fa-microphone';
+      document.getElementById('ws-status').textContent = 'Live data · Web search enabled';
+      if (inp.value.trim()) wsSend();
+    };
+
+    recognition.start();
+  }
+  window.wsToggleMic = wsToggleMic;
 
   // Keyboard: Ctrl+/ or Ctrl+K to toggle, Escape to close
   document.addEventListener('keydown', function(e) {

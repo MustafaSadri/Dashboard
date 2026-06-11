@@ -58,6 +58,8 @@
               <th style="text-align:right">Shipments</th>
               <th style="text-align:right">Total Value</th>
               <th style="text-align:right">Avg per Shipment</th>
+              <th style="text-align:right">PCS Sold</th>
+              <th>Warehouse-wise Breakdown</th>
             </tr>
           </thead>
           <tbody id="shipmentsBody"></tbody>
@@ -66,6 +68,8 @@
               <td colspan="2"><strong>Total</strong></td>
               <td style="text-align:right;font-weight:700" id="footCount"><%- totalCount %></td>
               <td style="text-align:right;font-weight:700;color:var(--accent2)" id="footVal"></td>
+              <td></td>
+              <td style="text-align:right;font-weight:700" id="footPcs">—</td>
               <td></td>
             </tr>
           </tfoot>
@@ -109,6 +113,57 @@ function fmtFull(n) {
 }
 function dayName(dateStr) {
   return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+}
+
+// Renders shipment-count badges per warehouse (available immediately, no fetch needed)
+function whBadges(row) {
+  if (!row.warehouses || !row.warehouses.length) return '<span class="muted">—</span>';
+  return row.warehouses.map(w =>
+    '<span class="badge badge-default" style="margin:1px 3px 1px 0;display:inline-block">' +
+      w.name + ': ' + w.shipments + ' ship' + (w.shipments !== 1 ? 's' : '') +
+      ' (' + fmtShort(w.value/100) + ')' +
+    '</span>'
+  ).join('');
+}
+
+// PCS sold per day (warehouse-wise) — loaded per-month asynchronously from /api/shipments-pcs
+const _pcsByMonth = {};   // month (YYYY-MM) -> { date: {total, warehouses} } | 'loading'
+const CURRENT_MONTH = TODAY.slice(0, 7);
+
+function loadShipmentsPcs(month) {
+  if (_pcsByMonth[month]) return;
+  _pcsByMonth[month] = 'loading';
+  fetch('/api/shipments-pcs?month=' + month)
+    .then(r => r.json())
+    .then(data => {
+      _pcsByMonth[month] = data.ok ? (data.data || {}) : {};
+      applyFilter();
+    })
+    .catch(() => { _pcsByMonth[month] = {}; });
+}
+
+function pcsCellHtml(date) {
+  const month = date.slice(0, 7);
+  const m = _pcsByMonth[month];
+  if (m === 'loading') return '<i class="fas fa-spinner fa-spin" style="font-size:10px;opacity:.35"></i>';
+  if (!m) return '<span class="muted">—</span>';
+  const info = m[date];
+  if (!info || !info.total) return '<span class="muted">0</span>';
+  return '<strong>' + info.total + '</strong>';
+}
+
+function pcsBreakdownHtml(date) {
+  const month = date.slice(0, 7);
+  const m = _pcsByMonth[month];
+  if (!m || m === 'loading') return '';
+  const info = m[date];
+  if (!info || !info.warehouses) return '';
+  return '<div style="margin-top:4px;font-size:11px;color:var(--text2)">' +
+    Object.entries(info.warehouses)
+      .sort((a,b) => b[1]-a[1])
+      .map(([name, pcs]) => name + ': ' + pcs + ' pcs')
+      .join(' &nbsp;|&nbsp; ') +
+    '</div>';
 }
 
 function applyFilter() {
@@ -171,12 +226,18 @@ function applyFilter() {
     ? filtered.length + ' day(s) in ' + (MONTH_META[month] || month)
     : 'Showing all ' + ALL_DAYS.reduce((a,d)=>a+d.count,0) + ' shipments';
 
+  // Load PCS data for the relevant month(s) — for "All Records" just load the
+  // current month (most relevant); switching to a specific month loads that one.
+  const pcsMonth = month || CURRENT_MONTH;
+  loadShipmentsPcs(pcsMonth);
+
   // Rebuild table body
   const tbody = document.getElementById('shipmentsBody');
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text2)">No shipments for this period</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text2)">No shipments for this period</td></tr>';
     document.getElementById('footCount').textContent = 0;
     document.getElementById('footVal').textContent = '—';
+    document.getElementById('footPcs').textContent = '—';
     return;
   }
 
@@ -192,12 +253,21 @@ function applyFilter() {
       <td style="text-align:right;font-weight:700;font-size:15px">${row.count}</td>
       <td style="text-align:right;color:var(--accent2);font-weight:600">${fmtFull(row.total/100)}</td>
       <td style="text-align:right" class="muted">${avg > 0 ? fmtFull(avg) : '—'}</td>
+      <td style="text-align:right">${pcsCellHtml(row.date)}</td>
+      <td>${whBadges(row)}${pcsBreakdownHtml(row.date)}</td>
     </tr>`;
   }).join('');
 
   // Update footer
   document.getElementById('footCount').textContent = totalCount;
   document.getElementById('footVal').textContent = fmtFull(totalVal);
+  let totalPcs = 0, anyMissing = false;
+  filtered.forEach(d => {
+    const m = _pcsByMonth[d.date.slice(0, 7)];
+    if (m && m !== 'loading') totalPcs += (m[d.date] && m[d.date].total) || 0;
+    else anyMissing = true;
+  });
+  document.getElementById('footPcs').textContent = anyMissing ? totalPcs + '+' : totalPcs;
 }
 
 // Initial render

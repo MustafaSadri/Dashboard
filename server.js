@@ -564,6 +564,23 @@ const getDemandsFromDec25 = () =>
     msAll(`/entity/demand?filter=${enc('moment>=2025-12-01 00:00:00')}&order=moment,asc`)
       .then(r => r.rows || []));
 
+// Map of store/warehouse id → name (cached 30 min). expand=store on demand lists
+// silently breaks (returns no store data) once limit > ~100, so resolve via this map instead.
+async function getStoreMap() {
+  return cached('store_map', 30 * 60 * 1000, async () => {
+    const { rows = [] } = await msAll('/entity/store?limit=100');
+    const map = {};
+    rows.forEach(s => { if (s.id) map[s.id] = s.name || '—'; });
+    return map;
+  });
+}
+
+// Resolve a demand's warehouse name from its store href + the store map
+function storeName(d, storeMap) {
+  const id = (d.store?.meta?.href || '').split('/').pop().split('?')[0];
+  return (id && storeMap[id]) || 'Unknown';
+}
+
 const getProfitByProduct = (from, to) => {
   const key = `prof_prod_${from}_${to||''}`;
   const url  = to
@@ -616,6 +633,34 @@ async function getTodayPCS(demandIds) {
         (r.value.rows || []).forEach(pos => { total += Math.round(pos.quantity || 0); });
     });
     return total;
+  });
+}
+
+// Fetch PCS (units) per warehouse/store for a list of demands — each demand needs
+// { id, store: { meta: { href } } }. Used for warehouse-wise breakdowns in the chatbot.
+async function getPCSByStore(demands, storeMap) {
+  if (!demands.length) return { total: 0, byStore: [] };
+  const cacheKey = `pcs_by_store_${todayStr()}_${demands.length}_${demands[0]?.id || ''}`;
+  return cached(cacheKey, 90 * 1000, async () => {
+    const BATCH = 20;
+    const storeTotals = {};
+    let total = 0;
+    for (let i = 0; i < demands.length; i += BATCH) {
+      const batch = demands.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(d => ms(`/entity/demand/${d.id}/positions?limit=200`))
+      );
+      batch.forEach((d, j) => {
+        const name = storeName(d, storeMap);
+        const pcs = results[j].status === 'fulfilled'
+          ? Math.round((results[j].value.rows || []).reduce((a, p) => a + (p.quantity || 0), 0))
+          : 0;
+        storeTotals[name] = (storeTotals[name] || 0) + pcs;
+        total += pcs;
+      });
+    }
+    const byStore = Object.entries(storeTotals).sort((a, b) => b[1] - a[1]).map(([store, pcs]) => ({ store, pcs }));
+    return { total, byStore };
   });
 }
 
@@ -702,6 +747,29 @@ app.get('/api/order-shipment-mismatch', async (req, res) => {
   } catch(e) {
     console.error('/api/order-shipment-mismatch:', e.message);
     res.json({ ok: false, error: e.message, count: 0, mismatches: [] });
+  }
+});
+
+// ── Order PCS lookup (per-order quantity, batched + cached) ─
+// Used by the Orders Status modal to show pieces ordered per order.
+app.get('/api/order-pcs', async (req, res) => {
+  try {
+    const ids = (req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 1000);
+    const pcs = {};
+    const BATCH = 20;
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const batch = ids.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(id => cached(`order_pcs_${id}`, 10*60*1000, () =>
+          ms(`/entity/customerorder/${id}/positions?limit=200`)
+            .then(r => Math.round((r.rows || []).reduce((a, p) => a + (p.quantity || 0), 0)))
+        ))
+      );
+      batch.forEach((id, j) => { pcs[id] = results[j].status === 'fulfilled' ? results[j].value : 0; });
+    }
+    res.json({ ok: true, pcs });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message, pcs: {} });
   }
 });
 
@@ -1449,24 +1517,40 @@ app.get('/api/orders/monthly', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Cached fetch of ALL demands — shared by /shipments and /api/shipments-pcs
+const getAllDemands = () =>
+  cached('shipments_all_demands', 2*60*1000, () => msAll('/entity/demand?order=moment,desc'));
+
 // ── SHIPMENTS PAGE ────────────────────────────────────────
 app.get('/shipments', async (req, res) => {
   try {
     const c = await common();
 
     // Fetch all shipments with full pagination
-    const { rows, total: msTotal } = await msAll('/entity/demand?order=moment,desc');
+    const [{ rows, total: msTotal }, storeMap] = await Promise.all([
+      getAllDemands(),
+      getStoreMap(),
+    ]);
 
-    // Group by date
+    // Group by date, with per-warehouse shipment counts/values
     const dayMap = {};
     rows.forEach(r => {
       const date = (r.moment || '').slice(0, 10);
       if (!date) return;
-      if (!dayMap[date]) dayMap[date] = { date, count: 0, total: 0 };
+      if (!dayMap[date]) dayMap[date] = { date, count: 0, total: 0, warehouses: {} };
+      const wh = storeName(r, storeMap);
       dayMap[date].count++;
       dayMap[date].total += (r.sum || 0);
+      if (!dayMap[date].warehouses[wh]) dayMap[date].warehouses[wh] = { shipments: 0, value: 0 };
+      dayMap[date].warehouses[wh].shipments++;
+      dayMap[date].warehouses[wh].value += (r.sum || 0);
     });
-    const days = Object.values(dayMap).sort((a, b) => b.date.localeCompare(a.date));
+    const days = Object.values(dayMap).map(d => ({
+      date: d.date, count: d.count, total: d.total,
+      warehouses: Object.entries(d.warehouses)
+        .map(([name, w]) => ({ name, shipments: w.shipments, value: w.value }))
+        .sort((a, b) => b.shipments - a.shipments)
+    })).sort((a, b) => b.date.localeCompare(a.date));
 
     // Derive months from actual data
     const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -1493,6 +1577,47 @@ app.get('/shipments', async (req, res) => {
   } catch(e) { res.status(500).render('error', { message: e.message }); }
 });
 
+// ── SHIPMENTS PAGE: PCS sold per day, warehouse-wise (async, cached) ──
+// Scoped to a single month (?month=YYYY-MM, default current month) — fetching
+// positions for ALL shipments at once is too slow against MoySklad's rate limits.
+app.get('/api/shipments-pcs', async (req, res) => {
+  try {
+    const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : todayStr().slice(0, 7);
+
+    const [{ rows: allRows }, storeMap] = await Promise.all([
+      getAllDemands(),
+      getStoreMap(),
+    ]);
+    const rows = allRows.filter(d => (d.moment || '').slice(0, 7) === month);
+
+    const data = await cached(`shipments_pcs_by_day_${month}_${rows.length}`, 10*60*1000, async () => {
+      const BATCH = 20;
+      const result = {};
+      for (let i = 0; i < rows.length; i += BATCH) {
+        const batch = rows.slice(i, i + BATCH);
+        const positions = await Promise.allSettled(
+          batch.map(d => ms(`/entity/demand/${d.id}/positions?limit=200`))
+        );
+        batch.forEach((d, j) => {
+          const date = (d.moment || '').slice(0, 10);
+          if (!date) return;
+          const wh  = storeName(d, storeMap);
+          const pcs = positions[j].status === 'fulfilled'
+            ? Math.round((positions[j].value.rows || []).reduce((a, p) => a + (p.quantity || 0), 0))
+            : 0;
+          if (!result[date]) result[date] = { total: 0, warehouses: {} };
+          result[date].total += pcs;
+          result[date].warehouses[wh] = (result[date].warehouses[wh] || 0) + pcs;
+        });
+      }
+      return result;
+    });
+
+    res.json({ ok: true, month, data });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message, data: {} });
+  }
+});
 
 // ── CUSTOMER ANALYTICS ───────────────────────────────────
 app.get('/customer-analytics', async (req, res) => {
@@ -1907,6 +2032,23 @@ async function toolQueryMoysklad({ data_type = 'demands', period = 'this_month',
       });
       const rows = Object.values(map).sort((a, b) => a.month.localeCompare(b.month));
       return JSON.stringify({ group_by: 'month', source: 'MoySklad Live API', results: rows });
+    }
+
+    if (group_by === 'warehouse' || group_by === 'store') {
+      const storeMap = await getStoreMap().catch(() => ({}));
+      const capped = demands.slice(0, 300);
+      const pcsData = await getPCSByStore(capped.map(d => ({ id: d.id, store: d.store })), storeMap);
+      const storeRevenue = {};
+      demands.forEach(d => {
+        const name = storeName(d, storeMap);
+        storeRevenue[name] = (storeRevenue[name] || 0) + Math.round((d.sum || 0) / 100);
+      });
+      const rows = pcsData.byStore.map(s => ({ warehouse: s.store, pcs: s.pcs, revenue: storeRevenue[s.store] || 0 }));
+      return JSON.stringify({
+        period, group_by: 'warehouse', source: 'MoySklad Live API',
+        total_pcs: pcsData.total, sampled_shipments: capped.length, total_shipments: demands.length,
+        results: rows
+      });
     }
 
     if (group_by === 'salesman') {
@@ -2390,7 +2532,7 @@ async function buildChatContext() {
       ``,
       `1. query_moysklad(data_type, period, group_by, filter, top_n, sort_by)`,
       `   data_type: "demands"|"stock"|"customers"|"orders"`,
-      `   group_by:  "product"|"sku"|"customer"|"day"|"month"|"salesman"|"none"`,
+      `   group_by:  "product"|"sku"|"customer"|"day"|"month"|"salesman"|"warehouse"|"none"`,
       `   period:    "today"|"this_month"|"last_month"|"this_year"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"`,
       `   filter:    "product:NAME" | "customer:NAME" | "status:low" | "status:out"`,
       ``,
@@ -2438,6 +2580,7 @@ async function buildChatContext() {
       `- "Business health" → analyze analysis_type="health_report"`,
       `- "Slow moving stock" → analyze analysis_type="slow_moving"`,
       `- MoySklad vs Tally comparison → compare_sources`,
+      `- "Today's summary" / "daily summary" / "total PCS sold today" → use the TODAY snapshot below (already includes total PCS and warehouse-wise PCS breakdown — e.g. Yuzhnie Varota, Lublino Shop, Berlin Office). Always mention the warehouse-wise split when answering daily PCS summaries. For other periods use query_moysklad group_by="warehouse".`,
       `- Always use tools. Never guess numbers. Lead with the answer. Tables for multi-row data.`,
       ``,
       `${'═'.repeat(70)}`,
@@ -2447,7 +2590,12 @@ async function buildChatContext() {
 
     // ── MoySklad section ──
     sec(`TODAY — ${today} (MoySklad)`);
-    L.push(`Shipments: ${todayDemands.length} | Revenue: ${fmtS(todayRevenue)}`);
+    const storeMap     = await getStoreMap().catch(() => ({}));
+    const todayPcsData = await getPCSByStore(todayDemands.map(d => ({ id: d.id, store: d.store })), storeMap);
+    L.push(`Shipments: ${todayDemands.length} | Revenue: ${fmtS(todayRevenue)} | Total PCS sold: ${todayPcsData.total}`);
+    if (todayPcsData.byStore.length) {
+      L.push('PCS by warehouse: ' + todayPcsData.byStore.map(s => `${s.store}: ${s.pcs}`).join(', '));
+    }
 
     sec(`MOYSKLAD INVENTORY`);
     const lowStock = stockWithStatus.filter(s=>s.status==='low').sort((a,b)=>a.qty-b.qty);
@@ -2950,6 +3098,7 @@ group_by (for demands only):
 • "sku"       → flavour/variant breakdown. Use for "sku wise", "flavour wise", "variant wise".
 • "customer"  → revenue + shipments by customer.
 • "salesman"  → revenue + shipments by salesman/employee. Use for "top salesman", "who sold most".
+• "warehouse" → total PCS + revenue per warehouse/store (e.g. Yuzhnie Varota, Lublino Shop, Berlin Office). Use for "warehouse wise", "godown wise", "which warehouse shipped most".
 • "day"       → daily trend.
 • "month"     → monthly trend across all history.
 • "none"      → single total (revenue, count) for the period.
@@ -2965,13 +3114,14 @@ RULES:
 - "top salesman" / "best salesman" / "salesman performance" → group_by="salesman"
 - "by customer" / "top customers" → group_by="customer" OR data_type="customers"
 - "monthly trend" / "month by month" → group_by="month"
+- "warehouse wise" / "godown wise" / "by warehouse" / "PCS by warehouse" → group_by="warehouse"
 - Pending orders / unshipped → data_type="orders"`,
     input_schema: {
       type: 'object',
       properties: {
         data_type: { type: 'string', enum: ['demands', 'orders', 'stock', 'customers'], description: 'Which collection to query' },
         period: { type: 'string', description: '"today","this_month","last_month","this_year","all","YYYY-MM","YYYY-MM-DD:YYYY-MM-DD"' },
-        group_by: { type: 'string', enum: ['product', 'sku', 'customer', 'salesman', 'day', 'month', 'none'], description: 'How to aggregate demands. "sku" for flavour detail. "salesman" for employee breakdown.' },
+        group_by: { type: 'string', enum: ['product', 'sku', 'customer', 'salesman', 'warehouse', 'day', 'month', 'none'], description: 'How to aggregate demands. "sku" for flavour detail. "salesman" for employee breakdown. "warehouse" for PCS/revenue per store/godown.' },
         filter: { type: 'string', description: 'Partial name match for product or customer' },
         top_n: { type: 'number', description: 'Max rows to return (default 15)' },
         sort_by: { type: 'string', enum: ['revenue', 'quantity', 'orders'], description: 'Sort field (default: revenue)' }
