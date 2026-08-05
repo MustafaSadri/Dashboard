@@ -8,14 +8,14 @@
   <link rel="stylesheet" href="/css/style.css">
   <script>
     var LIGHT_VARS = {
-      '--bg':'#f0f2fa','--bg2':'#ffffff','--bg3':'#e4e7f5',
-      '--text':'#1a1d2e','--text2':'#5a6180',
-      '--border':'rgba(108,99,255,.22)','--card-shadow':'0 4px 20px rgba(108,99,255,.09)'
+      '--bg':'#FBF6F0','--bg2':'#ffffff','--bg3':'#F3E9DD',
+      '--text':'#1E1815','--text2':'#7A6E60',
+      '--border':'rgba(217,119,87,.22)','--card-shadow':'0 4px 20px rgba(217,119,87,.09)'
     };
     var DARK_VARS = {
-      '--bg':'#0f1117','--bg2':'#1a1d2e','--bg3':'#252840',
-      '--text':'#e8eaf6','--text2':'#8891b5',
-      '--border':'rgba(108,99,255,.18)','--card-shadow':'0 4px 24px rgba(0,0,0,.4)'
+      '--bg':'#14100D','--bg2':'#1E1815','--bg3':'#2A221D',
+      '--text':'#F3ECE4','--text2':'#A69A8D',
+      '--border':'rgba(217,119,87,.18)','--card-shadow':'0 4px 24px rgba(0,0,0,.4)'
     };
     function _applyVars(v){var r=document.documentElement;for(var k in v)r.style.setProperty(k,v[k]);}
     (localStorage.getItem('platina_theme')==='dark')?_applyVars(DARK_VARS):(_applyVars(LIGHT_VARS),localStorage.setItem('platina_theme','light'));
@@ -37,18 +37,18 @@
     }
     .logo-icon {
       width: 56px; height: 56px;
-      background: linear-gradient(135deg, #6c63ff, #00d4aa);
+      background: linear-gradient(135deg, #D97757, #4FAE8A);
       border-radius: 16px;
       display: flex; align-items: center; justify-content: center;
       font-size: 24px; color: #fff; font-weight: 700;
-      box-shadow: 0 6px 24px rgba(108,99,255,.3);
+      box-shadow: 0 6px 24px rgba(217,119,87,.3);
     }
     .logo-text  { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: .3px; }
     .logo-sub   { font-size: 11px; color: var(--text2); letter-spacing: 1.2px; text-transform: uppercase; margin-top: 2px; }
     .spinner {
       width: 44px; height: 44px;
       border: 3px solid var(--border);
-      border-top-color: #6c63ff;
+      border-top-color: #D97757;
       border-radius: 50%;
       animation: spin .8s linear infinite;
     }
@@ -94,7 +94,7 @@
     clearTimeout(fallback);
     if (d.ok) {
       sub.textContent = 'Ready! Redirecting...';
-      spin.style.borderTopColor = '#00d4aa';
+      spin.style.borderTopColor = '#4FAE8A';
       setTimeout(() => { window.location = '/'; }, 400);
     } else {
       window.location = '/';

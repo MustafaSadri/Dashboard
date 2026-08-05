@@ -8,21 +8,21 @@
   <link rel="stylesheet" href="/css/style.css">
   <script>
     var LIGHT_VARS = {
-      '--bg':          '#f0f2fa',
+      '--bg':          '#FBF6F0',
       '--bg2':         '#ffffff',
-      '--bg3':         '#e4e7f5',
-      '--text':        '#1a1d2e',
-      '--text2':       '#5a6180',
-      '--border':      'rgba(108,99,255,.22)',
-      '--card-shadow': '0 4px 20px rgba(108,99,255,.09)'
+      '--bg3':         '#F3E9DD',
+      '--text':        '#1E1815',
+      '--text2':       '#7A6E60',
+      '--border':      'rgba(217,119,87,.22)',
+      '--card-shadow': '0 4px 20px rgba(217,119,87,.09)'
     };
     var DARK_VARS = {
-      '--bg':          '#0f1117',
-      '--bg2':         '#1a1d2e',
-      '--bg3':         '#252840',
-      '--text':        '#e8eaf6',
-      '--text2':       '#8891b5',
-      '--border':      'rgba(108,99,255,.18)',
+      '--bg':          '#14100D',
+      '--bg2':         '#1E1815',
+      '--bg3':         '#2A221D',
+      '--text':        '#F3ECE4',
+      '--text2':       '#A69A8D',
+      '--border':      'rgba(217,119,87,.18)',
       '--card-shadow': '0 4px 24px rgba(0,0,0,.4)'
     };
     function _applyVars(v){ var r=document.documentElement; for(var k in v) r.style.setProperty(k,v[k]); }
@@ -56,7 +56,7 @@
     }
     .login-logo-icon {
       width: 42px; height: 42px;
-      background: linear-gradient(135deg, #6c63ff, #00d4aa);
+      background: linear-gradient(135deg, #D97757, #4FAE8A);
       border-radius: 12px;
       display: flex; align-items: center; justify-content: center;
       font-size: 18px; color: #fff; font-weight: 700;
@@ -95,8 +95,8 @@
       text-align: center;
     }
     .field-wrap input:focus {
-      border-color: #6c63ff;
-      box-shadow: 0 0 0 3px rgba(108,99,255,.15);
+      border-color: #D97757;
+      box-shadow: 0 0 0 3px rgba(217,119,87,.15);
     }
     .field-wrap input::placeholder {
       letter-spacing: 6px;
@@ -123,12 +123,12 @@
     input::-webkit-credentials-auto-fill-button,
     input::-webkit-strong-password-auto-fill-button { display: none !important; }
     .error-box {
-      background: rgba(255,77,109,.1);
-      border: 1px solid rgba(255,77,109,.3);
+      background: rgba(229,72,77,.1);
+      border: 1px solid rgba(229,72,77,.3);
       border-radius: 9px;
       padding: 11px 14px;
       font-size: 13px;
-      color: #ff4d6d;
+      color: #E5484D;
       margin-bottom: 20px;
       display: flex;
       align-items: center;
@@ -137,7 +137,7 @@
     .btn-login {
       width: 100%;
       padding: 12px;
-      background: linear-gradient(135deg, #6c63ff, #5a52e0);
+      background: linear-gradient(135deg, #D97757, #5a52e0);
       border: none;
       border-radius: 10px;
       color: #fff;

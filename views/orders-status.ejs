@@ -19,10 +19,10 @@
 .os-card.c-danger::after  { background:var(--danger); }
 .os-card.c-muted::after   { background:var(--text2); }
 .os-card:hover { transform:translateY(-4px) scale(1.012);
-                 box-shadow:0 12px 40px rgba(108,99,255,.22); border-color:rgba(108,99,255,.45); }
-.os-card.c-success:hover { box-shadow:0 12px 40px rgba(0,212,170,.2); border-color:rgba(0,212,170,.5); }
-.os-card.c-warn:hover    { box-shadow:0 12px 40px rgba(255,169,77,.2); border-color:rgba(255,169,77,.5); }
-.os-card.c-danger:hover  { box-shadow:0 12px 40px rgba(255,77,109,.2); border-color:rgba(255,77,109,.5); }
+                 box-shadow:0 12px 40px rgba(217,119,87,.22); border-color:rgba(217,119,87,.45); }
+.os-card.c-success:hover { box-shadow:0 12px 40px rgba(79,174,138,.2); border-color:rgba(79,174,138,.5); }
+.os-card.c-warn:hover    { box-shadow:0 12px 40px rgba(240,180,41,.2); border-color:rgba(240,180,41,.5); }
+.os-card.c-danger:hover  { box-shadow:0 12px 40px rgba(229,72,77,.2); border-color:rgba(229,72,77,.5); }
 .os-card.no-click { cursor:default; }
 .os-card.no-click:hover { transform:none; box-shadow:var(--card-shadow); border-color:var(--border); }
 .os-lbl { font-size:11px; color:var(--text2); text-transform:uppercase; letter-spacing:.8px; margin-bottom:6px; }
@@ -75,8 +75,8 @@
                        font-size:11px; font-weight:600; color:var(--text2);
                        text-transform:uppercase; letter-spacing:.7px;
                        border-bottom:1px solid var(--border); position:sticky; top:0; }
-.modal-body tbody tr { border-bottom:1px solid rgba(108,99,255,.06); transition:background .1s; }
-.modal-body tbody tr:hover { background:rgba(108,99,255,.06); }
+.modal-body tbody tr { border-bottom:1px solid rgba(217,119,87,.06); transition:background .1s; }
+.modal-body tbody tr:hover { background:rgba(217,119,87,.06); }
 .modal-body tbody td { padding:10px 14px; }
 .modal-empty { text-align:center; padding:48px 20px; color:var(--text2); }
 .modal-empty i { font-size:32px; opacity:.35; display:block; margin-bottom:10px; }
@@ -92,11 +92,11 @@
     <i class="fas fa-list-check os-ico" style="color:var(--accent)"></i>
   </div>
 
-  <div class="os-card" onclick="openModal('new','New Orders','fa-sparkles','#9f97ff')">
+  <div class="os-card" onclick="openModal('new','New Orders','fa-sparkles','#F0A98A')">
     <div class="os-lbl">New</div>
-    <div class="os-val" style="color:#9f97ff"><%- newCount %></div>
+    <div class="os-val" style="color:#F0A98A"><%- newCount %></div>
     <div class="os-sub">Awaiting action</div>
-    <i class="fas fa-sparkles os-ico" style="color:#9f97ff"></i>
+    <i class="fas fa-sparkles os-ico" style="color:#F0A98A"></i>
   </div>
 
   <div class="os-card c-success" onclick="openModal('accepted','Accepted Orders','fa-circle-check','var(--accent2)')">
@@ -145,7 +145,7 @@
 
 <!-- ── Tip ── -->
 <div class="card" style="display:flex;align-items:center;gap:16px;padding:18px 22px">
-  <div style="width:42px;height:42px;border-radius:12px;background:rgba(108,99,255,.12);
+  <div style="width:42px;height:42px;border-radius:12px;background:rgba(217,119,87,.12);
               display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:17px">
     <i class="fas fa-circle-info" style="color:var(--accent)"></i>
   </div>
@@ -234,12 +234,12 @@ function openModal(filter, title, icon, color) {
   document.getElementById('modalIcon').innerHTML =
     '<i class="fas ' + icon + '" style="color:' + color + '"></i>';
   document.getElementById('modalIcon').style.background =
-    color.replace('var(--accent2)','rgba(0,212,170,.15)')
-         .replace('var(--accent)','rgba(108,99,255,.15)')
-         .replace('var(--warn)','rgba(255,169,77,.12)')
-         .replace('var(--danger)','rgba(255,77,109,.12)')
+    color.replace('var(--accent2)','rgba(79,174,138,.15)')
+         .replace('var(--accent)','rgba(217,119,87,.15)')
+         .replace('var(--warn)','rgba(240,180,41,.12)')
+         .replace('var(--danger)','rgba(229,72,77,.12)')
          .replace('var(--text2)','rgba(136,145,181,.12)')
-         .replace('#9f97ff','rgba(159,151,255,.15)')
+         .replace('#F0A98A','rgba(240,169,138,.15)')
          .replace('#7dde90','rgba(125,222,144,.12)');
 
   document.getElementById('modalHead').innerHTML =

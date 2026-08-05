@@ -90,7 +90,7 @@
       <div class="card" style="display:flex;flex-direction:column">
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <span><i class="fas fa-layer-group"></i> Flavour / SKU Breakdown <span style="font-size:11px;font-weight:400;color:var(--text2)">(6-month sales)</span></span>
-          <a href="/sku-analysis" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;display:flex;align-items:center;gap:5px;background:rgba(108,99,255,.1);border:1px solid rgba(108,99,255,.25);padding:5px 12px;border-radius:8px;white-space:nowrap">
+          <a href="/sku-analysis" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;display:flex;align-items:center;gap:5px;background:rgba(217,119,87,.1);border:1px solid rgba(217,119,87,.25);padding:5px 12px;border-radius:8px;white-space:nowrap">
             <i class="fas fa-tags"></i> Full SKU Analysis <i class="fas fa-arrow-right" style="font-size:10px"></i>
           </a>
         </div>
@@ -118,7 +118,7 @@
             <% flavorBreakdown.forEach(function(f){ %>
               <% var pct = totalFlavPCS>0 ? ((f.pcs/totalFlavPCS)*100).toFixed(1) : '0'; %>
               <tr style="transition:background .15s"
-                  onmouseover="this.style.background='rgba(108,99,255,.06)'"
+                  onmouseover="this.style.background='rgba(217,119,87,.06)'"
                   onmouseout="this.style.background=''">
                 <td>
                   <div style="font-weight:600;font-size:13px"><%- f.flavor %></div>
@@ -195,7 +195,7 @@
 <script>
 const TREND    = <%- trendJSON %>;
 const VARIANTS = <%- variantsJSON %>;
-const COLORS   = { accent:'#6c63ff', accent2:'#00d4aa', warn:'#ffa94d', danger:'#ff4d6d', text2:'#8891b5' };
+const COLORS   = { accent:'#D97757', accent2:'#4FAE8A', warn:'#F0B429', danger:'#E5484D', text2:'#A69A8D' };
 
 // Set percentage bar widths (avoids EJS-in-style linter errors)
 document.querySelectorAll('.pct-bar').forEach(el => {
@@ -213,7 +213,7 @@ function fmtShort(n) {
 function fmtFull(n){ return '₽'+Math.round(n||0).toLocaleString(); }
 
 Chart.defaults.color = COLORS.text2;
-Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+Chart.defaults.borderColor = 'rgba(217,119,87,.1)';
 
 const trendChart = new Chart(document.getElementById('trendChart'), {
   type:'bar',
@@ -221,9 +221,9 @@ const trendChart = new Chart(document.getElementById('trendChart'), {
     labels:   TREND.map(m=>m.label),
     datasets:[
       { label:'Revenue', data:TREND.map(m=>Math.round(m.val)),
-        backgroundColor:'rgba(0,212,170,.55)', borderColor:COLORS.accent2, borderWidth:1, borderRadius:5, yAxisID:'y' },
+        backgroundColor:'rgba(79,174,138,.55)', borderColor:COLORS.accent2, borderWidth:1, borderRadius:5, yAxisID:'y' },
       { label:'Qty', data:TREND.map(m=>m.qty),
-        type:'line', borderColor:COLORS.accent, backgroundColor:'rgba(108,99,255,.12)',
+        type:'line', borderColor:COLORS.accent, backgroundColor:'rgba(217,119,87,.12)',
         borderWidth:2, pointRadius:4, tension:.35, fill:true, yAxisID:'y1' }
     ]
   },
@@ -231,7 +231,7 @@ const trendChart = new Chart(document.getElementById('trendChart'), {
     responsive:true, maintainAspectRatio:false,
     plugins:{ legend:{ display:true, labels:{ color:COLORS.text2, boxWidth:12 } } },
     scales:{
-      y:  { beginAtZero:true, ticks:{ callback:v=>fmtShort(v) }, grid:{ color:'rgba(108,99,255,.07)' } },
+      y:  { beginAtZero:true, ticks:{ callback:v=>fmtShort(v) }, grid:{ color:'rgba(217,119,87,.07)' } },
       y1: { position:'right', beginAtZero:true, ticks:{ precision:0 }, grid:{ display:false } },
       x:  { grid:{ display:false } }
     }
@@ -273,7 +273,7 @@ function applyFilter() {
   // Highlight selected variant row
   VARIANTS.forEach(v => {
     const row = document.getElementById('vrow-' + encodeURIComponent(v.name));
-    if(row) row.style.background = (variant && v.name===variant) ? 'rgba(108,99,255,.12)' : '';
+    if(row) row.style.background = (variant && v.name===variant) ? 'rgba(217,119,87,.12)' : '';
   });
 
   // Rebuild month table

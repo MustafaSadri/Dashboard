@@ -77,7 +77,7 @@
             <% } %>
             <% customers.forEach(function(cx, i){ %>
               <tr style="cursor:pointer" onclick="window.location='/customer-analytics?id=<%- cx.id %>&name=<%- encodeURIComponent(cx.name) %>'"
-                onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+                onmouseover="this.style.background='rgba(217,119,87,.06)'" onmouseout="this.style.background=''">
                 <td>
                   <div style="display:flex;align-items:center;gap:10px">
                     <div style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent2));
@@ -115,7 +115,7 @@
 const LABELS     = JSON.parse(document.getElementById('chartLabels').textContent);
 const VAL_DATA   = JSON.parse(document.getElementById('chartValueData').textContent);
 const ORD_DATA   = JSON.parse(document.getElementById('chartOrderData').textContent);
-const COLORS     = { accent:'#6c63ff', accent2:'#00d4aa', text2:'#8891b5' };
+const COLORS     = { accent:'#D97757', accent2:'#4FAE8A', text2:'#A69A8D' };
 
 function goPeriod() {
   var p = document.getElementById('periodSel').value;
@@ -132,7 +132,7 @@ function fmtShortJS(n) {
 }
 
 Chart.defaults.color      = COLORS.text2;
-Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+Chart.defaults.borderColor = 'rgba(217,119,87,.1)';
 
 const custChart = new Chart(document.getElementById('custChart'), {
   type: 'bar',
@@ -141,7 +141,7 @@ const custChart = new Chart(document.getElementById('custChart'), {
     datasets: [{
       label: 'Total Sales (₽)',
       data: VAL_DATA,
-      backgroundColor: 'rgba(108,99,255,.7)',
+      backgroundColor: 'rgba(217,119,87,.7)',
       borderColor: COLORS.accent,
       borderWidth: 1,
       borderRadius: 5,
@@ -161,7 +161,7 @@ const custChart = new Chart(document.getElementById('custChart'), {
       }
     },
     scales: {
-      x: { beginAtZero: true, ticks: { callback: function(v){ return fmtShortJS(v); } }, grid: { color:'rgba(108,99,255,.07)' } },
+      x: { beginAtZero: true, ticks: { callback: function(v){ return fmtShortJS(v); } }, grid: { color:'rgba(217,119,87,.07)' } },
       y: { grid: { display: false }, ticks: { font: { size: 11 } } }
     }
   }
@@ -171,7 +171,7 @@ function switchChart(type) {
   var isVal = type === 'value';
   custChart.data.datasets[0].data  = isVal ? VAL_DATA : ORD_DATA;
   custChart.data.datasets[0].label = isVal ? 'Total Sales (₽)' : 'Orders';
-  custChart.data.datasets[0].backgroundColor = isVal ? 'rgba(108,99,255,.7)' : 'rgba(0,212,170,.7)';
+  custChart.data.datasets[0].backgroundColor = isVal ? 'rgba(217,119,87,.7)' : 'rgba(79,174,138,.7)';
   custChart.data.datasets[0].borderColor      = isVal ? COLORS.accent : COLORS.accent2;
   custChart.options.scales.x.ticks.callback   = isVal
     ? function(v){ return fmtShortJS(v); }

@@ -58,7 +58,7 @@
         </button>
         <button id="stockSnapBtn" onclick="saveStockSnapshot()" title="Save today's stock value to history (used for gross profit calculation)"
           style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">
-          <i class="fas fa-boxes-stacked" id="stockSnapIcon" style="color:#5b8dee"></i><span id="stockSnapText">Save Stock</span>
+          <i class="fas fa-boxes-stacked" id="stockSnapIcon" style="color:#E8A54B"></i><span id="stockSnapText">Save Stock</span>
         </button>
         <% } %>
         <a href="/tally?from=<%- customFrom %>&to=<%- customTo %>" class="topbar-refresh" title="Refresh"><i class="fas fa-rotate-right"></i></a>
@@ -66,7 +66,7 @@
     </div>
 
     <% if(!hasDbData){ %>
-    <div style="margin-top:10px;padding:9px 13px;background:rgba(255,169,77,.08);border:1px solid rgba(255,169,77,.25);border-radius:8px;font-size:12px;color:var(--warn)">
+    <div style="margin-top:10px;padding:9px 13px;background:rgba(240,180,41,.08);border:1px solid rgba(240,180,41,.25);border-radius:8px;font-size:12px;color:var(--warn)">
       <i class="fas fa-triangle-exclamation" style="margin-right:5px"></i>
       No historical data yet — run
       <code style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:11px">node sync-tally-full.js</code>
@@ -154,7 +154,7 @@
       <span style="color:var(--text2);font-size:13px">Net Profit</span>
       <strong style="font-size:18px;color:<%- ytdProfit>=0?'var(--accent2)':'var(--danger)' %>"><%- fmtShort(Math.abs(ytdProfit)) %></strong>
       <span style="font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;
-        background:<%- ytdProfit>=0?'rgba(0,212,170,.12)':'rgba(255,77,109,.12)' %>;
+        background:<%- ytdProfit>=0?'rgba(79,174,138,.12)':'rgba(229,72,77,.12)' %>;
         color:<%- ytdProfit>=0?'var(--accent2)':'var(--danger)' %>"><%- ytdProfit>=0?'Profit':'Loss' %></span>
     </div>
   </div>
@@ -168,7 +168,7 @@
       <% } else { %>
         <div style="height:170px"><canvas id="trendChart"></canvas></div>
         <div style="display:flex;justify-content:center;gap:14px;margin-top:8px;flex-wrap:wrap">
-          <% [['Sales','#5b8dee',periodSales],['Collections','#00d4aa',periodCollections],['Purchases','#ffb84d',periodPurchases]].forEach(function(it){ %>
+          <% [['Sales','#E8A54B',periodSales],['Collections','#4FAE8A',periodCollections],['Purchases','#F5C451',periodPurchases]].forEach(function(it){ %>
           <div style="display:flex;align-items:center;gap:5px;font-size:11px">
             <span style="width:8px;height:8px;border-radius:2px;background:<%- it[1] %>;display:inline-block"></span>
             <span style="color:var(--text2)"><%- it[0] %></span>
@@ -186,9 +186,9 @@
         <div style="height:180px"><canvas id="plDonut"></canvas></div>
         <div style="display:flex;justify-content:center;gap:16px;margin-top:8px;flex-wrap:wrap">
           <% var plItems=[
-            {label:'Purchases',color:'#ffb84d',val:totalPurchases},
-            {label:'Expenses',color:'#ff4d6d',val:totalExpenses},
-            {label:'Net Profit',color:'#00d4aa',val:Math.max(0,ytdProfit)}
+            {label:'Purchases',color:'#F5C451',val:totalPurchases},
+            {label:'Expenses',color:'#E5484D',val:totalExpenses},
+            {label:'Net Profit',color:'#4FAE8A',val:Math.max(0,ytdProfit)}
           ]; %>
           <% plItems.forEach(function(it){ %>
           <div style="display:flex;align-items:center;gap:5px;font-size:11px">
@@ -211,10 +211,10 @@
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px">
       <%
         var agingDef = [
-          {key:'a0',  label:'0 – 30 days', color:'var(--accent2)', bg:'rgba(0,212,170,.1)'},
-          {key:'a30', label:'31 – 60 days',color:'#5b8dee',        bg:'rgba(91,141,238,.1)'},
-          {key:'a60', label:'61 – 90 days',color:'var(--warn)',    bg:'rgba(255,184,77,.1)'},
-          {key:'a90', label:'90+ days',    color:'var(--danger)',  bg:'rgba(255,77,109,.1)'}
+          {key:'a0',  label:'0 – 30 days', color:'var(--accent2)', bg:'rgba(79,174,138,.1)'},
+          {key:'a30', label:'31 – 60 days',color:'#E8A54B',        bg:'rgba(232,165,75,.1)'},
+          {key:'a60', label:'61 – 90 days',color:'var(--warn)',    bg:'rgba(245,196,81,.1)'},
+          {key:'a90', label:'90+ days',    color:'var(--danger)',  bg:'rgba(229,72,77,.1)'}
         ];
       %>
       <% agingDef.forEach(function(ag){ var b=aging[ag.key]; %>
@@ -262,7 +262,7 @@
                 <%- d.lastPaymentDate ? new Date(d.lastPaymentDate).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '—' %>
               </td>
               <td style="text-align:center">
-                <% if(ds!==null){ %><span style="font-size:11px;padding:2px 7px;border-radius:20px;font-weight:600;background:<%- ds>90?'rgba(255,77,109,.12)':ds>45?'rgba(255,169,77,.12)':'rgba(0,212,170,.1)' %>;color:<%- dc %>"><%- ds %>d</span>
+                <% if(ds!==null){ %><span style="font-size:11px;padding:2px 7px;border-radius:20px;font-weight:600;background:<%- ds>90?'rgba(229,72,77,.12)':ds>45?'rgba(240,180,41,.12)':'rgba(79,174,138,.1)' %>;color:<%- dc %>"><%- ds %>d</span>
                 <% } else { %><span class="muted">—</span><% } %>
               </td>
             </tr>
@@ -308,7 +308,7 @@
                 <%- cr.lastPurchaseDate ? new Date(cr.lastPurchaseDate).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '—' %>
               </td>
               <td style="text-align:center">
-                <% if(ds!==null){ %><span style="font-size:11px;padding:2px 7px;border-radius:20px;font-weight:600;background:<%- ds>60?'rgba(255,77,109,.12)':ds>30?'rgba(255,169,77,.12)':'rgba(0,212,170,.1)' %>;color:<%- dc %>"><%- ds %>d</span>
+                <% if(ds!==null){ %><span style="font-size:11px;padding:2px 7px;border-radius:20px;font-weight:600;background:<%- ds>60?'rgba(229,72,77,.12)':ds>30?'rgba(240,180,41,.12)':'rgba(79,174,138,.1)' %>;color:<%- dc %>"><%- ds %>d</span>
                 <% } else { %><span class="muted">—</span><% } %>
               </td>
             </tr>
@@ -328,7 +328,7 @@
   <% if(topCustSales.length>0 || topSuppPurchase.length>0){ %>
   <div class="grid-2" style="margin-bottom:22px">
     <div class="card">
-      <div class="card-title"><i class="fas fa-crown" style="color:#ffd700"></i> Top Customers by Sales — <%- selMonthLabel %></div>
+      <div class="card-title"><i class="fas fa-crown" style="color:#F5C451"></i> Top Customers by Sales — <%- selMonthLabel %></div>
       <% if(topCustSales.length===0){ %>
         <div class="empty" style="height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px"><i class="fas fa-users" style="font-size:22px;opacity:.25"></i><span>No sales data</span></div>
       <% } else { %>
@@ -361,7 +361,7 @@
         <div style="display:flex;align-items:center;gap:10px">
           <span style="font-size:12px;color:var(--text);min-width:130px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="<%- e.name %>"><%- e.name %></span>
           <div style="flex:1;height:7px;background:var(--bg3);border-radius:4px;overflow:hidden">
-            <div style="height:100%;width:<%- Math.max(2,Math.round(e.balance/maxExp*100)) %>%;background:linear-gradient(90deg,#ff4d6d,#ff8fa3);border-radius:4px"></div>
+            <div style="height:100%;width:<%- Math.max(2,Math.round(e.balance/maxExp*100)) %>%;background:linear-gradient(90deg,#E5484D,#ff8fa3);border-radius:4px"></div>
           </div>
           <span style="font-size:12px;color:var(--danger);font-weight:600;min-width:65px;text-align:right"><%- fmtShort(e.balance) %></span>
         </div>
@@ -433,7 +433,7 @@
     var sumOf     = function(arr){ return arr.reduce(function(s,v){ return s+(v.amount||0); },0); };
     var badgeCls  = function(t){ t=(t||'').toLowerCase(); return t.includes('sales')?'badge-accepted':t.includes('purchase')?'badge-partial':(t==='journal'||t.includes('receipt'))?'badge-paid':t.includes('payment')?'badge-warn':'badge-default'; };
     var typeKey   = function(t){ t=(t||'').toLowerCase(); return t.includes('sales')?'sales':t.includes('purchase')?'purchase':(t==='journal'||t.includes('receipt'))?'receipt':t.includes('payment')?'payment':'other'; };
-    var typeClr   = function(t){ t=(t||'').toLowerCase(); if(t.includes('sales')) return {b:'#00d4aa',a:'var(--accent2)'}; if(t.includes('purchase')) return {b:'#ffb84d',a:'var(--warn)'}; if(t==='journal'||t.includes('receipt')) return {b:'#5b8dee',a:'#5b8dee'}; if(t.includes('payment')) return {b:'#ff6b81',a:'#ff6b81'}; return {b:'var(--border)',a:'var(--text)'}; };
+    var typeClr   = function(t){ t=(t||'').toLowerCase(); if(t.includes('sales')) return {b:'#4FAE8A',a:'var(--accent2)'}; if(t.includes('purchase')) return {b:'#F5C451',a:'var(--warn)'}; if(t==='journal'||t.includes('receipt')) return {b:'#E8A54B',a:'#E8A54B'}; if(t.includes('payment')) return {b:'#ff6b81',a:'#ff6b81'}; return {b:'var(--border)',a:'var(--text)'}; };
   %>
   <div class="card" id="voucherSection" style="padding:0;overflow:hidden;margin-bottom:24px">
 
@@ -462,10 +462,10 @@
     <div style="padding:10px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--bg2)">
       <%
         var tabs = [
-          {id:'all',      label:'All',       icon:'fa-list',               clr:'#5b8dee', bg:'rgba(91,141,238,.15)',  n:periodVouchers.length, tot:sumOf(periodVouchers)},
-          {id:'sales',    label:'Sales',     icon:'fa-arrow-trend-up',     clr:'#00d4aa', bg:'rgba(0,212,170,.15)',   n:vSales.length,    tot:sumOf(vSales)},
-          {id:'purchase', label:'Purchases', icon:'fa-cart-flatbed',       clr:'#ffb84d', bg:'rgba(255,184,77,.15)',  n:vPurchase.length, tot:sumOf(vPurchase)},
-          {id:'receipt',  label:'Collections', icon:'fa-hand-holding-dollar',clr:'#5b8dee', bg:'rgba(91,141,238,.15)', n:vReceipt.length,  tot:sumOf(vReceipt)},
+          {id:'all',      label:'All',       icon:'fa-list',               clr:'#E8A54B', bg:'rgba(232,165,75,.15)',  n:periodVouchers.length, tot:sumOf(periodVouchers)},
+          {id:'sales',    label:'Sales',     icon:'fa-arrow-trend-up',     clr:'#4FAE8A', bg:'rgba(79,174,138,.15)',   n:vSales.length,    tot:sumOf(vSales)},
+          {id:'purchase', label:'Purchases', icon:'fa-cart-flatbed',       clr:'#F5C451', bg:'rgba(245,196,81,.15)',  n:vPurchase.length, tot:sumOf(vPurchase)},
+          {id:'receipt',  label:'Collections', icon:'fa-hand-holding-dollar',clr:'#E8A54B', bg:'rgba(232,165,75,.15)', n:vReceipt.length,  tot:sumOf(vReceipt)},
           {id:'payment',  label:'Payments',  icon:'fa-money-bill-transfer', clr:'#ff6b81', bg:'rgba(255,107,129,.15)',n:vPayment.length,  tot:sumOf(vPayment)},
         ];
       %>
@@ -531,9 +531,9 @@
     <!-- Footer totals -->
     <div style="padding:10px 18px;border-top:2px solid var(--border);background:var(--bg2);display:flex;align-items:center;gap:6px;flex-wrap:wrap">
       <span id="vCount" style="font-size:12px;color:var(--text2);margin-right:8px"><%- periodVouchers.length %> entries</span>
-      <% if(vSales.length){    %><div style="display:flex;align-items:center;gap:5px;padding:4px 10px;background:rgba(0,212,170,.08);border:1px solid rgba(0,212,170,.2);border-radius:6px;font-size:12px"><i class="fas fa-arrow-trend-up" style="color:var(--accent2);font-size:10px"></i><span style="color:var(--text2)">Sales</span><strong style="color:var(--accent2)"><%- fmt(sumOf(vSales)) %></strong></div><% } %>
-      <% if(vPurchase.length){ %><div style="display:flex;align-items:center;gap:5px;padding:4px 10px;background:rgba(255,184,77,.08);border:1px solid rgba(255,184,77,.2);border-radius:6px;font-size:12px"><i class="fas fa-cart-flatbed" style="color:var(--warn);font-size:10px"></i><span style="color:var(--text2)">Purchases</span><strong style="color:var(--warn)"><%- fmt(sumOf(vPurchase)) %></strong></div><% } %>
-      <% if(vReceipt.length){  %><div style="display:flex;align-items:center;gap:5px;padding:4px 10px;background:rgba(91,141,238,.08);border:1px solid rgba(91,141,238,.2);border-radius:6px;font-size:12px"><i class="fas fa-hand-holding-dollar" style="color:#5b8dee;font-size:10px"></i><span style="color:var(--text2)">Receipts</span><strong style="color:#5b8dee"><%- fmt(sumOf(vReceipt)) %></strong></div><% } %>
+      <% if(vSales.length){    %><div style="display:flex;align-items:center;gap:5px;padding:4px 10px;background:rgba(79,174,138,.08);border:1px solid rgba(79,174,138,.2);border-radius:6px;font-size:12px"><i class="fas fa-arrow-trend-up" style="color:var(--accent2);font-size:10px"></i><span style="color:var(--text2)">Sales</span><strong style="color:var(--accent2)"><%- fmt(sumOf(vSales)) %></strong></div><% } %>
+      <% if(vPurchase.length){ %><div style="display:flex;align-items:center;gap:5px;padding:4px 10px;background:rgba(245,196,81,.08);border:1px solid rgba(245,196,81,.2);border-radius:6px;font-size:12px"><i class="fas fa-cart-flatbed" style="color:var(--warn);font-size:10px"></i><span style="color:var(--text2)">Purchases</span><strong style="color:var(--warn)"><%- fmt(sumOf(vPurchase)) %></strong></div><% } %>
+      <% if(vReceipt.length){  %><div style="display:flex;align-items:center;gap:5px;padding:4px 10px;background:rgba(232,165,75,.08);border:1px solid rgba(232,165,75,.2);border-radius:6px;font-size:12px"><i class="fas fa-hand-holding-dollar" style="color:#E8A54B;font-size:10px"></i><span style="color:var(--text2)">Receipts</span><strong style="color:#E8A54B"><%- fmt(sumOf(vReceipt)) %></strong></div><% } %>
       <% if(vPayment.length){  %><div style="display:flex;align-items:center;gap:5px;padding:4px 10px;background:rgba(255,107,129,.08);border:1px solid rgba(255,107,129,.2);border-radius:6px;font-size:12px"><i class="fas fa-money-bill-transfer" style="color:#ff6b81;font-size:10px"></i><span style="color:var(--text2)">Payments</span><strong style="color:#ff6b81"><%- fmt(sumOf(vPayment)) %></strong></div><% } %>
     </div>
 
@@ -571,7 +571,7 @@
 <!-- ══ GROSS PROFIT DETAIL MODAL ══════════════════════════════ -->
 <div id="profitDetailOverlay" onclick="if(event.target===this)closeProfitDetail()" style="
   display:none;position:fixed;inset:0;z-index:9999;
-  background:rgba(10,12,28,.75);backdrop-filter:blur(4px);
+  background:rgba(20,16,13,.75);backdrop-filter:blur(4px);
   align-items:center;justify-content:center;padding:20px">
   <div style="
     background:var(--bg2);border:1px solid var(--border);border-radius:16px;
@@ -580,7 +580,7 @@
 
     <!-- Header -->
     <div style="padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <div style="width:38px;height:38px;border-radius:10px;background:rgba(0,212,170,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+      <div style="width:38px;height:38px;border-radius:10px;background:rgba(79,174,138,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0">
         <i class="fas fa-chart-pie" style="color:var(--accent2);font-size:16px"></i>
       </div>
       <div>
@@ -658,16 +658,16 @@ async function saveStockSnapshot() {
     if (d.ok) {
       icon.className = 'fas fa-check';
       txt.textContent = 'Saved · ₹' + Math.round(d.totalValue).toLocaleString('en-IN');
-      setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#5b8dee'; txt.textContent='Save Stock'; btn.disabled=false; }, 3000);
+      setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#E8A54B'; txt.textContent='Save Stock'; btn.disabled=false; }, 3000);
     } else {
       icon.className = 'fas fa-xmark'; txt.textContent = 'Failed'; btn.disabled = false;
       alert('Stock snapshot failed: ' + (d.error || 'Unknown'));
-      setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#5b8dee'; txt.textContent='Save Stock'; }, 2000);
+      setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#E8A54B'; txt.textContent='Save Stock'; }, 2000);
     }
   } catch(e) {
     icon.className = 'fas fa-xmark'; txt.textContent = 'Error'; btn.disabled = false;
     alert('Error: ' + e.message);
-    setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#5b8dee'; txt.textContent='Save Stock'; }, 2000);
+    setTimeout(() => { icon.className='fas fa-boxes-stacked'; icon.style.color='#E8A54B'; txt.textContent='Save Stock'; }, 2000);
   }
 }
 
@@ -714,7 +714,7 @@ function _gpRenderContent(d) {
     if (!csOk) parts.push('<strong>' + _gpMonthLabel(d.month) + '</strong> closing stock');
     return `
     <div style="display:flex;align-items:flex-start;gap:10px;padding:11px 14px;
-      background:rgba(255,169,77,.07);border:1px solid rgba(255,169,77,.28);
+      background:rgba(240,180,41,.07);border:1px solid rgba(240,180,41,.28);
       border-radius:10px;margin-bottom:16px;font-size:12px">
       <i class="fas fa-triangle-exclamation" style="color:var(--warn);margin-top:2px;flex-shrink:0"></i>
       <div style="color:var(--text2);line-height:1.55">
@@ -732,7 +732,7 @@ function _gpRenderContent(d) {
   var refCard = (d.refStockValue !== null && d.refStockValue !== undefined) ? `
     <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px 16px;
       margin-bottom:18px;display:flex;align-items:center;gap:10px">
-      <i class="fas fa-boxes-stacked" style="color:#5b8dee;font-size:16px;flex-shrink:0"></i>
+      <i class="fas fa-boxes-stacked" style="color:#E8A54B;font-size:16px;flex-shrink:0"></i>
       <div>
         <span style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Latest stock sync — </span>
         <strong style="color:var(--text);font-size:13px">${_gpFmtINR(d.refStockValue)}</strong>
@@ -749,7 +749,7 @@ function _gpRenderContent(d) {
   }
 
   var liveBadge = d.stockSource === 'tally_live'
-    ? '<span style="font-size:10px;color:#00d4aa;background:rgba(0,212,170,.12);padding:1px 7px;border-radius:4px;margin-left:6px;border:1px solid rgba(0,212,170,.25)">⚡ live from Tally</span>'
+    ? '<span style="font-size:10px;color:#4FAE8A;background:rgba(79,174,138,.12);padding:1px 7px;border-radius:4px;margin-left:6px;border:1px solid rgba(79,174,138,.25)">⚡ live from Tally</span>'
     : '';
   var osNote = osOk
     ? ((d.openingStockDate || (_gpMonthLabel(d.prevMonth) + ' end')))
@@ -773,7 +773,7 @@ function _gpRenderContent(d) {
     <div style="display:flex;flex-direction:column;gap:9px;margin-bottom:22px">
 
       <!-- Sales -->
-      <div style="${rowStyle(true,'rgba(0,212,170,.06)','rgba(0,212,170,.2)')}">
+      <div style="${rowStyle(true,'rgba(79,174,138,.06)','rgba(79,174,138,.2)')}">
         <div style="display:flex;align-items:center;gap:10px">
           <span style="font-size:17px;color:var(--accent2);font-weight:700;width:20px;text-align:center">+</span>
           <div>
@@ -791,7 +791,7 @@ function _gpRenderContent(d) {
           <div>
             <div style="display:flex;align-items:center;gap:6px">
               <span style="font-size:13px;font-weight:600;color:var(--text)">Opening Stock</span>
-              ${osOk ? '<span style="font-size:10px;color:var(--accent2);background:rgba(0,212,170,.1);padding:1px 6px;border-radius:4px">✓ saved</span>' : '<span style="font-size:10px;color:var(--warn);background:rgba(255,169,77,.1);padding:1px 6px;border-radius:4px">missing</span>'}
+              ${osOk ? '<span style="font-size:10px;color:var(--accent2);background:rgba(79,174,138,.1);padding:1px 6px;border-radius:4px">✓ saved</span>' : '<span style="font-size:10px;color:var(--warn);background:rgba(240,180,41,.1);padding:1px 6px;border-radius:4px">missing</span>'}
             </div>
             <div style="font-size:11px;color:var(--text2);margin-top:2px">${osNote}</div>
           </div>
@@ -800,7 +800,7 @@ function _gpRenderContent(d) {
       </div>
 
       <!-- Purchases -->
-      <div style="${rowStyle(true,'rgba(255,184,77,.06)','rgba(255,184,77,.2)')}">
+      <div style="${rowStyle(true,'rgba(245,196,81,.06)','rgba(245,196,81,.2)')}">
         <div style="display:flex;align-items:center;gap:10px">
           <span style="font-size:17px;color:var(--warn);font-weight:700;width:20px;text-align:center">−</span>
           <div>
@@ -812,24 +812,24 @@ function _gpRenderContent(d) {
       </div>
 
       <!-- Closing Stock -->
-      <div style="${rowStyle(csOk,'rgba(91,141,238,.06)','rgba(91,141,238,.2)')}">
+      <div style="${rowStyle(csOk,'rgba(232,165,75,.06)','rgba(232,165,75,.2)')}">
         <div style="display:flex;align-items:center;gap:10px">
-          <span style="font-size:17px;color:#5b8dee;font-weight:700;width:20px;text-align:center">+</span>
+          <span style="font-size:17px;color:#E8A54B;font-weight:700;width:20px;text-align:center">+</span>
           <div>
             <div style="display:flex;align-items:center;gap:6px">
               <span style="font-size:13px;font-weight:600;color:var(--text)">Closing Stock</span>
-              ${csOk ? '<span style="font-size:10px;color:var(--accent2);background:rgba(0,212,170,.1);padding:1px 6px;border-radius:4px">✓ saved</span>' : '<span style="font-size:10px;color:var(--warn);background:rgba(255,169,77,.1);padding:1px 6px;border-radius:4px">missing</span>'}
+              ${csOk ? '<span style="font-size:10px;color:var(--accent2);background:rgba(79,174,138,.1);padding:1px 6px;border-radius:4px">✓ saved</span>' : '<span style="font-size:10px;color:var(--warn);background:rgba(240,180,41,.1);padding:1px 6px;border-radius:4px">missing</span>'}
             </div>
             <div style="font-size:11px;color:var(--text2);margin-top:2px">${csNote}</div>
           </div>
         </div>
-        <div style="font-size:18px;font-weight:700;color:#5b8dee">${csOk ? _gpFmtINR(d.closingStock) : '₹0'}</div>
+        <div style="font-size:18px;font-weight:700;color:#E8A54B">${csOk ? _gpFmtINR(d.closingStock) : '₹0'}</div>
       </div>
 
       <!-- Result -->
       <div style="border-top:2px solid var(--border);margin:3px 0"></div>
       <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 16px;
-        background:${isLoss?'rgba(255,77,109,.08)':'rgba(0,212,170,.08)'};
+        background:${isLoss?'rgba(229,72,77,.08)':'rgba(79,174,138,.08)'};
         border:2px solid ${isLoss?'var(--danger)':'var(--accent2)'};border-radius:10px">
         <div>
           <div style="font-size:14px;font-weight:700;color:var(--text)">= Gross ${isLoss?'Loss':'Profit'}</div>
@@ -839,7 +839,7 @@ function _gpRenderContent(d) {
           <div style="font-size:24px;font-weight:800;color:${isLoss?'var(--danger)':'var(--accent2)'}">${isLoss?'−':''}${_gpFmtINR(d.grossProfit)}</div>
           <div style="text-align:right;margin-top:3px">
             <span style="font-size:12px;padding:2px 10px;border-radius:20px;font-weight:600;
-              background:${isLoss?'rgba(255,77,109,.15)':'rgba(0,212,170,.15)'};
+              background:${isLoss?'rgba(229,72,77,.15)':'rgba(79,174,138,.15)'};
               color:${isLoss?'var(--danger)':'var(--accent2)'}">
               ${d.grossMargin}% margin
             </span>
@@ -862,7 +862,7 @@ function _gpRenderContent(d) {
       </div>
       <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
         <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Collections</div>
-        <div style="font-size:20px;font-weight:700;color:#5b8dee">${_gpFmtINR(d.collections)}</div>
+        <div style="font-size:20px;font-weight:700;color:#E8A54B">${_gpFmtINR(d.collections)}</div>
         <div style="font-size:11px;color:var(--text2);margin-top:3px">Cash received this month</div>
       </div>
     </div>
@@ -870,13 +870,13 @@ function _gpRenderContent(d) {
     <!-- Save stock panel — shows two buttons: prev month (opening) + this month (closing) -->
     <div style="background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
       <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:10px">
-        <i class="fas fa-database" style="color:#5b8dee;margin-right:5px"></i>
+        <i class="fas fa-database" style="color:#E8A54B;margin-right:5px"></i>
         Save Stock Snapshots to Database
         <span style="font-weight:400;font-size:11px;color:var(--text2);margin-left:6px">— sync Tally first, then save for each month</span>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <!-- Opening: save to PREVIOUS month -->
-        <div style="border:1px solid ${osOk?'rgba(0,212,170,.3)':'rgba(255,169,77,.3)'};border-radius:8px;padding:10px 12px">
+        <div style="border:1px solid ${osOk?'rgba(79,174,138,.3)':'rgba(240,180,41,.3)'};border-radius:8px;padding:10px 12px">
           <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
             Opening Stock → saves to <strong>${_gpMonthLabel(d.prevMonth)}</strong>
             ${osOk?'<span style="color:var(--accent2);margin-left:4px">✓ exists</span>':'<span style="color:var(--warn);margin-left:4px">missing</span>'}
@@ -884,15 +884,15 @@ function _gpRenderContent(d) {
           <button onclick="gpSaveStockSnapshot('${d.prevMonth}', 'os')" id="gpOsBtn" style="
             width:100%;display:flex;align-items:center;justify-content:center;gap:6px;
             padding:7px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;
-            border:1px solid ${osOk?'rgba(0,212,170,.3)':'rgba(255,169,77,.4)'};
-            background:${osOk?'rgba(0,212,170,.08)':'rgba(255,169,77,.08)'};
+            border:1px solid ${osOk?'rgba(79,174,138,.3)':'rgba(240,180,41,.4)'};
+            background:${osOk?'rgba(79,174,138,.08)':'rgba(240,180,41,.08)'};
             color:${osOk?'var(--accent2)':'var(--warn)'}">
             <i class="fas fa-floppy-disk" id="gpOsIcon"></i>
             <span id="gpOsText">${osOk?'Re-save Opening Stock':'Save Opening Stock'}</span>
           </button>
         </div>
         <!-- Closing: save to THIS month -->
-        <div style="border:1px solid ${csOk?'rgba(0,212,170,.3)':'rgba(255,169,77,.3)'};border-radius:8px;padding:10px 12px">
+        <div style="border:1px solid ${csOk?'rgba(79,174,138,.3)':'rgba(240,180,41,.3)'};border-radius:8px;padding:10px 12px">
           <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
             Closing Stock → saves to <strong>${_gpMonthLabel(d.month)}</strong>
             ${csOk?'<span style="color:var(--accent2);margin-left:4px">✓ exists</span>':'<span style="color:var(--warn);margin-left:4px">missing</span>'}
@@ -900,8 +900,8 @@ function _gpRenderContent(d) {
           <button onclick="gpSaveStockSnapshot('${d.month}', 'cs')" id="gpCsBtn" style="
             width:100%;display:flex;align-items:center;justify-content:center;gap:6px;
             padding:7px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;
-            border:1px solid ${csOk?'rgba(0,212,170,.3)':'rgba(255,169,77,.4)'};
-            background:${csOk?'rgba(0,212,170,.08)':'rgba(255,169,77,.08)'};
+            border:1px solid ${csOk?'rgba(79,174,138,.3)':'rgba(240,180,41,.4)'};
+            background:${csOk?'rgba(79,174,138,.08)':'rgba(240,180,41,.08)'};
             color:${csOk?'var(--accent2)':'var(--warn)'}">
             <i class="fas fa-floppy-disk" id="gpCsIcon"></i>
             <span id="gpCsText">${csOk?'Re-save Closing Stock':'Save Closing Stock'}</span>
@@ -1033,7 +1033,7 @@ async function syncNow() {
 <!-- ── Charts ─────────────────────────────────────────────── -->
 <% if(periodSales>0 || periodCollections>0 || periodPurchases>0){ %>
 <script>
-Chart.defaults.color='#8891b5';
+Chart.defaults.color='#A69A8D';
 (function(){
   new Chart(document.getElementById('trendChart'),{
     type:'pie',
@@ -1041,8 +1041,8 @@ Chart.defaults.color='#8891b5';
       labels:['Sales','Collections','Purchases'],
       datasets:[{
         data:[<%- periodSales %>,<%- periodCollections %>,<%- periodPurchases %>],
-        backgroundColor:['rgba(91,141,238,.85)','rgba(0,212,170,.85)','rgba(255,184,77,.85)'],
-        borderColor:['#5b8dee','#00d4aa','#ffb84d'],
+        backgroundColor:['rgba(232,165,75,.85)','rgba(79,174,138,.85)','rgba(245,196,81,.85)'],
+        borderColor:['#E8A54B','#4FAE8A','#F5C451'],
         borderWidth:1
       }]
     },
@@ -1065,7 +1065,7 @@ Chart.defaults.color='#8891b5';
     type:'doughnut',
     data:{
       labels:['Purchases','Expenses','Net Profit'],
-      datasets:[{data:[purchases,expenses,profit],backgroundColor:['#ffb84d','#ff4d6d','#00d4aa'],borderWidth:0,hoverOffset:6}]
+      datasets:[{data:[purchases,expenses,profit],backgroundColor:['#F5C451','#E5484D','#4FAE8A'],borderWidth:0,hoverOffset:6}]
     },
     options:{responsive:true,maintainAspectRatio:false,cutout:'65%',
       plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return ' ₹'+Math.round(c.raw).toLocaleString('en-IN');}}}}
@@ -1083,7 +1083,7 @@ Chart.defaults.color='#8891b5';
     type:'bar',
     data:{
       labels:cd.map(function(r){return r._id.length>20?r._id.slice(0,20)+'…':r._id;}),
-      datasets:[{label:'Sales',data:cd.map(r=>r.total),backgroundColor:'rgba(91,141,238,.75)',borderRadius:4}]
+      datasets:[{label:'Sales',data:cd.map(r=>r.total),backgroundColor:'rgba(232,165,75,.75)',borderRadius:4}]
     },
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
       plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return ' ₹'+Math.round(c.raw).toLocaleString('en-IN');}}}},
@@ -1102,7 +1102,7 @@ Chart.defaults.color='#8891b5';
     type:'bar',
     data:{
       labels:sd.map(function(r){return r._id.length>20?r._id.slice(0,20)+'…':r._id;}),
-      datasets:[{label:'Purchases',data:sd.map(r=>r.total),backgroundColor:'rgba(255,184,77,.7)',borderRadius:4}]
+      datasets:[{label:'Purchases',data:sd.map(r=>r.total),backgroundColor:'rgba(245,196,81,.7)',borderRadius:4}]
     },
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
       plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return ' ₹'+Math.round(c.raw).toLocaleString('en-IN');}}}},
@@ -1117,7 +1117,7 @@ Chart.defaults.color='#8891b5';
 <script>
 (function(){
   var ed=<%- JSON.stringify(expenseBreakdown.slice(0,10)) %>;
-  var colors=['#ff4d6d','#ff6b81','#ff8fa3','#ffb3c1','#ffc8d4','#ffd6e0','#ffe4ec','#fff0f3','#ffb84d','#ffd700'];
+  var colors=['#E5484D','#ff6b81','#ff8fa3','#ffb3c1','#ffc8d4','#ffd6e0','#ffe4ec','#fff0f3','#F5C451','#F5C451'];
   new Chart(document.getElementById('expPie'),{
     type:'pie',
     data:{

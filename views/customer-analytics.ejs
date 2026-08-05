@@ -95,7 +95,7 @@
         <ul class="top-list">
           <% topProducts.forEach(function(p,i){ %>
           <li style="position:relative;transition:background .15s;border-radius:6px"
-              onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+              onmouseover="this.style.background='rgba(217,119,87,.06)'" onmouseout="this.style.background=''">
             <% if(p.id){ %><a href="/product-analytics?id=<%- p.id %>&type=<%- p.type %>&name=<%- encodeURIComponent(p.name) %>" style="position:absolute;inset:0;z-index:1" title="View product analytics"></a><% } %>
             <span class="top-rank <%- i===0?'gold':'' %>"><%- i+1 %></span>
             <span class="name"><%- p.name %></span>
@@ -138,7 +138,7 @@
 <script>
 const ALL_ORDERS   = <%- ordersJSON %>;
 const TREND_DATA   = <%- trendJSON %>;
-const COLORS = { accent:'#6c63ff', accent2:'#00d4aa', warn:'#ffa94d', text2:'#8891b5', bg3:'#252840' };
+const COLORS = { accent:'#D97757', accent2:'#4FAE8A', warn:'#F0B429', text2:'#A69A8D', bg3:'#2A221D' };
 
 function fmtShort(n) {
   if(!n||isNaN(n)) return '—';
@@ -152,16 +152,16 @@ function fmtFull(n){ return '₽'+Math.round(n||0).toLocaleString(); }
 
 // Trend chart
 Chart.defaults.color = COLORS.text2;
-Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+Chart.defaults.borderColor = 'rgba(217,119,87,.1)';
 const trendChart = new Chart(document.getElementById('trendChart'), {
   type: 'bar',
   data: {
     labels:   TREND_DATA.map(m => m.label),
     datasets: [
       { label:'Revenue', data: TREND_DATA.map(m=>Math.round(m.revenue)),
-        backgroundColor:'rgba(108,99,255,.65)', borderColor:COLORS.accent, borderWidth:1, borderRadius:5, yAxisID:'y' },
+        backgroundColor:'rgba(217,119,87,.65)', borderColor:COLORS.accent, borderWidth:1, borderRadius:5, yAxisID:'y' },
       { label:'Orders', data: TREND_DATA.map(m=>m.count),
-        type:'line', borderColor:COLORS.accent2, backgroundColor:'rgba(0,212,170,.15)',
+        type:'line', borderColor:COLORS.accent2, backgroundColor:'rgba(79,174,138,.15)',
         borderWidth:2, pointRadius:4, tension:.35, fill:true, yAxisID:'y1' }
     ]
   },
@@ -169,7 +169,7 @@ const trendChart = new Chart(document.getElementById('trendChart'), {
     responsive:true, maintainAspectRatio:false,
     plugins:{ legend:{ display:true, labels:{ color:COLORS.text2, boxWidth:12 } } },
     scales:{
-      y:  { beginAtZero:true, ticks:{ callback: v=>fmtShort(v) }, grid:{ color:'rgba(108,99,255,.07)' } },
+      y:  { beginAtZero:true, ticks:{ callback: v=>fmtShort(v) }, grid:{ color:'rgba(217,119,87,.07)' } },
       y1: { position:'right', beginAtZero:true, ticks:{ precision:0 }, grid:{ display:false } },
       x:  { grid:{ display:false } }
     }

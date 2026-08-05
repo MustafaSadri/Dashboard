@@ -92,7 +92,7 @@
                     <tbody id="vbody-<%- idx %>">
                     <% model.variants.forEach(function(v) { %>
                       <% var vc = v.status==='In Stock'?'badge-instock':v.status==='Low Stock'?'badge-low':'badge-out'; %>
-                      <tr style="border-bottom:1px solid rgba(108,99,255,.04)">
+                      <tr style="border-bottom:1px solid rgba(217,119,87,.04)">
                         <td style="padding:7px 12px;font-size:13px;color:var(--text)"><%- v.name %></td>
                         <td style="padding:7px 12px;text-align:right;font-weight:600"><%- v.qty %></td>
                         <td style="padding:7px 12px"><span class="badge <%- vc %>"><%- v.status %></span></td>
@@ -117,10 +117,10 @@
 <!-- Item Detail Modal — outside .main so position:fixed covers full viewport -->
 <div id="invModal" style="display:none;position:fixed;inset:0;z-index:2000;align-items:center;justify-content:center;padding:20px;box-sizing:border-box">
   <!-- Backdrop -->
-  <div onclick="closeInvModal()" style="position:absolute;inset:0;background:rgba(10,10,20,.72);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)"></div>
+  <div onclick="closeInvModal()" style="position:absolute;inset:0;background:rgba(20,16,13,.72);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)"></div>
   <!-- Card -->
   <div style="position:relative;background:var(--card);border-radius:18px;width:min(520px,100%);max-height:82vh;display:flex;flex-direction:column;
-              box-shadow:0 24px 80px rgba(0,0,0,.55),0 0 0 1px rgba(108,99,255,.18);
+              box-shadow:0 24px 80px rgba(0,0,0,.55),0 0 0 1px rgba(217,119,87,.18);
               animation:modalIn .22s cubic-bezier(.34,1.2,.64,1)">
     <!-- Header -->
     <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 22px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
@@ -129,10 +129,10 @@
         <div id="invModalSub" style="font-size:12px;color:var(--text2);margin-top:3px"></div>
       </div>
       <button onclick="closeInvModal()"
-        style="background:rgba(108,99,255,.1);border:none;color:var(--text2);cursor:pointer;font-size:14px;
+        style="background:rgba(217,119,87,.1);border:none;color:var(--text2);cursor:pointer;font-size:14px;
                padding:0;width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;
                transition:background .15s"
-        onmouseover="this.style.background='rgba(108,99,255,.25)'" onmouseout="this.style.background='rgba(108,99,255,.1)'">
+        onmouseover="this.style.background='rgba(217,119,87,.25)'" onmouseout="this.style.background='rgba(217,119,87,.1)'">
         <i class="fas fa-xmark"></i>
       </button>
     </div>
@@ -206,8 +206,8 @@ function openInvModal(type) {
       var cls = type === 'out' ? 'txt-danger' : 'txt-warn';
       var dot = type === 'out' ? 'var(--danger)' : 'var(--warn)';
       tbody.innerHTML +=
-        '<tr style="border-bottom:1px solid rgba(108,99,255,.07);transition:background .12s" ' +
-        'onmouseover="this.style.background=\'rgba(108,99,255,.05)\'" onmouseout="this.style.background=\'\'">' +
+        '<tr style="border-bottom:1px solid rgba(217,119,87,.07);transition:background .12s" ' +
+        'onmouseover="this.style.background=\'rgba(217,119,87,.05)\'" onmouseout="this.style.background=\'\'">' +
         '<td style="padding:10px 0;font-size:13px">' +
           '<i class="fas fa-circle" style="font-size:6px;color:' + dot + ';margin-right:8px;vertical-align:middle"></i>' +
           item.name +

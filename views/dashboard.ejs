@@ -7,9 +7,9 @@
     <!-- ORDER-SHIPMENT MISMATCH BUTTON -->
     <div id="mismatchBar" style="display:none;margin-bottom:14px">
       <button onclick="openMismatchModal()"
-        style="display:flex;align-items:center;gap:9px;width:100%;padding:10px 16px;background:rgba(255,169,77,.1);border:1.5px solid rgba(255,169,77,.4);border-radius:10px;color:#ff9a3c;font-size:13px;font-weight:600;cursor:pointer;text-align:left;transition:all .15s"
-        onmouseover="this.style.background='rgba(255,169,77,.18)'"
-        onmouseout="this.style.background='rgba(255,169,77,.1)'">
+        style="display:flex;align-items:center;gap:9px;width:100%;padding:10px 16px;background:rgba(240,180,41,.1);border:1.5px solid rgba(240,180,41,.4);border-radius:10px;color:#F0B429;font-size:13px;font-weight:600;cursor:pointer;text-align:left;transition:all .15s"
+        onmouseover="this.style.background='rgba(240,180,41,.18)'"
+        onmouseout="this.style.background='rgba(240,180,41,.1)'">
         <i class="fas fa-triangle-exclamation" style="font-size:15px"></i>
         <span id="mismatchBtnText">Checking order-shipment values…</span>
         <i class="fas fa-chevron-right" style="margin-left:auto;font-size:11px;opacity:.6"></i>
@@ -21,10 +21,10 @@
       <div style="background:var(--bg2);border-radius:14px;max-width:820px;margin:40px auto;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.35)">
 
         <!-- modal header -->
-        <div style="display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--border);background:rgba(255,169,77,.07)">
-          <i class="fas fa-triangle-exclamation" style="color:#ff9a3c;font-size:16px"></i>
+        <div style="display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--border);background:rgba(240,180,41,.07)">
+          <i class="fas fa-triangle-exclamation" style="color:#F0B429;font-size:16px"></i>
           <span style="font-weight:700;font-size:15px">Order vs Shipment Value Mismatch</span>
-          <span id="mismatchModalCount" style="background:rgba(255,169,77,.2);color:#ff9a3c;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-left:4px"></span>
+          <span id="mismatchModalCount" style="background:rgba(240,180,41,.2);color:#F0B429;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-left:4px"></span>
           <span style="font-size:11px;color:var(--text2);margin-left:6px">Sales order value changed after shipment was created</span>
           <button onclick="closeMismatchModal()" style="margin-left:auto;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:4px 8px">
             <i class="fas fa-xmark"></i>
@@ -51,7 +51,7 @@
         <div class="stat-label">Pending Orders <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
         <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
           <div class="stat-value"><%- pending %></div>
-          <div style="font-size:18px;font-weight:700;color:var(--accent);letter-spacing:-.3px;padding:2px 10px;background:rgba(108,99,255,.11);border-radius:7px;white-space:nowrap"><%- fmtShort(pendingValue) %></div>
+          <div style="font-size:18px;font-weight:700;color:var(--accent);letter-spacing:-.3px;padding:2px 10px;background:rgba(217,119,87,.11);border-radius:7px;white-space:nowrap"><%- fmtShort(pendingValue) %></div>
         </div>
         <div class="stat-sub" style="margin-top:4px">
           <% if(typeof pendingPCS !== 'undefined' && pendingPCS > 0){ %><strong><%- pendingPCS.toLocaleString('en-US') %> pcs</strong> · <% } %>
@@ -100,16 +100,16 @@
       </div>
       <div style="display:flex;gap:12px;justify-content:center;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
         <a href="/sku-analysis" style="text-decoration:none">
-          <button style="display:flex;align-items:center;gap:9px;padding:10px 26px;border-radius:9px;border:1.5px solid var(--accent);background:rgba(108,99,255,.13);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;transition:all .18s;box-shadow:0 2px 10px rgba(108,99,255,.13)"
-            onmouseover="this.style.background='var(--accent)';this.style.color='#fff';this.style.boxShadow='0 4px 16px rgba(108,99,255,.35)'"
-            onmouseout="this.style.background='rgba(108,99,255,.13)';this.style.color='var(--accent)';this.style.boxShadow='0 2px 10px rgba(108,99,255,.13)'">
+          <button style="display:flex;align-items:center;gap:9px;padding:10px 26px;border-radius:9px;border:1.5px solid var(--accent);background:rgba(217,119,87,.13);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;transition:all .18s;box-shadow:0 2px 10px rgba(217,119,87,.13)"
+            onmouseover="this.style.background='var(--accent)';this.style.color='#fff';this.style.boxShadow='0 4px 16px rgba(217,119,87,.35)'"
+            onmouseout="this.style.background='rgba(217,119,87,.13)';this.style.color='var(--accent)';this.style.boxShadow='0 2px 10px rgba(217,119,87,.13)'">
             <i class="fas fa-barcode" style="font-size:14px"></i> SKU Analysis
           </button>
         </a>
         <a href="/salesman" style="text-decoration:none">
-          <button style="display:flex;align-items:center;gap:9px;padding:10px 26px;border-radius:9px;border:1.5px solid var(--accent);background:rgba(108,99,255,.13);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;transition:all .18s;box-shadow:0 2px 10px rgba(108,99,255,.13)"
-            onmouseover="this.style.background='var(--accent)';this.style.color='#fff';this.style.boxShadow='0 4px 16px rgba(108,99,255,.35)'"
-            onmouseout="this.style.background='rgba(108,99,255,.13)';this.style.color='var(--accent)';this.style.boxShadow='0 2px 10px rgba(108,99,255,.35)'">
+          <button style="display:flex;align-items:center;gap:9px;padding:10px 26px;border-radius:9px;border:1.5px solid var(--accent);background:rgba(217,119,87,.13);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;transition:all .18s;box-shadow:0 2px 10px rgba(217,119,87,.13)"
+            onmouseover="this.style.background='var(--accent)';this.style.color='#fff';this.style.boxShadow='0 4px 16px rgba(217,119,87,.35)'"
+            onmouseout="this.style.background='rgba(217,119,87,.13)';this.style.color='var(--accent)';this.style.boxShadow='0 2px 10px rgba(217,119,87,.35)'">
             <i class="fas fa-user-tie" style="font-size:14px"></i> Salesman Analysis
           </button>
         </a>
@@ -125,7 +125,7 @@
         <% } else { %>
         <ul class="top-list">
           <% products.forEach(function(p,i){ %>
-          <li style="position:relative;transition:background .15s;border-radius:6px" onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+          <li style="position:relative;transition:background .15s;border-radius:6px" onmouseover="this.style.background='rgba(217,119,87,.06)'" onmouseout="this.style.background=''">
             <% if(p.id){ %><a href="/product-analytics?id=<%- p.id %>&type=<%- p.type %>&name=<%- encodeURIComponent(p.name) %>" style="position:absolute;inset:0;z-index:1" title="View analytics for <%- p.name %>"></a><% } %>
             <span class="top-rank <%- i===0?'gold':'' %>"><%- i+1 %></span>
             <span class="name"><%- p.name %></span>
@@ -143,7 +143,7 @@
         <% } else { %>
         <ul class="top-list">
           <% customers.forEach(function(c,i){ %>
-          <li style="position:relative;transition:background .15s;border-radius:6px" onmouseover="this.style.background='rgba(108,99,255,.06)'" onmouseout="this.style.background=''">
+          <li style="position:relative;transition:background .15s;border-radius:6px" onmouseover="this.style.background='rgba(217,119,87,.06)'" onmouseout="this.style.background=''">
             <% if(c.id){ %><a href="/customer-analytics?id=<%- c.id %>&name=<%- encodeURIComponent(c.name) %>" style="position:absolute;inset:0;z-index:1" title="View analytics for <%- c.name %>"></a><% } %>
             <span class="top-rank <%- i===0?'gold':'' %>"><%- i+1 %></span>
             <span class="name"><%- c.name %></span>
@@ -166,9 +166,9 @@
 const PREV_MONTH_PRO_RATA = <%- prevMonthProRata %>;  // prev month revenue up to same day
 const DAY_OF_MONTH        = <%- dayOfMonth %>;         // today's day-of-month (e.g. 21)
 
-const COLORS = { accent:'#6c63ff', accent2:'#00d4aa', danger:'#ff4d6d', warn:'#ffa94d', text2:'#8891b5' };
+const COLORS = { accent:'#D97757', accent2:'#4FAE8A', danger:'#E5484D', warn:'#F0B429', text2:'#A69A8D' };
 Chart.defaults.color = COLORS.text2;
-Chart.defaults.borderColor = 'rgba(108,99,255,.1)';
+Chart.defaults.borderColor = 'rgba(217,119,87,.1)';
 
 const _cd = document.getElementById('chartData');
 const MONTHLY_INIT = JSON.parse(_cd.dataset.monthly);
@@ -221,7 +221,7 @@ const growthPlugin = {
       ctx.font = 'bold 10px Inter, sans-serif';
       const tw = ctx.measureText(text).width + 10;
       const px = bar.x - tw / 2, py = bar.y - 24;
-      ctx.fillStyle = pct === null ? 'rgba(108,99,255,.2)' : pct >= 0 ? 'rgba(0,212,170,.18)' : 'rgba(255,77,109,.18)';
+      ctx.fillStyle = pct === null ? 'rgba(217,119,87,.2)' : pct >= 0 ? 'rgba(79,174,138,.18)' : 'rgba(229,72,77,.18)';
       roundRect(ctx, px, py, tw, 16, 4);
       ctx.fill();
       ctx.fillStyle = color;
@@ -255,12 +255,12 @@ const weeklyChart = new Chart(document.getElementById('weeklyChart'), {
     datasets: [
       { // 0 – bar (primary metric)
         type: 'bar', label: 'Revenue', data: [],
-        backgroundColor: 'rgba(108,99,255,.65)', borderColor: COLORS.accent,
+        backgroundColor: 'rgba(217,119,87,.65)', borderColor: COLORS.accent,
         borderWidth: 1, borderRadius: 6, yAxisID: 'yBar', order: 2
       },
       { // 1 – line (secondary metric)
         type: 'line', label: 'Shipments', data: [],
-        borderColor: COLORS.accent2, backgroundColor: 'rgba(0,212,170,.12)',
+        borderColor: COLORS.accent2, backgroundColor: 'rgba(79,174,138,.12)',
         borderWidth: 2.5, pointRadius: 4, pointBackgroundColor: COLORS.accent2,
         fill: false, tension: 0.35, yAxisID: 'yLine', order: 1
       }
@@ -298,7 +298,7 @@ const weeklyChart = new Chart(document.getElementById('weeklyChart'), {
       yBar: {
         type: 'linear', position: 'left', beginAtZero: true,
         ticks: { callback: v => fmtTick(v) },
-        grid: { color: 'rgba(108,99,255,.07)' }
+        grid: { color: 'rgba(217,119,87,.07)' }
       },
       yLine: {
         type: 'linear', position: 'right', beginAtZero: true,
@@ -404,7 +404,7 @@ async function loadMismatch() {
     // Build modal table
     const rows = data.mismatches.map(m => {
       const over  = m.difference < 0;  // shipped more than order
-      const color = over ? '#ff5050' : '#ff9a3c';
+      const color = over ? '#ff5050' : '#F0B429';
       const label = over ? 'Over-shipped by' : 'Short-shipped by';
       const ships = m.shipments.map(s =>
         `<div style="font-size:11px;color:var(--text2);padding:2px 0">
