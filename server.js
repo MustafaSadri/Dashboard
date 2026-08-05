@@ -158,6 +158,9 @@ const PASSCODE_LIMITED = '1122';
 
 const TOKEN   = process.env.TOKEN || '';
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
+// 'postgres' routes every MoySklad fetch through db/moysklad-queries.js (synced
+// data) instead of the live API — see ms() below, the single place this is read.
+const MS_DATA_SOURCE = process.env.MS_DATA_SOURCE === 'postgres' ? 'postgres' : 'live';
 const TALLY_BASE    = process.env.TALLY_URL || process.env.TALLY_BASE || 'http://localhost:9000';
 const TALLY_COMPANY = process.env.TALLY_COMPANY || '';
 const PORT = process.env.PORT || 3000;
@@ -274,7 +277,11 @@ app.use((req, res, next) => {
 });
 
 // ── Moysklad API helper ──────────────────────────────────
+// When MS_DATA_SOURCE=postgres, every call funnels into the Postgres shim
+// instead of hitting the live API — every helper/route below that calls
+// ms()/msAll() keeps working unmodified, unaware of where the data came from.
 async function ms(path, _retries = 3) {
+  if (MS_DATA_SOURCE === 'postgres') return require('./db/moysklad-queries').shimRequest(path);
   for (let attempt = 0; attempt <= _retries; attempt++) {
     const r = await fetch(MS_BASE + path, {
       headers: {
@@ -586,7 +593,7 @@ const getProfitByProduct = (from, to) => {
   const url  = to
     ? `/report/profit/byproduct?momentFrom=${enc(from)}&momentTo=${enc(to)}&limit=10`
     : `/report/profit/byproduct?momentFrom=${enc(from)}&limit=10`;
-  return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []));
+  return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []).catch(() => []));
 };
 
 const getProfitByCounterparty = (from, to) => {
@@ -594,7 +601,7 @@ const getProfitByCounterparty = (from, to) => {
   const url  = to
     ? `/report/profit/bycounterparty?momentFrom=${enc(from)}&momentTo=${enc(to)}&limit=10`
     : `/report/profit/bycounterparty?momentFrom=${enc(from)}&limit=10`;
-  return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []));
+  return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []).catch(() => []));
 };
 
 // Fetch total PCS (units) for a list of pending order IDs — batch of 20 parallel calls
@@ -603,6 +610,7 @@ async function getPendingPCS(orderIds) {
   if (!orderIds.length) return 0;
   const cacheKey = `pending_pcs_${orderIds.length}_${orderIds[0] || ''}`;
   return cached(cacheKey, 3 * 60 * 1000, async () => {
+    if (MS_DATA_SOURCE === 'postgres') return require('./db/moysklad-queries').sumOrderPositionsPCS(orderIds);
     const BATCH = 20;
     let total = 0;
     for (let i = 0; i < orderIds.length; i += BATCH) {
@@ -624,6 +632,7 @@ async function getTodayPCS(demandIds) {
   if (!demandIds.length) return 0;
   const cacheKey = `today_pcs_${todayStr()}_${demandIds.length}`;
   return cached(cacheKey, 90 * 1000, async () => {
+    if (MS_DATA_SOURCE === 'postgres') return require('./db/moysklad-queries').sumDemandPositionsPCS(demandIds);
     const results = await Promise.allSettled(
       demandIds.map(id => ms(`/entity/demand/${id}/positions?limit=200`))
     );
@@ -642,6 +651,7 @@ async function getPCSByStore(demands, storeMap) {
   if (!demands.length) return { total: 0, byStore: [] };
   const cacheKey = `pcs_by_store_${todayStr()}_${demands.length}_${demands[0]?.id || ''}`;
   return cached(cacheKey, 90 * 1000, async () => {
+    if (MS_DATA_SOURCE === 'postgres') return require('./db/moysklad-queries').sumDemandPCSByStore(demands.map(d => d.id));
     const BATCH = 20;
     const storeTotals = {};
     let total = 0;
@@ -905,16 +915,26 @@ app.get('/orders-status', async (req, res) => {
     const ownerHrefs = [...new Set(
       rawOrders.map(r => r.owner?.meta?.href).filter(Boolean)
     )];
-    const ownerFetches = await Promise.allSettled(
-      ownerHrefs.map(href => ms(href.replace(MS_BASE, '')))
-    );
     const ownerMap = {}; // full href → employee display name
-    ownerFetches.forEach((result, i) => {
-      if (result.status === 'fulfilled') {
-        const e = result.value;
-        ownerMap[ownerHrefs[i]] = e.name || e.shortFio || e.uid || '—';
-      }
-    });
+    if (MS_DATA_SOURCE === 'postgres') {
+      const ids = ownerHrefs.map(h => h.split('/').pop().split('?')[0]);
+      const emps = await require('./db/moysklad-queries').employeesByIds(ids);
+      const byId = {}; emps.forEach(e => { byId[e.id] = e; });
+      ownerHrefs.forEach((href, i) => {
+        const e = byId[ids[i]];
+        if (e) ownerMap[href] = e.name || e.shortFio || e.uid || '—';
+      });
+    } else {
+      const ownerFetches = await Promise.allSettled(
+        ownerHrefs.map(href => ms(href.replace(MS_BASE, '')))
+      );
+      ownerFetches.forEach((result, i) => {
+        if (result.status === 'fulfilled') {
+          const e = result.value;
+          ownerMap[ownerHrefs[i]] = e.name || e.shortFio || e.uid || '—';
+        }
+      });
+    }
 
     // demand map: orderId → { name, moment }
     const demandMap = {};
@@ -1134,15 +1154,20 @@ app.get('/salesman', async (req, res) => {
       return href ? href.split('/').pop().split('?')[0] : null;
     }).filter(Boolean))];
 
-    const POBATCH = 30;
     const parentOrderMap = {}; // orderId → order object
-    for (let i = 0; i < parentOrderIds.length; i += POBATCH) {
-      const results = await Promise.allSettled(
-        parentOrderIds.slice(i, i + POBATCH).map(id => ms(`/entity/customerorder/${id}`))
-      );
-      results.forEach((r, j) => {
-        if (r.status === 'fulfilled') parentOrderMap[parentOrderIds[i + j]] = r.value;
-      });
+    if (MS_DATA_SOURCE === 'postgres') {
+      const orders = await require('./db/moysklad-queries').ordersByIds(parentOrderIds);
+      orders.forEach(o => { parentOrderMap[o.id] = o; });
+    } else {
+      const POBATCH = 30;
+      for (let i = 0; i < parentOrderIds.length; i += POBATCH) {
+        const results = await Promise.allSettled(
+          parentOrderIds.slice(i, i + POBATCH).map(id => ms(`/entity/customerorder/${id}`))
+        );
+        results.forEach((r, j) => {
+          if (r.status === 'fulfilled') parentOrderMap[parentOrderIds[i + j]] = r.value;
+        });
+      }
     }
 
     // 5. Aggregate demands by salesman (owner of parent order)
@@ -1189,28 +1214,41 @@ app.get('/salesman', async (req, res) => {
 
     // 6. Unshipped modal: orders placed in this period with no shipment created yet
     const unshippedRaw = ordersInPeriod.filter(o => !shippedOrderIds.has(o.id));
-    const UBATCH = 20;
     const unshippedOrders = [];
-    for (let i = 0; i < unshippedRaw.length; i += UBATCH) {
-      const slice = unshippedRaw.slice(i, i + UBATCH);
-      const posResults = await Promise.allSettled(
-        slice.map(o => ms(`/entity/customerorder/${o.id}/positions?limit=200`))
-      );
-      slice.forEach((o, j) => {
+    if (MS_DATA_SOURCE === 'postgres') {
+      const pcsByOrder = await require('./db/moysklad-queries').orderPositionsPCSByOrder(unshippedRaw.map(o => o.id));
+      unshippedRaw.forEach(o => {
         const ownerUUID = (o.owner?.meta?.href || '').split('/').pop().split('?')[0];
         const salesman  = ownerUUID ? (empMap[ownerUUID] || 'Unassigned') : 'Unassigned';
-        const posRows   = posResults[j]?.status === 'fulfilled' ? (posResults[j].value.rows || []) : [];
-        const pcs       = Math.round(posRows.reduce((a, p) => a + (p.quantity || 0), 0));
         unshippedOrders.push({
-          name:     o.name || '—',
-          date:     (o.moment || '').slice(0, 10),
-          customer: o.agent?.name || '—',
-          salesman,
-          state:    o.state?.name || '—',
-          val:      (o.sum || 0) / 100,
-          pcs
+          name: o.name || '—', date: (o.moment || '').slice(0, 10),
+          customer: o.agent?.name || '—', salesman, state: o.state?.name || '—',
+          val: (o.sum || 0) / 100, pcs: pcsByOrder[o.id] || 0,
         });
       });
+    } else {
+      const UBATCH = 20;
+      for (let i = 0; i < unshippedRaw.length; i += UBATCH) {
+        const slice = unshippedRaw.slice(i, i + UBATCH);
+        const posResults = await Promise.allSettled(
+          slice.map(o => ms(`/entity/customerorder/${o.id}/positions?limit=200`))
+        );
+        slice.forEach((o, j) => {
+          const ownerUUID = (o.owner?.meta?.href || '').split('/').pop().split('?')[0];
+          const salesman  = ownerUUID ? (empMap[ownerUUID] || 'Unassigned') : 'Unassigned';
+          const posRows   = posResults[j]?.status === 'fulfilled' ? (posResults[j].value.rows || []) : [];
+          const pcs       = Math.round(posRows.reduce((a, p) => a + (p.quantity || 0), 0));
+          unshippedOrders.push({
+            name:     o.name || '—',
+            date:     (o.moment || '').slice(0, 10),
+            customer: o.agent?.name || '—',
+            salesman,
+            state:    o.state?.name || '—',
+            val:      (o.sum || 0) / 100,
+            pcs
+          });
+        });
+      }
     }
     unshippedOrders.sort((a, b) => b.val - a.val);
 
@@ -1353,7 +1391,7 @@ app.get('/sku-analysis', async (req, res) => {
 
       const [demandResult, profitResult, nameMap] = await Promise.all([
         msAll(`/entity/demand?filter=${enc(filterStr)}&order=moment,desc`),
-        msAll(`/report/profit/byproduct?momentFrom=${enc(momentFrom)}&momentTo=${enc(profitTo)}`),
+        msAll(`/report/profit/byproduct?momentFrom=${enc(momentFrom)}&momentTo=${enc(profitTo)}`).catch(() => ({ rows: [] })),
         getNameMap()
       ]);
       const demands = demandResult.rows || [];
@@ -3259,12 +3297,28 @@ ROUTING:
 ];
 
 // ── MoySklad sync endpoints ───────────────────────────────────────────────
-app.post('/api/ms/sync', (req, res) => {
-  res.status(410).json({ ok: false, message: 'MoySklad database sync is disabled' });
+app.post('/api/ms/sync', async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(410).json({ ok: false, message: 'DATABASE_URL is not configured' });
+  }
+  try {
+    await require('./sync/moysklad-sync').runSync();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-app.get('/api/ms/sync/status', (req, res) => {
-  res.json({ ok: true, running: false, meta: null, disabled: true });
+app.get('/api/ms/sync/status', async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.json({ ok: true, running: false, meta: [], disabled: true });
+  }
+  try {
+    const meta = await require('./sync/moysklad-sync').getSyncStatus();
+    res.json({ ok: true, dataSource: MS_DATA_SOURCE, meta });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ── Chat tool status label ────────────────────────────────────────────────
@@ -4089,3 +4143,6 @@ function startServer(port) {
 }
 
 startServer(Number(PORT));
+
+// Background MoySklad → Postgres sync (no-op if DATABASE_URL isn't set)
+require('./sync/scheduler').start();
