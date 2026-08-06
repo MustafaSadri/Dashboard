@@ -6,7 +6,7 @@ require('dotenv').config();
 // entity step is independently try/caught and recorded in ms_sync_meta, so
 // one entity's failure never blocks the others, and the next tick retries it.
 //
-// Incremental watermarks are derived from the MAX `updatedAt` seen in each
+// Incremental watermarks are derived from the MAX `updated` seen in each
 // entity's own fetched rows (MoySklad's clock), never from local server time —
 // this sidesteps any TZ mismatch between this process and MoySklad's servers.
 const { getPool } = require('../db/pool');
@@ -32,6 +32,12 @@ async function msGet(path, retries = 6) {
       continue;
     }
     if (r.status === 429) { await sleep(Math.pow(2, attempt) * 2000); continue; }
+    // 401/403/412 are auth/access errors (blocked or expired token) — retrying
+    // won't fix them and just sends more requests at an already-throttled
+    // token, making the underlying problem worse. Fail fast on these instead.
+    if (r.status === 401 || r.status === 403 || r.status === 412) {
+      throw new Error(`MS API ${r.status} on ${path}`);
+    }
     if (!r.ok) {
       if (attempt === retries) throw new Error(`MS API ${r.status} on ${path}`);
       await sleep(1500 * (attempt + 1));
@@ -107,6 +113,25 @@ async function upsertMeta(client, entity, fields) {
     `INSERT INTO ms_sync_meta (${cols.join(', ')}) VALUES (${placeholders})
      ON CONFLICT (entity) DO UPDATE SET ${updateSet}`, vals);
 }
+// Never repeat a full (expensive: paginated list + per-record positions)
+// resync more often than this, even if we still have no usable watermark.
+// This is a hard circuit breaker against the exact runaway pattern that can
+// get a MoySklad token rate-limited/blocked: full-resyncing on every 5-minute
+// tick forever because a watermark never got captured.
+const FULL_SYNC_COOLDOWN_HOURS = 6;
+function coolingDown(state) {
+  if (!state?.last_full_sync_at) return false;
+  const hoursSince = (Date.now() - new Date(state.last_full_sync_at).getTime()) / 3600000;
+  return hoursSince < FULL_SYNC_COOLDOWN_HOURS;
+}
+// If MoySklad never gave us a real updated on any row of a sync batch, fall
+// back to our own clock (minus a safety margin) as the watermark. This is
+// less precise than a true server-provided high-water mark, but it guarantees
+// the NEXT tick goes incremental instead of repeating a full resync forever.
+function fallbackWatermark() {
+  return new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+}
+
 async function loadAssortmentMap(client) {
   const { rows } = await client.query('SELECT href, name, base_name FROM ms_assortment');
   const map = new Map();
@@ -132,7 +157,7 @@ async function syncEmployees(client) {
     const rows = (await msAll('/entity/employee', '')).map(e => ({
       id: e.id, name: e.name || e.shortFio || e.uid || '—',
       short_fio: e.shortFio || null, uid: e.uid || null, position: e.position || null,
-      updated_at: (e.updatedAt || '').slice(0, 19) || null,
+      updated_at: (e.updated || '').slice(0, 19) || null,
     }));
     await batchUpsert(client, 'ms_employees', ['id', 'name', 'short_fio', 'uid', 'position', 'updated_at'], ['id'], rows);
     await upsertMeta(client, 'employees', { last_full_sync_at: new Date(), last_incremental_sync_at: new Date(), last_status: 'ok', last_error: null, last_rows: rows.length });
@@ -203,23 +228,32 @@ async function syncCounterparties(client) {
   try {
     const state = await getSyncState(client, entity);
     const isFirst = !state?.last_full_sync_at;
-    // Fall back to a full (unfiltered) refetch if we somehow never captured a
-    // real watermark (e.g. an earlier run failed after marking last_full_sync_at
-    // but before any row supplied an updatedAt) — never send updatedAt>=null.
-    const filter = (!isFirst && state.watermark_s) ? `&filter=${encodeURIComponent(`updatedAt>=${state.watermark_s}`)}` : '';
+    const needsFull = isFirst || !state.watermark_s;
+
+    if (needsFull && !isFirst && coolingDown(state)) {
+      console.warn(`[ms-sync] counterparties: no watermark yet, but a full resync already ran within the last ${FULL_SYNC_COOLDOWN_HOURS}h — skipping this tick`);
+      await upsertMeta(client, entity, { last_status: 'skipped_cooldown', last_error: null });
+      return;
+    }
+
+    const filter = !needsFull ? `&filter=${encodeURIComponent(`updated>=${state.watermark_s}`)}` : '';
     const rawRows = await msAll('/entity/counterparty', filter);
     let maxUpdated = state?.watermark_s || null;
     const rows = rawRows.map(r => {
-      if (r.updatedAt && (!maxUpdated || r.updatedAt > maxUpdated)) maxUpdated = r.updatedAt;
+      if (r.updated && (!maxUpdated || r.updated > maxUpdated)) maxUpdated = r.updated;
       return {
         id: r.id, name: r.name || '—', code: r.code || null, email: r.email || null,
         phone: r.phone || null, company_type: r.companyType || null,
-        updated_at: (r.updatedAt || '').slice(0, 19) || null,
+        updated_at: (r.updated || '').slice(0, 19) || null,
       };
     });
+    if (!maxUpdated && rawRows.length) {
+      maxUpdated = fallbackWatermark();
+      console.warn(`[ms-sync] counterparties: no updated on any row — using clock-based fallback watermark ${maxUpdated}`);
+    }
     await batchUpsert(client, 'ms_counterparties', ['id', 'name', 'code', 'email', 'phone', 'company_type', 'updated_at'], ['id'], rows);
     await upsertMeta(client, entity, {
-      last_full_sync_at: isFirst ? new Date() : state.last_full_sync_at,
+      last_full_sync_at: needsFull ? new Date() : state.last_full_sync_at,
       last_incremental_sync_at: new Date(), watermark: maxUpdated,
       last_status: 'ok', last_error: null, last_rows: rows.length,
     });
@@ -276,17 +310,23 @@ async function syncOrders(client) {
   const entity = 'orders';
   try {
     const state = await getSyncState(client, entity);
-    // If we somehow never captured a real watermark on a prior run, fall back
-    // to a full moment-based refetch rather than sending updatedAt>=null.
-    const isFirst = !state?.last_full_sync_at || !state.watermark_s;
-    const filterField = isFirst ? 'moment' : 'updatedAt';
-    const since = isFirst ? `${MS_SYNC_FROM} 00:00:00` : state.watermark_s;
+    const isFirst = !state?.last_full_sync_at;
+    const needsFull = isFirst || !state.watermark_s;
+
+    if (needsFull && !isFirst && coolingDown(state)) {
+      console.warn(`[ms-sync] orders: no watermark yet, but a full resync already ran within the last ${FULL_SYNC_COOLDOWN_HOURS}h — skipping this tick to avoid hammering the API`);
+      await upsertMeta(client, entity, { last_status: 'skipped_cooldown', last_error: null });
+      return;
+    }
+
+    const filterField = needsFull ? 'moment' : 'updated';
+    const since = needsFull ? `${MS_SYNC_FROM} 00:00:00` : state.watermark_s;
     const filter = since ? `&filter=${encodeURIComponent(`${filterField}>=${since}`)}` : '';
     const rawRows = await msAll('/entity/customerorder', `${filter}&expand=agent,state&order=moment,asc`);
 
     let maxUpdated = state?.watermark_s || null;
     const rows = rawRows.map(r => {
-      if (r.updatedAt && (!maxUpdated || r.updatedAt > maxUpdated)) maxUpdated = r.updatedAt;
+      if (r.updated && (!maxUpdated || r.updated > maxUpdated)) maxUpdated = r.updated;
       return {
         id: r.id, name: r.name || '',
         moment: (r.moment || '').slice(0, 19) || null,
@@ -297,9 +337,13 @@ async function syncOrders(client) {
         state_id: hrefTail(r.state?.meta?.href) || null, state_name: r.state?.name || null,
         delivery_planned_moment: (r.deliveryPlannedMoment || '').slice(0, 19) || null,
         store_id: hrefTail(r.store?.meta?.href) || null,
-        updated_at: (r.updatedAt || '').slice(0, 19) || null,
+        updated_at: (r.updated || '').slice(0, 19) || null,
       };
     });
+    if (!maxUpdated && rawRows.length) {
+      maxUpdated = fallbackWatermark();
+      console.warn(`[ms-sync] orders: no updated on any row — using clock-based fallback watermark ${maxUpdated}`);
+    }
 
     const cols = ['id', 'name', 'moment', 'date', 'sum_kopecks', 'payed_sum_kopecks', 'customer_id', 'customer_name',
                   'owner_id', 'state_id', 'state_name', 'delivery_planned_moment', 'store_id', 'updated_at'];
@@ -309,11 +353,11 @@ async function syncOrders(client) {
     await syncPositionsFor(client, 'customerorder', rows.map(r => ({ id: r.id })), assortmentMap);
 
     await upsertMeta(client, entity, {
-      last_full_sync_at: isFirst ? new Date() : (state?.last_full_sync_at || new Date()),
+      last_full_sync_at: needsFull ? new Date() : state.last_full_sync_at,
       last_incremental_sync_at: new Date(), watermark: maxUpdated,
       last_status: 'ok', last_error: null, last_rows: rows.length,
     });
-    console.log(`[ms-sync] orders: ${rows.length} synced (${isFirst ? 'full' : 'incremental'})`);
+    console.log(`[ms-sync] orders: ${rows.length} synced (${needsFull ? 'full' : 'incremental'})`);
   } catch (e) {
     await upsertMeta(client, entity, { last_status: 'error', last_error: e.message.slice(0, 500) }).catch(() => {});
     console.error('[ms-sync] orders failed:', e.message);
@@ -323,15 +367,23 @@ async function syncDemands(client) {
   const entity = 'demands';
   try {
     const state = await getSyncState(client, entity);
-    const isFirst = !state?.last_full_sync_at || !state.watermark_s;
-    const filterField = isFirst ? 'moment' : 'updatedAt';
-    const since = isFirst ? `${MS_SYNC_FROM} 00:00:00` : state.watermark_s;
+    const isFirst = !state?.last_full_sync_at;
+    const needsFull = isFirst || !state.watermark_s;
+
+    if (needsFull && !isFirst && coolingDown(state)) {
+      console.warn(`[ms-sync] demands: no watermark yet, but a full resync already ran within the last ${FULL_SYNC_COOLDOWN_HOURS}h — skipping this tick to avoid hammering the API`);
+      await upsertMeta(client, entity, { last_status: 'skipped_cooldown', last_error: null });
+      return;
+    }
+
+    const filterField = needsFull ? 'moment' : 'updated';
+    const since = needsFull ? `${MS_SYNC_FROM} 00:00:00` : state.watermark_s;
     const filter = since ? `&filter=${encodeURIComponent(`${filterField}>=${since}`)}` : '';
     const rawRows = await msAll('/entity/demand', `${filter}&expand=agent,state&order=moment,asc`);
 
     let maxUpdated = state?.watermark_s || null;
     const rows = rawRows.map(r => {
-      if (r.updatedAt && (!maxUpdated || r.updatedAt > maxUpdated)) maxUpdated = r.updatedAt;
+      if (r.updated && (!maxUpdated || r.updated > maxUpdated)) maxUpdated = r.updated;
       return {
         id: r.id, name: r.name || '',
         moment: (r.moment || '').slice(0, 19) || null,
@@ -342,9 +394,13 @@ async function syncDemands(client) {
         order_id: hrefTail(r.customerOrder?.meta?.href) || null,
         state_id: hrefTail(r.state?.meta?.href) || null, state_name: r.state?.name || null,
         store_id: hrefTail(r.store?.meta?.href) || null,
-        updated_at: (r.updatedAt || '').slice(0, 19) || null,
+        updated_at: (r.updated || '').slice(0, 19) || null,
       };
     });
+    if (!maxUpdated && rawRows.length) {
+      maxUpdated = fallbackWatermark();
+      console.warn(`[ms-sync] demands: no updated on any row — using clock-based fallback watermark ${maxUpdated}`);
+    }
 
     const cols = ['id', 'name', 'moment', 'date', 'sum_kopecks', 'customer_id', 'customer_name',
                   'owner_id', 'order_id', 'state_id', 'state_name', 'store_id', 'updated_at'];
@@ -354,11 +410,11 @@ async function syncDemands(client) {
     await syncPositionsFor(client, 'demand', rows.map(r => ({ id: r.id, date: r.date })), assortmentMap);
 
     await upsertMeta(client, entity, {
-      last_full_sync_at: isFirst ? new Date() : (state?.last_full_sync_at || new Date()),
+      last_full_sync_at: needsFull ? new Date() : state.last_full_sync_at,
       last_incremental_sync_at: new Date(), watermark: maxUpdated,
       last_status: 'ok', last_error: null, last_rows: rows.length,
     });
-    console.log(`[ms-sync] demands: ${rows.length} synced (${isFirst ? 'full' : 'incremental'})`);
+    console.log(`[ms-sync] demands: ${rows.length} synced (${needsFull ? 'full' : 'incremental'})`);
   } catch (e) {
     await upsertMeta(client, entity, { last_status: 'error', last_error: e.message.slice(0, 500) }).catch(() => {});
     console.error('[ms-sync] demands failed:', e.message);
@@ -372,6 +428,11 @@ async function syncDemands(client) {
 // after it. Bounding each checkout to one entity keeps that blast radius small.
 async function withClient(pool, fn) {
   const client = await pool.connect();
+  // A checked-out client can emit its own async 'error' event on an
+  // unexpected connection drop, independent of any query's promise
+  // rejection. Without a listener here, that's an unhandled error and
+  // it takes the whole process down — this converts it into a log line.
+  client.on('error', (e) => console.error('[ms-sync] client connection error:', e.message));
   try {
     await fn(client);
   } catch (e) {

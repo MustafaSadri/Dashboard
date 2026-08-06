@@ -46,6 +46,14 @@
   </a>
 </div>
 
+<% if (typeof syncAlert !== 'undefined' && syncAlert) { %>
+<div style="background:rgba(229,72,77,.12);border-bottom:1px solid rgba(229,72,77,.35);
+            padding:10px 28px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text)">
+  <i class="fas fa-triangle-exclamation" style="color:var(--danger);font-size:14px;flex-shrink:0"></i>
+  <span><%- syncAlert.message %></span>
+</div>
+<% } %>
+
 <!-- Stock Alert Panel -->
 <div class="alert-panel" id="alertPanel">
   <div class="alert-panel-hdr">

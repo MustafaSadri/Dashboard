@@ -33,6 +33,10 @@ function query(text, params) {
 
 async function withTransaction(fn) {
   const client = await getPool().connect();
+  // See the matching comment in sync/moysklad-sync.js's withClient() — a
+  // checked-out client's own 'error' event needs a listener or a dropped
+  // connection crashes the whole process regardless of this try/catch.
+  client.on('error', (e) => console.error('[pg client] connection error:', e.message));
   try {
     await client.query('BEGIN');
     const result = await fn(client);

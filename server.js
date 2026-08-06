@@ -512,10 +512,49 @@ function cached(key, ttlMs, fn) {
   return p;
 }
 
+// ── Sync health banner (postgres mode only) ───────────────
+// Warns when the background MoySklad sync is failing (commonly: the API
+// token got blocked/expired) so stale data doesn't go unnoticed on screen.
+async function getSyncAlert() {
+  if (MS_DATA_SOURCE !== 'postgres') return null;
+  return cached('sync_alert', 60 * 1000, async () => {
+    try {
+      const rows = await require('./db/moysklad-queries').getSyncHealth();
+      if (!rows.length) return null;
+
+      // MoySklad returns inconsistent HTTP codes (401/403/412 all seen) for what's
+      // really the same underlying problem — don't try to guess by status code,
+      // any sync failure on the core entities is worth surfacing.
+      const failing = rows.some(r => r.last_status === 'error');
+
+      const secondsSince = rows
+        .map(r => r.seconds_since == null ? null : Number(r.seconds_since))
+        .filter(s => s != null);
+      const staleMinutes = secondsSince.length ? Math.round(Math.min(...secondsSince) / 60) : null;
+      // Sync runs every MS_SYNC_INTERVAL_MINUTES (default 5) — flag if it's gone
+      // quiet for 4x that, giving room for a slow tick or a missed one.
+      const staleThreshold = Math.max(20, (parseInt(process.env.MS_SYNC_INTERVAL_MINUTES, 10) || 5) * 4);
+      const isStale = staleMinutes === null || staleMinutes > staleThreshold;
+
+      if (!failing && !isStale) return null;
+
+      return {
+        failing,
+        staleMinutes,
+        message: failing
+          ? 'MoySklad sync is failing — the API token may be blocked or expired (excess API use can trigger this). Contact Mustafa to check/replace it. The data shown may not be up to date.'
+          : `MoySklad sync hasn't updated in ${staleMinutes} minutes — the data shown may not be up to date.`,
+      };
+    } catch (e) {
+      return null;
+    }
+  });
+}
+
 // ── Common data (employee, date, global stock alerts) ────
 async function common() {
-  const { empName, empLetter, empRole, stockAlerts, stockAlertCount } =
-    await cached('common', 3 * 60 * 1000, async () => {
+  const [{ empName, empLetter, empRole, stockAlerts, stockAlertCount }, syncAlert] = await Promise.all([
+    cached('common', 3 * 60 * 1000, async () => {
       let empName = 'Admin', empLetter = 'A', empRole = 'Moysklad';
       let stockAlerts = [], stockAlertCount = 0;
 
@@ -540,13 +579,15 @@ async function common() {
       }
 
       return { empName, empLetter, empRole, stockAlerts, stockAlertCount };
-    });
+    }),
+    getSyncAlert(),
+  ]);
 
   return {
     empName, empLetter, empRole,
     date: new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' }),
     time: new Date().toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' }),
-    stockAlerts, stockAlertCount
+    stockAlerts, stockAlertCount, syncAlert
   };
 }
 

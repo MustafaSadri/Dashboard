@@ -486,8 +486,19 @@ async function orderPositionsPCSByOrder(orderIds) {
   return map;
 }
 
+// ── Sync health — powers the "data may be stale / token blocked" banner ────
+// Checks the two entities that actually drive what's on screen (orders/demands).
+async function getSyncHealth() {
+  const { rows } = await query(
+    `SELECT entity, last_status, last_error,
+            EXTRACT(EPOCH FROM (now() - last_incremental_sync_at)) AS seconds_since
+     FROM ms_sync_meta WHERE entity IN ('orders','demands')`);
+  return rows;
+}
+
 module.exports = {
   shimRequest, MS_BASE,
   sumOrderPositionsPCS, sumDemandPositionsPCS, sumDemandPCSByStore,
   employeesByIds, ordersByIds, orderPositionsPCSByOrder,
+  getSyncHealth,
 };
