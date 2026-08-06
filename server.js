@@ -629,13 +629,36 @@ function storeName(d, storeMap) {
   return (id && storeMap[id]) || 'Unknown';
 }
 
-const getProfitByProduct = (from, to) => {
-  const key = `prof_prod_${from}_${to||''}`;
+const getProfitByProduct = (from, to, limit = 10) => {
+  const key = `prof_prod_${from}_${to||''}_${limit}`;
   const url  = to
-    ? `/report/profit/byproduct?momentFrom=${enc(from)}&momentTo=${enc(to)}&limit=10`
-    : `/report/profit/byproduct?momentFrom=${enc(from)}&limit=10`;
+    ? `/report/profit/byproduct?momentFrom=${enc(from)}&momentTo=${enc(to)}&limit=${limit}`
+    : `/report/profit/byproduct?momentFrom=${enc(from)}&limit=${limit}`;
   return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []).catch(() => []));
 };
+
+// Groups individual SKU/flavor variant rows (as returned by profit/byproduct)
+// into their parent model — e.g. "ELFBAR GH23000 ... (Blueberry Pear)" and
+// "ELFBAR GH23000 ... (Mango)" both roll into one "ELFBAR GH23000 ..." entry,
+// matching how MoySklad's own product tree groups variants under a model.
+function groupProductsByModel(rows, topN = 10) {
+  const modelMap = {};
+  rows.forEach(r => {
+    const fullName = r.assortment?.name || '—';
+    const baseName = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
+    if (!modelMap[baseName]) {
+      modelMap[baseName] = {
+        name: baseName,
+        id: (r.assortment?.meta?.href || '').split('/').pop(),
+        type: r.assortment?.meta?.type || 'product',
+        qty: 0, val: 0,
+      };
+    }
+    modelMap[baseName].qty += Math.round(r.sellQuantity || 0);
+    modelMap[baseName].val += (r.sellSum || 0) / 100;
+  });
+  return Object.values(modelMap).sort((a, b) => b.val - a.val).slice(0, topN);
+}
 
 const getProfitByCounterparty = (from, to) => {
   const key = `prof_cust_${from}_${to||''}`;
@@ -834,7 +857,7 @@ app.get('/', async (req, res) => {
       getRecentDemands(),
       getAllOrders(),
       getStock(),
-      getProfitByProduct(from),
+      getProfitByProduct(from, undefined, 500),
       getProfitByCounterparty(from),
       getOrderStateMap(),
     ]).then(r => [
@@ -909,13 +932,7 @@ app.get('/', async (req, res) => {
       salesToday: salesToday/100, shipmentsToday, todayPCS,
       pending, pendingStates, pendingValue, pendingPCS,
       totalOrders: orders.length,
-      products: products.slice(0,10).map(r=>({
-        name: r.assortment?.name||'—',
-        id:   (r.assortment?.meta?.href||'').split('/').pop(),
-        type: r.assortment?.meta?.type||'product',
-        qty: Math.round(r.sellQuantity||0),
-        val: r.sellSum/100
-      })),
+      products: groupProductsByModel(products, 10),
       customers: customers.slice(0,10).map(r=>({
         name: r.counterparty?.name||'—',
         id:   (r.counterparty?.meta?.href||'').split('/').pop(),
