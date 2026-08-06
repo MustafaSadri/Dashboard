@@ -1730,7 +1730,7 @@ app.get('/customer-analytics', async (req, res) => {
     const [cpRes, ordRes, prodRes, stateRes] = await Promise.allSettled([
       ms(`/entity/counterparty/${cpId}`),
       msAll(`/entity/customerorder?filter=${enc(agentFilter)}&order=moment,desc&expand=state`),
-      ms(`/report/profit/byproduct?filter=${enc(cpFilter)}&limit=50`),
+      ms(`/report/profit/byproduct?filter=${enc(cpFilter)}&limit=500`),
       getOrderStateMap()
     ]);
 
@@ -1772,13 +1772,7 @@ app.get('/customer-analytics', async (req, res) => {
       cp: { name: cp.name||cpName, phone: cp.phone||'—', email: cp.email||'—', id: cpId },
       totalOrders: orders.length, totalRevenue, avgOrderValue, pending,
       orderList,
-      topProducts: products.slice(0,10).map(r=>({
-        name: r.assortment?.name||'—',
-        id:   (r.assortment?.meta?.href||'').split('/').pop(),
-        type: r.assortment?.meta?.type||'product',
-        qty:  Math.round(r.sellQuantity||0),
-        val:  (r.sellSum||0)/100
-      })),
+      topProducts: groupProductsByModel(products, 10),
       monthlyTrend,
       ordersJSON:  JSON.stringify(orderList),
       trendJSON:   JSON.stringify(monthlyTrend)
