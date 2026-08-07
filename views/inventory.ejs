@@ -15,7 +15,7 @@
       <div class="stat-card warn" style="cursor:pointer" onclick="openInvModal('low')">
         <div class="stat-label">Low Stock</div>
         <div class="stat-value"><%- low %></div>
-        <div class="stat-sub">qty ≤ 100</div>
+        <div class="stat-sub">qty &lt; 50</div>
         <div class="inv-view-details">View Details <i class="fas fa-chevron-right" style="font-size:9px"></i></div>
         <i class="fas fa-exclamation-triangle stat-icon"></i>
       </div>
@@ -190,7 +190,7 @@ function openInvModal(type) {
   var color = type === 'out' ? 'var(--danger)' : 'var(--warn)';
   var sub   = type === 'out'
     ? items.length + ' items with zero quantity'
-    : items.length + ' items with qty below 100';
+    : items.length + ' items with qty below 50';
 
   document.getElementById('invModalTitle').innerHTML =
     '<i class="fas ' + icon + '" style="margin-right:8px;color:' + color + '"></i>' + title;

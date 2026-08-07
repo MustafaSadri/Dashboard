@@ -572,7 +572,7 @@ async function common() {
 
       if (stkRes.status === 'fulfilled') {
         const below = (stkRes.value.rows || [])
-          .filter(r => (r.quantity || 0) < 100)
+          .filter(r => (r.quantity || 0) < 50)
           .sort((a, b) => (a.quantity || 0) - (b.quantity || 0));
         stockAlertCount = below.length;
         stockAlerts = below.slice(0, 60).map(r => ({ name: r.name || '—', qty: r.quantity || 0 }));
@@ -906,7 +906,7 @@ app.get('/', async (req, res) => {
     stock.forEach(r => {
       const q=r.quantity||0; totalQty+=q; totalVal+=q*(r.price||0);
       if (r.folder?.name) folders.add(r.folder.name);
-      if (q<=0) outStock++; else if (q<100) { lowStock++; inStock++; } else inStock++;
+      if (q<=0) outStock++; else if (q<50) { lowStock++; inStock++; } else inStock++;
     });
 
     const totalSell     = products.reduce((a,r)=>a+(r.sellSum||0),0);
@@ -1090,7 +1090,7 @@ app.get('/inventory', async (req, res) => {
     rows.forEach(r => {
       const q = r.quantity || 0;
       totalQty += q; totalVal += q * (r.price || 0);
-      if (q <= 0) outStk++; else if (q <= 100) low++;
+      if (q <= 0) outStk++; else if (q < 50) low++;
     });
 
     // Group variants by base model name (strip trailing "(Flavor)" suffix)
@@ -1101,7 +1101,7 @@ app.get('/inventory', async (req, res) => {
       const flavorM   = fullName.match(/\(([^)]+)\)\s*$/);
       const flavor    = flavorM ? flavorM[1] : null;
       const qty       = r.quantity || 0;
-      const status    = qty <= 0 ? 'Out of Stock' : qty <= 100 ? 'Low Stock' : 'In Stock';
+      const status    = qty <= 0 ? 'Out of Stock' : qty < 50 ? 'Low Stock' : 'In Stock';
 
       if (!modelMap[baseName]) modelMap[baseName] = { name: baseName, totalQty: 0, variants: [] };
       modelMap[baseName].totalQty += qty;
@@ -1126,7 +1126,7 @@ app.get('/inventory', async (req, res) => {
       .map(r => ({ name: r.name || '—', qty: 0 }))
       .sort((a, b) => a.name.localeCompare(b.name));
     const lowItems = rows
-      .filter(r => (r.quantity || 0) > 0 && (r.quantity || 0) <= 100)
+      .filter(r => (r.quantity || 0) > 0 && (r.quantity || 0) < 50)
       .map(r => ({ name: r.name || '—', qty: r.quantity }))
       .sort((a, b) => a.qty - b.qty);
 
