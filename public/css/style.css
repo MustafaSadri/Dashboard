@@ -284,6 +284,7 @@ tbody td .muted { color: var(--text2); font-size: 12px; }
 .badge-instock   { background: rgba(79,174,138,.15); color: var(--accent2); }
 .badge-low       { background: rgba(240,180,41,.15); color: var(--warn); }
 .badge-out       { background: rgba(229,72,77,.15); color: var(--danger); }
+.badge-muted     { background: var(--bg3); color: var(--text2); }
 .badge-default   { background: var(--bg3); color: var(--text2); }
 
 /* ── GRID 2-COL ──────────────────────────────── */

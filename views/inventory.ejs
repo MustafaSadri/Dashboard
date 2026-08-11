@@ -46,7 +46,7 @@
           <tbody>
           <% models.forEach(function(model, idx) { %>
 
-            <% var sc = model.status==='In Stock'?'badge-instock':model.status==='Low Stock'?'badge-low':'badge-out'; %>
+            <% var sc = model.status==='In Stock'?'badge-instock':model.status==='Low Stock'?'badge-low':model.status==='Muted'?'badge-muted':'badge-out'; %>
             <% var hasVariants = model.variantCount > 1; %>
 
             <tr class="model-row" <%- hasVariants ? 'onclick="toggleModel('+idx+')" style="cursor:pointer"' : '' %>>
@@ -65,7 +65,19 @@
                 </div>
               </td>
               <td style="text-align:right;font-weight:700;font-size:15px"><%- model.totalQty %></td>
-              <td><span class="badge <%- sc %>"><%- model.status %></span></td>
+              <td>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="badge <%- sc %>"><%- model.status %></span>
+                  <button type="button" data-base-name="<%= model.name %>" data-muted="<%- model.muted %>"
+                    onclick="event.stopPropagation(); handleMuteClick(this)"
+                    title="<%- model.muted ? 'Unmute stock alerts for this model' : 'Mute stock alerts for this model (low & out of stock)' %>"
+                    style="background:none;border:none;cursor:pointer;padding:4px;color:<%- model.muted ? 'var(--accent)' : 'var(--text2)' %>;
+                           font-size:13px;border-radius:6px;transition:color .15s"
+                    onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='<%- model.muted ? 'var(--accent)' : 'var(--text2)' %>'">
+                    <i class="fas <%- model.muted ? 'fa-bell-slash' : 'fa-bell' %>"></i>
+                  </button>
+                </div>
+              </td>
             </tr>
 
             <% if (hasVariants) { %>
@@ -91,7 +103,7 @@
                     </thead>
                     <tbody id="vbody-<%- idx %>">
                     <% model.variants.forEach(function(v) { %>
-                      <% var vc = v.status==='In Stock'?'badge-instock':v.status==='Low Stock'?'badge-low':'badge-out'; %>
+                      <% var vc = v.status==='In Stock'?'badge-instock':v.status==='Low Stock'?'badge-low':v.status==='Muted'?'badge-muted':'badge-out'; %>
                       <tr style="border-bottom:1px solid rgba(217,119,87,.04)">
                         <td style="padding:7px 12px;font-size:13px;color:var(--text)"><%- v.name %></td>
                         <td style="padding:7px 12px;text-align:right;font-weight:600"><%- v.qty %></td>
@@ -227,6 +239,25 @@ function closeInvModal() {
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeInvModal();
 });
+
+function handleMuteClick(btn) {
+  toggleMute(btn, btn.getAttribute('data-base-name'), btn.getAttribute('data-muted') === 'true');
+}
+
+function toggleMute(btn, baseName, currentlyMuted) {
+  btn.disabled = true;
+  fetch('/api/stock-mutes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ baseName: baseName, muted: !currentlyMuted })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) { location.reload(); }
+      else { btn.disabled = false; alert('Could not update mute status: ' + (data.error || 'unknown error')); }
+    })
+    .catch(function(e) { btn.disabled = false; alert('Could not update mute status: ' + e.message); });
+}
 </script>
 
 <%- include('partials/foot') %>

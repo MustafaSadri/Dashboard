@@ -145,6 +145,11 @@ CREATE INDEX IF NOT EXISTS idx_ms_demand_positions_date ON ms_demand_positions(d
 CREATE INDEX IF NOT EXISTS idx_ms_demand_positions_assortment ON ms_demand_positions(assortment_href);
 CREATE INDEX IF NOT EXISTS idx_ms_demand_positions_base_name ON ms_demand_positions(base_name);
 
+CREATE TABLE IF NOT EXISTS ms_muted_models (
+  base_name  TEXT PRIMARY KEY,
+  muted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS ms_sync_meta (
   entity                    TEXT PRIMARY KEY,
   last_full_sync_at         TIMESTAMPTZ,

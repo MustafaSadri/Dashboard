@@ -3,6 +3,7 @@ const express = require('express');
 const session = require('express-session');
 const path    = require('path');
 const { MongoClient } = require('mongodb');
+const { getMutedModelSet, setModelMuted } = require('./db/mutes');
 const app     = express();
 
 // ── MongoDB ───────────────────────────────────────────────
@@ -551,12 +552,16 @@ async function getSyncAlert() {
   });
 }
 
+// Strip the trailing "(Flavor)" suffix to get a model's base name — same
+// pattern already used independently on /inventory and /sku-analysis.
+const stockBaseName = name => (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim() || (name || '—');
+
 // ── Common data (employee, date, global stock alerts) ────
 async function common() {
-  const [{ empName, empLetter, empRole, stockAlerts, stockAlertCount }, syncAlert] = await Promise.all([
+  const [{ empName, empLetter, empRole, stockAlertsAll }, syncAlert, mutedSet] = await Promise.all([
     cached('common', 3 * 60 * 1000, async () => {
       let empName = 'Admin', empLetter = 'A', empRole = 'Moysklad';
-      let stockAlerts = [], stockAlertCount = 0;
+      let stockAlertsAll = [];
 
       const [empRes, stkRes] = await Promise.allSettled([
         ms('/context/employee'),
@@ -571,23 +576,27 @@ async function common() {
       }
 
       if (stkRes.status === 'fulfilled') {
-        const below = (stkRes.value.rows || [])
+        stockAlertsAll = (stkRes.value.rows || [])
           .filter(r => (r.quantity || 0) < 50)
-          .sort((a, b) => (a.quantity || 0) - (b.quantity || 0));
-        stockAlertCount = below.length;
-        stockAlerts = below.slice(0, 60).map(r => ({ name: r.name || '—', qty: r.quantity || 0 }));
+          .sort((a, b) => (a.quantity || 0) - (b.quantity || 0))
+          .map(r => ({ name: r.name || '—', qty: r.quantity || 0 }));
       }
 
-      return { empName, empLetter, empRole, stockAlerts, stockAlertCount };
+      return { empName, empLetter, empRole, stockAlertsAll };
     }),
     getSyncAlert(),
+    getMutedModelSet(),
   ]);
+
+  // Muted models are re-applied fresh every call (not baked into the 3-min
+  // cache above) so toggling a mute reflects immediately, not after a delay.
+  const stockAlerts = stockAlertsAll.filter(r => !mutedSet.has(stockBaseName(r.name)));
 
   return {
     empName, empLetter, empRole,
     date: new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' }),
     time: new Date().toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' }),
-    stockAlerts, stockAlertCount, syncAlert
+    stockAlerts: stockAlerts.slice(0, 60), stockAlertCount: stockAlerts.length, syncAlert
   };
 }
 
@@ -900,13 +909,16 @@ app.get('/', async (req, res) => {
     // Total pieces across all pending orders (fetched in batches, cached)
     const pendingPCS   = await getPendingPCS(pendingOrders.map(o => o.id));
 
-    // Stock stats
+    // Stock stats (muted models are excluded from the low-stock count/alerts,
+    // but still counted as in/out of stock normally)
+    const mutedSet = await getMutedModelSet();
     let lowStock=0, inStock=0, outStock=0, totalQty=0, totalVal=0;
     const folders = new Set();
     stock.forEach(r => {
       const q=r.quantity||0; totalQty+=q; totalVal+=q*(r.price||0);
       if (r.folder?.name) folders.add(r.folder.name);
-      if (q<=0) outStock++; else if (q<50) { lowStock++; inStock++; } else inStock++;
+      const isMuted = mutedSet.has(stockBaseName(r.name));
+      if (isMuted) { inStock++; } else if (q<=0) outStock++; else if (q<50) { lowStock++; inStock++; } else inStock++;
     });
 
     const totalSell     = products.reduce((a,r)=>a+(r.sellSum||0),0);
@@ -1085,11 +1097,14 @@ app.get('/inventory', async (req, res) => {
   try {
     const c    = await common();
     const rows = await getStock();
+    const mutedSet = await getMutedModelSet();
 
     let low = 0, outStk = 0, totalVal = 0, totalQty = 0;
     rows.forEach(r => {
       const q = r.quantity || 0;
       totalQty += q; totalVal += q * (r.price || 0);
+      const isMuted = mutedSet.has(stockBaseName(r.name));
+      if (isMuted) return;
       if (q <= 0) outStk++; else if (q < 50) low++;
     });
 
@@ -1101,9 +1116,10 @@ app.get('/inventory', async (req, res) => {
       const flavorM   = fullName.match(/\(([^)]+)\)\s*$/);
       const flavor    = flavorM ? flavorM[1] : null;
       const qty       = r.quantity || 0;
-      const status    = qty <= 0 ? 'Out of Stock' : qty < 50 ? 'Low Stock' : 'In Stock';
+      const muted     = mutedSet.has(baseName);
+      const status    = muted ? 'Muted' : qty <= 0 ? 'Out of Stock' : qty < 50 ? 'Low Stock' : 'In Stock';
 
-      if (!modelMap[baseName]) modelMap[baseName] = { name: baseName, totalQty: 0, variants: [] };
+      if (!modelMap[baseName]) modelMap[baseName] = { name: baseName, totalQty: 0, variants: [], muted };
       modelMap[baseName].totalQty += qty;
       modelMap[baseName].variants.push({ name: flavor || fullName, qty, status });
     });
@@ -1115,18 +1131,19 @@ app.get('/inventory', async (req, res) => {
         name:         m.name,
         totalQty:     m.totalQty,
         variantCount: m.variants.length,
-        status:       hasOut ? 'Out of Stock' : hasLow ? 'Low Stock' : 'In Stock',
+        muted:        m.muted,
+        status:       m.muted ? 'Muted' : hasOut ? 'Out of Stock' : hasLow ? 'Low Stock' : 'In Stock',
         variants:     m.variants.sort((a, b) => a.name.localeCompare(b.name))
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
 
     // Detail lists for modal buttons on stat cards
     const outItems = rows
-      .filter(r => (r.quantity || 0) <= 0)
+      .filter(r => (r.quantity || 0) <= 0 && !mutedSet.has(stockBaseName(r.name)))
       .map(r => ({ name: r.name || '—', qty: 0 }))
       .sort((a, b) => a.name.localeCompare(b.name));
     const lowItems = rows
-      .filter(r => (r.quantity || 0) > 0 && (r.quantity || 0) < 50)
+      .filter(r => (r.quantity || 0) > 0 && (r.quantity || 0) < 50 && !mutedSet.has(stockBaseName(r.name)))
       .map(r => ({ name: r.name || '—', qty: r.quantity }))
       .sort((a, b) => a.qty - b.qty);
 
@@ -1138,6 +1155,18 @@ app.get('/inventory', async (req, res) => {
       lowJSON: JSON.stringify(lowItems)
     });
   } catch(e) { res.status(500).render('error', { message: e.message }); }
+});
+
+// ── Stock alert mute toggle (per model) ───────────────────
+app.post('/api/stock-mutes', async (req, res) => {
+  try {
+    const { baseName, muted } = req.body || {};
+    if (!baseName) return res.status(400).json({ ok: false, error: 'baseName required' });
+    await setModelMuted(baseName, !!muted);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ── PURCHASES ────────────────────────────────────────────
