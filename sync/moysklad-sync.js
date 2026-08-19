@@ -421,6 +421,61 @@ async function syncDemands(client) {
   }
 }
 
+// Incremental sync (filter=updated>=watermark) can only ever ADD or UPDATE
+// rows — a record deleted on MoySklad simply stops appearing in results,
+// generating no event to catch, so it lingers in our DB forever unless we
+// separately check for it. This does a lightweight "which IDs still exist"
+// reconciliation over a recent rolling window (deletions of old historical
+// records are rare/low-value to chase, so we don't scan the full history).
+// Throttled to once/hour (via ms_sync_meta) since it's extra API load on
+// top of the regular incremental ticks.
+const RECONCILE_WINDOW_DAYS = 30;
+const RECONCILE_INTERVAL_HOURS = 1;
+
+async function reconcileRecentDeletions(client) {
+  const entity = 'reconcile';
+  try {
+    const state = await getSyncState(client, entity);
+    if (state?.last_full_sync_at) {
+      const hoursSince = (Date.now() - new Date(state.last_full_sync_at).getTime()) / 3600000;
+      if (hoursSince < RECONCILE_INTERVAL_HOURS) return;
+    }
+
+    const sinceStr = new Date(Date.now() - RECONCILE_WINDOW_DAYS * 24 * 3600 * 1000)
+      .toISOString().slice(0, 10) + ' 00:00:00';
+    const filter = `&filter=${encodeURIComponent('moment>=' + sinceStr)}&order=moment,asc`;
+
+    let removed = 0;
+
+    const liveOrders = await msAll('/entity/customerorder', filter);
+    const liveOrderIds = new Set(liveOrders.map(r => r.id));
+    const { rows: localOrders } = await client.query('SELECT id FROM ms_orders WHERE moment >= $1::timestamp', [sinceStr]);
+    const staleOrderIds = localOrders.map(r => r.id).filter(id => !liveOrderIds.has(id));
+    if (staleOrderIds.length) {
+      await client.query('DELETE FROM ms_orders WHERE id = ANY($1::text[])', [staleOrderIds]);
+      removed += staleOrderIds.length;
+    }
+
+    const liveDemands = await msAll('/entity/demand', filter);
+    const liveDemandIds = new Set(liveDemands.map(r => r.id));
+    const { rows: localDemands } = await client.query('SELECT id FROM ms_demands WHERE moment >= $1::timestamp', [sinceStr]);
+    const staleDemandIds = localDemands.map(r => r.id).filter(id => !liveDemandIds.has(id));
+    if (staleDemandIds.length) {
+      await client.query('DELETE FROM ms_demands WHERE id = ANY($1::text[])', [staleDemandIds]);
+      removed += staleDemandIds.length;
+    }
+
+    await upsertMeta(client, entity, {
+      last_full_sync_at: new Date(), last_incremental_sync_at: new Date(),
+      last_status: 'ok', last_error: null, last_rows: removed,
+    });
+    if (removed) console.log(`[ms-sync] reconcile: removed ${removed} record(s) deleted upstream on MoySklad`);
+  } catch (e) {
+    await upsertMeta(client, entity, { last_status: 'error', last_error: e.message.slice(0, 500) }).catch(() => {});
+    console.error('[ms-sync] reconcile failed:', e.message);
+  }
+}
+
 // Each entity gets its own short-lived connection rather than one client held
 // for the whole run — a multi-minute single session (orders/demands positions
 // can take a while) risks getting dropped by a pooled endpoint (e.g. Neon's
@@ -453,6 +508,7 @@ async function runSync() {
   await withClient(pool, syncCounterparties);
   await withClient(pool, syncOrders);
   await withClient(pool, syncDemands);
+  await withClient(pool, reconcileRecentDeletions);
 }
 
 async function getSyncStatus() {
