@@ -4,6 +4,7 @@ const session = require('express-session');
 const path    = require('path');
 const { MongoClient } = require('mongodb');
 const { getMutedModelSet, setModelMuted } = require('./db/mutes');
+const { runWithRole, getRole, getMinDate } = require('./lib/request-context');
 const app     = express();
 
 // ── MongoDB ───────────────────────────────────────────────
@@ -154,8 +155,12 @@ async function fetchTallyStockTotal(asOfDate) {
 }
 
 // ── Auth credentials ─────────────────────────────────────
-const PASSCODE         = process.env.PASSCODE || '1990';
-const PASSCODE_LIMITED = '1122';
+// Three roles: admin (everything), partner (everything except Tally),
+// sales_director (no Tally, and MoySklad data floored to 1 Sept 2026 —
+// see lib/request-context.js for where that floor is actually enforced).
+const PASSCODE                = process.env.PASSCODE || '1990';
+const PASSCODE_PARTNER        = process.env.PASSCODE_PARTNER || '1122';
+const PASSCODE_SALES_DIRECTOR = process.env.PASSCODE_SALES_DIRECTOR || '0901';
 
 const TOKEN   = process.env.TOKEN || '';
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
@@ -193,9 +198,14 @@ app.post('/login', (req, res) => {
     req.session.role = 'admin';
     return res.redirect('/loading');
   }
-  if (PASSCODE_LIMITED && req.body.passcode === PASSCODE_LIMITED) {
+  if (PASSCODE_PARTNER && req.body.passcode === PASSCODE_PARTNER) {
     req.session.loggedIn = true;
-    req.session.role = 'limited';
+    req.session.role = 'partner';
+    return res.redirect('/loading');
+  }
+  if (PASSCODE_SALES_DIRECTOR && req.body.passcode === PASSCODE_SALES_DIRECTOR) {
+    req.session.loggedIn = true;
+    req.session.role = 'sales_director';
     return res.redirect('/loading');
   }
   res.render('login', { error: 'Incorrect passcode. Try again.' });
@@ -253,10 +263,18 @@ app.use((req, res, next) => {
   res.redirect('/login');
 });
 
+// Makes req.session.role available deep inside the MoySklad data layer
+// (db/moysklad-queries.js's date-floor, server.js's cached()'s cache-key
+// isolation) without threading a parameter through every function — see
+// lib/request-context.js.
+app.use((req, res, next) => {
+  runWithRole(req.session.role, next);
+});
+
 // ── Format helpers available in all EJS templates ────────
 app.use((req, res, next) => {
   res.locals.active       = '';
-  res.locals.canViewTally = req.session.role !== 'limited';
+  res.locals.canViewTally = req.session.role === 'admin';
   res.locals.empName   = 'Admin';
   res.locals.empLetter = 'A';
   res.locals.empRole   = 'System';
@@ -503,13 +521,18 @@ function tallyDate(s) {
 const _cache = new Map();
 const _inflight = new Map();
 function cached(key, ttlMs, fn) {
-  const hit = _cache.get(key);
+  // Scoped by role so e.g. a Sales Director's date-floored result never leaks
+  // into an Admin's request for the same nominal key, or vice versa — see
+  // lib/request-context.js. Applied here once rather than at each of this
+  // function's ~20 call sites, so none of them can accidentally forget it.
+  const scopedKey = `${key}::${getRole() || 'norole'}`;
+  const hit = _cache.get(scopedKey);
   if (hit && Date.now() - hit.t < ttlMs) return Promise.resolve(hit.v);
-  if (_inflight.has(key)) return _inflight.get(key);
+  if (_inflight.has(scopedKey)) return _inflight.get(scopedKey);
   const p = fn()
-    .then(v => { _cache.set(key, { v, t: Date.now() }); _inflight.delete(key); return v; })
-    .catch(e => { _inflight.delete(key); throw e; });
-  _inflight.set(key, p);
+    .then(v => { _cache.set(scopedKey, { v, t: Date.now() }); _inflight.delete(scopedKey); return v; })
+    .catch(e => { _inflight.delete(scopedKey); throw e; });
+  _inflight.set(scopedKey, p);
   return p;
 }
 
@@ -2023,7 +2046,17 @@ function parsePeriodMongo(period) {
 // ── Chatbot tool: query MoySklad data LIVE via API (not MongoDB) ──────────
 async function toolQueryMoysklad({ data_type = 'demands', period = 'this_month', group_by = 'product', filter, top_n = 15, sort_by = 'revenue' } = {}) {
   try {
-    const { from, to } = parsePeriodMongo(period);  // YYYY-MM-DD strings
+    let { from, to } = parsePeriodMongo(period);  // YYYY-MM-DD strings
+    // Sales Director (or any future role with a data floor) can't pull
+    // pre-cutover figures through the chatbot either, even by explicitly
+    // asking for an older period — clamp the resolved range the same way
+    // db/moysklad-queries.js clamps every UI-driven query.
+    const roleMinDate = getMinDate();
+    if (roleMinDate) {
+      const minDay = roleMinDate.slice(0, 10);
+      if (from < minDay) from = minDay;
+      if (to < minDay) to = minDay;
+    }
     const N   = Math.min(+top_n || 15, 200);
     const sf  = sort_by === 'quantity' ? 'qty' : sort_by === 'orders' ? 'orders' : 'revenue';
     const apiFrom = `${from} 00:00:00`;
@@ -3441,6 +3474,13 @@ app.post('/api/chat', async (req, res) => {
     const systemPrompt = await buildChatContext();
     let msgHistory = [...messages.slice(-20)];
 
+    // Non-admin roles never see Tally (or the tool that cross-references it) —
+    // built per-request rather than using the shared CHAT_TOOLS constant
+    // directly, so this can't be forgotten at some other call site later.
+    const activeTools = req.session.role === 'admin'
+      ? CHAT_TOOLS
+      : CHAT_TOOLS.filter(t => t.name !== 'query_tally' && t.name !== 'compare_sources');
+
     // Agentic loop: allow up to 5 rounds (each round may have multiple tool calls)
     for (let round = 0; round < 5; round++) {
       let textStreamed = false;
@@ -3451,7 +3491,7 @@ app.post('/api/chat', async (req, res) => {
         max_tokens: 3000,
         // cache_control caches the large system prompt on Anthropic's side → ~80% faster TTFT
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-        tools: CHAT_TOOLS,
+        tools: activeTools,
         messages: msgHistory
       });
 
@@ -3471,11 +3511,15 @@ app.post('/api/chat', async (req, res) => {
         // Tell client which data is being fetched
         sse({ type: 'status', text: getToolStatusText(toolUses) });
 
+        const tallyBlocked = req.session.role !== 'admin';
         const toolResults_raw = await Promise.all(toolUses.map(t => {
           if (t.name === 'web_search')       return webSearch(t.input.query);
           if (t.name === 'query_moysklad')   return toolQueryMoysklad(t.input);
-          if (t.name === 'query_tally')      return toolQueryTally(t.input);
-          if (t.name === 'compare_sources')  return toolCompareSources(t.input);
+          // Defense in depth: these are already excluded from `activeTools` for
+          // non-admin roles, so Claude shouldn't be able to name them — but
+          // refuse explicitly rather than trust that alone.
+          if (t.name === 'query_tally')      return tallyBlocked ? Promise.resolve(JSON.stringify({ error: 'Tally access is not available for this account.' })) : toolQueryTally(t.input);
+          if (t.name === 'compare_sources')  return tallyBlocked ? Promise.resolve(JSON.stringify({ error: 'Tally access is not available for this account.' })) : toolCompareSources(t.input);
           if (t.name === 'predict_sales')    return toolPredictSales(t.input);
           if (t.name === 'analyze')          return toolAnalytics(t.input);
           return Promise.resolve(JSON.stringify({ error: 'Unknown tool: ' + t.name }));
@@ -3571,7 +3615,7 @@ async function fetchLiveTallyData() {
 }
 
 app.get('/tally', async (req, res) => {
-  if (req.session.role === 'limited') return res.redirect('/');
+  if (req.session.role !== 'admin') return res.redirect('/');
   const c   = await common();
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
@@ -3887,9 +3931,9 @@ app.get('/tally', async (req, res) => {
   });
 });
 
-// Block all Tally API routes for limited-role users
+// Block all Tally API routes for non-admin roles
 app.use('/api/tally', (req, res, next) => {
-  if (req.session.role === 'limited') return res.status(403).json({ ok: false, error: 'Access denied' });
+  if (req.session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Access denied' });
   next();
 });
 
@@ -4163,7 +4207,15 @@ app.post('/api/tally/sync', async (req, res) => {
 function buildMonthlyCounts(items) {
   const now = new Date();
   const months = [];
+  // Default start is Dec 2025 (the app's original history start), but a role
+  // with a data floor (e.g. Sales Director, see lib/request-context.js)
+  // should never see empty pre-floor months on the chart — start there instead.
   let y = 2025, m = 12;
+  const minDate = getMinDate();
+  if (minDate) {
+    const [minY, minM] = minDate.slice(0, 7).split('-').map(Number);
+    if (minY > y || (minY === y && minM > m)) { y = minY; m = minM; }
+  }
   while (y < now.getFullYear() || (y === now.getFullYear() && m <= now.getMonth() + 1)) {
     const key   = `${y}-${String(m).padStart(2,'0')}`;
     const label = new Date(y, m - 1, 1).toLocaleString('en', { month: 'short', year: '2-digit' });

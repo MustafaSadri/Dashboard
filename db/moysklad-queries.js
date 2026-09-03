@@ -10,6 +10,7 @@
 // This means every route/helper in server.js keeps working unmodified — they
 // have no idea whether the data came from the network or the database.
 const { query } = require('./pool');
+const { getMinDate } = require('../lib/request-context');
 
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
 
@@ -58,6 +59,19 @@ function buildWhere(clauses, fieldMap) {
     }
   });
   return { where: conds.length ? 'WHERE ' + conds.join(' AND ') : '', vals };
+}
+// ANDs a role-based `<momentCol> >= $N` floor onto a WHERE clause already
+// built by buildWhere() (or hand-built, for the profit handlers) — the single
+// point every date-scoped handler goes through so a Sales Director login can
+// never see pre-cutover data, regardless of which route/filter reached it.
+// See lib/request-context.js for the role -> date mapping.
+function applyMinDateFloor(where, vals, momentCol) {
+  const minDate = getMinDate();
+  if (!minDate) return { where, vals };
+  const newVals = vals.slice();
+  newVals.push(minDate);
+  const clause = `${momentCol} >= $${newVals.length}::timestamp`;
+  return { where: where ? `${where} AND ${clause}` : `WHERE ${clause}`, vals: newVals };
 }
 function pageParams(qs, defaultLimit = 1000) {
   return {
@@ -159,7 +173,8 @@ const DEMAND_FIELD_MAP = {
 };
 async function demandListHandler(qs) {
   const clauses = parseFilterClauses(qs.get('filter'));
-  const { where, vals } = buildWhere(clauses, DEMAND_FIELD_MAP);
+  let { where, vals } = buildWhere(clauses, DEMAND_FIELD_MAP);
+  ({ where, vals } = applyMinDateFloor(where, vals, 'dm.moment'));
   const dir = orderDirection(qs);
   const { limit, offset } = pageParams(qs);
   vals.push(limit, offset);
@@ -190,7 +205,8 @@ const ORDER_FIELD_MAP = {
 };
 async function orderListHandler(qs) {
   const clauses = parseFilterClauses(qs.get('filter'));
-  const { where, vals } = buildWhere(clauses, ORDER_FIELD_MAP);
+  let { where, vals } = buildWhere(clauses, ORDER_FIELD_MAP);
+  ({ where, vals } = applyMinDateFloor(where, vals, 'o.moment'));
   const dir = orderDirection(qs);
   const { limit, offset } = pageParams(qs);
   vals.push(limit, offset);
@@ -328,11 +344,12 @@ async function profitByProductHandler(qs) {
   const cpClause    = parseFilterClauses(qs.get('filter')).find(c => c.field === 'counterparty');
 
   const conds = [];
-  const vals = [];
+  let vals = [];
   if (momentFrom) { vals.push(momentFrom); conds.push(`d.moment >= $${vals.length}::timestamp`); }
   if (momentTo)   { vals.push(momentTo);   conds.push(`d.moment <= $${vals.length}::timestamp`); }
   if (cpClause)   { vals.push(hrefTail(cpClause.value)); conds.push(`d.customer_id = $${vals.length}`); }
-  const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+  let where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+  ({ where, vals } = applyMinDateFloor(where, vals, 'd.moment'));
   vals.push(limit);
 
   const sql = `
@@ -364,10 +381,11 @@ async function profitByCounterpartyHandler(qs) {
   const limit       = parseInt(qs.get('limit'), 10) || 1000;
 
   const conds = [];
-  const vals = [];
+  let vals = [];
   if (momentFrom) { vals.push(momentFrom); conds.push(`moment >= $${vals.length}::timestamp`); }
   if (momentTo)   { vals.push(momentTo);   conds.push(`moment <= $${vals.length}::timestamp`); }
-  const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+  let where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+  ({ where, vals } = applyMinDateFloor(where, vals, 'moment'));
   vals.push(limit);
 
   const sql = `

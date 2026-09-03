@@ -456,8 +456,14 @@ async function reconcileRecentDeletions(client) {
       if (hoursSince < RECONCILE_INTERVAL_HOURS) return;
     }
 
-    const sinceStr = new Date(Date.now() - RECONCILE_WINDOW_DAYS * 24 * 3600 * 1000)
+    // Never reach earlier than this account's own start date — critical when
+    // an older account's history has been merged in (sync/merge-old-account.js):
+    // those rows don't exist in *this* account's live API at all, so without
+    // this floor reconciliation would see them as "deleted" and wipe them.
+    const rollingSince = new Date(Date.now() - RECONCILE_WINDOW_DAYS * 24 * 3600 * 1000)
       .toISOString().slice(0, 10) + ' 00:00:00';
+    const floorSince = `${MS_SYNC_FROM} 00:00:00`;
+    const sinceStr = rollingSince > floorSince ? rollingSince : floorSince;
     const filter = `&filter=${encodeURIComponent('moment>=' + sinceStr)}&order=moment,asc`;
 
     let removed = 0;
