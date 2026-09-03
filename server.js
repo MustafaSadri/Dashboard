@@ -3382,6 +3382,9 @@ app.post('/api/ms/sync', async (req, res) => {
   if (!process.env.DATABASE_URL) {
     return res.status(410).json({ ok: false, message: 'DATABASE_URL is not configured' });
   }
+  if (process.env.MS_SYNC_ENABLED === 'false') {
+    return res.status(410).json({ ok: false, message: 'MoySklad sync is disabled (MS_SYNC_ENABLED=false)' });
+  }
   try {
     await require('./sync/moysklad-sync').runSync();
     res.json({ ok: true });

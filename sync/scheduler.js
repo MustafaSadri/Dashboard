@@ -18,9 +18,15 @@ async function tick() {
 }
 
 // Starts the recurring MoySklad → Postgres sync. Safe to call once at boot;
-// no-op if DATABASE_URL isn't configured (nothing to sync into).
+// no-op if DATABASE_URL isn't configured (nothing to sync into), or if
+// explicitly disabled via MS_SYNC_ENABLED=false (e.g. intentionally freezing
+// data at a cutover point, without needing to blank out TOKEN).
 function start() {
   if (task) return task;
+  if (process.env.MS_SYNC_ENABLED === 'false') {
+    console.log('[ms-sync] MS_SYNC_ENABLED=false — background sync disabled');
+    return null;
+  }
   if (!process.env.DATABASE_URL) {
     console.log('[ms-sync] DATABASE_URL not set — background sync disabled');
     return null;
