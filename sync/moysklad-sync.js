@@ -16,9 +16,24 @@ const TOKEN       = process.env.TOKEN || '';
 const MS_SYNC_FROM = process.env.MS_SYNC_FROM || '2024-12-01';
 const MS_HEADERS  = { Authorization: `Bearer ${TOKEN}`, Accept: 'application/json;charset=utf-8' };
 
+// Close date of the *old* MoySklad account (e.g. "2026-08-31"). When set,
+// every orders/demands fetch caps `moment<=` this date — so even a manual
+// catch-up sync (MS_SYNC_ENABLED flipped on temporarily to pull in a late
+// correction made in the old account) can never leak new-account data past
+// the cutover, incremental or full. Leave unset once fully off the old
+// account and this stops applying.
+const MS_SYNC_1_CLOSE_DATE = process.env.MS_SYNC_1_CLOSE_DATE || '';
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const hrefTail = href => (href || '').split('/').pop().split('?')[0];
 const baseNameOf = name => (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim() || (name || '');
+
+// Builds a MoySklad filter string with an optional trailing moment<= cap.
+function buildDateBoundedFilter(clauses) {
+  const parts = clauses.filter(Boolean);
+  if (MS_SYNC_1_CLOSE_DATE) parts.push(`moment<=${MS_SYNC_1_CLOSE_DATE} 23:59:59`);
+  return parts.length ? `&filter=${encodeURIComponent(parts.join(';'))}` : '';
+}
 
 // ── Live MoySklad fetch (rate-limit-aware, paginated) ───────────────────────
 async function msGet(path, retries = 6) {
@@ -321,7 +336,7 @@ async function syncOrders(client) {
 
     const filterField = needsFull ? 'moment' : 'updated';
     const since = needsFull ? `${MS_SYNC_FROM} 00:00:00` : state.watermark_s;
-    const filter = since ? `&filter=${encodeURIComponent(`${filterField}>=${since}`)}` : '';
+    const filter = buildDateBoundedFilter([since ? `${filterField}>=${since}` : null]);
     const rawRows = await msAll('/entity/customerorder', `${filter}&expand=agent,state&order=moment,asc`);
 
     let maxUpdated = state?.watermark_s || null;
@@ -378,7 +393,7 @@ async function syncDemands(client) {
 
     const filterField = needsFull ? 'moment' : 'updated';
     const since = needsFull ? `${MS_SYNC_FROM} 00:00:00` : state.watermark_s;
-    const filter = since ? `&filter=${encodeURIComponent(`${filterField}>=${since}`)}` : '';
+    const filter = buildDateBoundedFilter([since ? `${filterField}>=${since}` : null]);
     const rawRows = await msAll('/entity/demand', `${filter}&expand=agent,state&order=moment,asc`);
 
     let maxUpdated = state?.watermark_s || null;
