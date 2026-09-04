@@ -22,7 +22,19 @@ const GAP_TO   = '2026-08-31 23:59:59';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const hrefTail = href => (href || '').split('/').pop().split('?')[0];
-const baseNameOf = name => (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim() || (name || '');
+function baseNameOf(name) {
+  const s = (name || '').trim();
+  if (!s.endsWith(')')) return s || name || '';
+  let depth = 0;
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i] === ')') depth++;
+    else if (s[i] === '(') {
+      depth--;
+      if (depth === 0) return s.slice(0, i).trim() || s;
+    }
+  }
+  return s;
+}
 
 async function msGet(path, retries = 6) {
   for (let attempt = 0; attempt <= retries; attempt++) {

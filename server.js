@@ -577,7 +577,9 @@ async function getSyncAlert() {
 
 // Strip the trailing "(Flavor)" suffix to get a model's base name — same
 // pattern already used independently on /inventory and /sku-analysis.
-const stockBaseName = name => (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim() || (name || '—');
+// (baseNameOf, defined further below, handles nested parens; this thin
+// wrapper just keeps the "—" fallback stockBaseName's callers rely on.)
+const stockBaseName = name => baseNameOf(name) || (name || '—');
 
 // ── Common data (employee, date, global stock alerts) ────
 async function common() {
@@ -669,6 +671,25 @@ const getProfitByProduct = (from, to, limit = 10) => {
   return cached(key, 5*60*1000, () => ms(url).then(r => r.rows || []).catch(() => []));
 };
 
+// Strips a trailing "(flavor)" suffix off a product name to get its parent
+// model name — e.g. "ELFBAR GH23000 ... (Blueberry Pear)" -> "ELFBAR GH23000 ...".
+// Walks from the end tracking paren depth (rather than a single-level regex)
+// so it still works when the flavor itself contains parens, e.g.
+// "ELFBAR GH23000 (Баха сплеш (Тропические фрукты), Baja Splash)".
+function baseNameOf(name) {
+  const s = (name || '').trim();
+  if (!s.endsWith(')')) return s || name || '';
+  let depth = 0;
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i] === ')') depth++;
+    else if (s[i] === '(') {
+      depth--;
+      if (depth === 0) return s.slice(0, i).trim() || s;
+    }
+  }
+  return s;
+}
+
 // Groups individual SKU/flavor variant rows (as returned by profit/byproduct)
 // into their parent model — e.g. "ELFBAR GH23000 ... (Blueberry Pear)" and
 // "ELFBAR GH23000 ... (Mango)" both roll into one "ELFBAR GH23000 ..." entry,
@@ -677,7 +698,7 @@ function groupProductsByModel(rows, topN = 10) {
   const modelMap = {};
   rows.forEach(r => {
     const fullName = r.assortment?.name || '—';
-    const baseName = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
+    const baseName = baseNameOf(fullName);
     if (!modelMap[baseName]) {
       modelMap[baseName] = {
         name: baseName,
@@ -1135,7 +1156,7 @@ app.get('/inventory', async (req, res) => {
     const modelMap = {};
     rows.forEach(r => {
       const fullName  = r.name || '—';
-      const baseName  = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
+      const baseName  = baseNameOf(fullName);
       const flavorM   = fullName.match(/\(([^)]+)\)\s*$/);
       const flavor    = flavorM ? flavorM[1] : null;
       const qty       = r.quantity || 0;
@@ -1534,7 +1555,7 @@ app.get('/sku-analysis', async (req, res) => {
       // Group raw flavour counts by base model name
       const byModel = {};
       Object.entries(rawSku).forEach(([fullName, qty]) => {
-        const base = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
+        const base = baseNameOf(fullName);
         if (!byModel[base]) byModel[base] = { total: 0, skus: [] };
         byModel[base].total += qty;
         byModel[base].skus.push({ name: fullName, qty });
@@ -1560,7 +1581,7 @@ app.get('/sku-analysis', async (req, res) => {
     const modelMap = {};
     Object.entries(skuPCS).forEach(([fullName, pcs]) => {
       const flavorM  = fullName.match(/\(([^)]+)\)\s*$/);
-      const baseName = fullName.replace(/\s*\([^)]*\)\s*$/, '').trim() || fullName;
+      const baseName = baseNameOf(fullName);
       const sku      = flavorM ? flavorM[1] : '—';
       if (!modelMap[baseName]) modelMap[baseName] = { name: baseName, totalPCS: 0, skus: [] };
       modelMap[baseName].totalPCS += pcs;
@@ -1868,7 +1889,7 @@ app.get('/product-analytics', async (req, res) => {
     // This ensures stock/chart matching works whether the URL came from a
     // parent product ID or a specific variant ID.
     const rawName = entity.name || decodeURIComponent(qName);
-    const baseName = rawName.replace(/\s*\([^)]*\)\s*$/, '').trim() || rawName;
+    const baseName = baseNameOf(rawName);
 
     // Stock variants: match items whose name equals or starts with baseName
     function stockMatches(n) {

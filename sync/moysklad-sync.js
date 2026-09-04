@@ -24,9 +24,36 @@ const MS_HEADERS  = { Authorization: `Bearer ${TOKEN}`, Accept: 'application/jso
 // account and this stops applying.
 const MS_SYNC_1_CLOSE_DATE = process.env.MS_SYNC_1_CLOSE_DATE || '';
 
+// Hard-coded (not env-driven) floor for reconcileRecentDeletions below. Real
+// incident: with MS_SYNC_FROM misconfigured/unset on a deployment (falls back
+// to the pre-cutover default of 2024-12-01), reconciliation's floor silently
+// stopped protecting the merged old account's history, and it deleted ~422
+// August 2026 orders/demands within an hour of being backfilled — the live
+// active account naturally has no record of them (different MoySklad account
+// entirely), so reconciliation read their absence as "deleted upstream".
+// This constant can't be misconfigured away by a missing env var, so it backs
+// up MS_SYNC_FROM as a second, independent line of defense.
+const ACCOUNT_CUTOVER_DATE = '2026-09-01';
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const hrefTail = href => (href || '').split('/').pop().split('?')[0];
-const baseNameOf = name => (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim() || (name || '');
+// Strips a trailing "(flavor)" suffix to get a product's parent model name.
+// Walks from the end tracking paren depth (rather than a single-level regex)
+// so it still works when the flavor itself contains parens, e.g.
+// "ELFBAR GH23000 (Баха сплеш (Тропические фрукты), Baja Splash)".
+function baseNameOf(name) {
+  const s = (name || '').trim();
+  if (!s.endsWith(')')) return s || name || '';
+  let depth = 0;
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i] === ')') depth++;
+    else if (s[i] === '(') {
+      depth--;
+      if (depth === 0) return s.slice(0, i).trim() || s;
+    }
+  }
+  return s;
+}
 
 // Builds a MoySklad filter string with an optional trailing moment<= cap.
 function buildDateBoundedFilter(clauses) {
@@ -460,10 +487,14 @@ async function reconcileRecentDeletions(client) {
     // an older account's history has been merged in (sync/merge-old-account.js):
     // those rows don't exist in *this* account's live API at all, so without
     // this floor reconciliation would see them as "deleted" and wipe them.
+    // Takes the latest (most restrictive) of three floors: the rolling window,
+    // MS_SYNC_FROM, and the hard-coded ACCOUNT_CUTOVER_DATE — the last one
+    // can't be silently disabled by a missing/stale env var on some deployment.
     const rollingSince = new Date(Date.now() - RECONCILE_WINDOW_DAYS * 24 * 3600 * 1000)
       .toISOString().slice(0, 10) + ' 00:00:00';
     const floorSince = `${MS_SYNC_FROM} 00:00:00`;
-    const sinceStr = rollingSince > floorSince ? rollingSince : floorSince;
+    const hardFloor   = `${ACCOUNT_CUTOVER_DATE} 00:00:00`;
+    const sinceStr = [rollingSince, floorSince, hardFloor].sort().pop();
     const filter = `&filter=${encodeURIComponent('moment>=' + sinceStr)}&order=moment,asc`;
 
     let removed = 0;

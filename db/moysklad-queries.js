@@ -352,15 +352,23 @@ async function profitByProductHandler(qs) {
   ({ where, vals } = applyMinDateFloor(where, vals, 'd.moment'));
   vals.push(limit);
 
+  // Group by assortment_href (the stable product id) rather than the raw
+  // dp.product_name snapshot: product_name is frozen at the time each position
+  // was synced, so a product renamed in MoySklad after some of its sales were
+  // already synced ends up with two different name strings for the same
+  // physical product, splitting it into separate rows here. Using the
+  // current ms_assortment.name (falling back to the snapshot for hrefs no
+  // longer present there) keeps every sale of one product under one row.
   const sql = `
     WITH agg AS (
-      SELECT dp.assortment_href, dp.product_name,
+      SELECT dp.assortment_href, COALESCE(a.name, dp.product_name) AS product_name,
              SUM(dp.amount_kopecks) AS sell_sum,
              SUM(dp.quantity) AS sell_qty
       FROM ms_demand_positions dp
       JOIN ms_demands d ON d.id = dp.demand_id
+      LEFT JOIN ms_assortment a ON a.href = dp.assortment_href
       ${where}
-      GROUP BY dp.assortment_href, dp.product_name
+      GROUP BY dp.assortment_href, COALESCE(a.name, dp.product_name)
     )
     SELECT *, COUNT(*) OVER() AS total_count FROM agg ORDER BY sell_sum DESC LIMIT $${vals.length}`;
   const { rows } = await query(sql, vals);
