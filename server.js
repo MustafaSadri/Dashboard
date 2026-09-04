@@ -690,27 +690,54 @@ function baseNameOf(name) {
   return s;
 }
 
+// A product renamed between MoySklad accounts (e.g. the old account's
+// "ELFBAR GH23000 Disposable 850mAh Planet Edition" became the new account's
+// "ELFBAR GH23000") kept the same article/code — cached 30 min, refreshed
+// from ms_assortment. See db/moysklad-queries.js's getProductFamilyMap for
+// why this has to be a separate lookup from baseNameOf.
+function getFamilyMap() {
+  return cached('product_family_map', 30 * 60 * 1000, async () => {
+    if (MS_DATA_SOURCE === 'postgres') return require('./db/moysklad-queries').getProductFamilyMap();
+    return new Map();
+  });
+}
+
 // Groups individual SKU/flavor variant rows (as returned by profit/byproduct)
 // into their parent model — e.g. "ELFBAR GH23000 ... (Blueberry Pear)" and
 // "ELFBAR GH23000 ... (Mango)" both roll into one "ELFBAR GH23000 ..." entry,
 // matching how MoySklad's own product tree groups variants under a model.
-function groupProductsByModel(rows, topN = 10) {
+// familyMap (see getFamilyMap above) additionally merges a product that was
+// renamed across the account cutover, so its old- and new-account sales
+// history lands in one entry instead of splitting on the name change.
+function groupProductsByModel(rows, topN = 10, familyMap = null) {
   const modelMap = {};
   rows.forEach(r => {
-    const fullName = r.assortment?.name || '—';
-    const baseName = baseNameOf(fullName);
-    if (!modelMap[baseName]) {
-      modelMap[baseName] = {
+    const fullName  = r.assortment?.name || '—';
+    const baseName  = baseNameOf(fullName);
+    const familyKey = (familyMap && familyMap.get(baseName)) || baseName;
+    if (!modelMap[familyKey]) {
+      modelMap[familyKey] = {
         name: baseName,
         id: (r.assortment?.meta?.href || '').split('/').pop(),
         type: r.assortment?.meta?.type || 'product',
-        qty: 0, val: 0,
+        qty: 0, val: 0, _nameVotes: {},
       };
     }
-    modelMap[baseName].qty += Math.round(r.sellQuantity || 0);
-    modelMap[baseName].val += (r.sellSum || 0) / 100;
+    const entry = modelMap[familyKey];
+    const val = (r.sellSum || 0) / 100;
+    entry.qty += Math.round(r.sellQuantity || 0);
+    entry.val += val;
+    // Display whichever of the merged names carries the most revenue, so a
+    // renamed product shows under its currently-active name once it
+    // outsells the frozen pre-rename history.
+    entry._nameVotes[baseName] = (entry._nameVotes[baseName] || 0) + val;
   });
-  return Object.values(modelMap).sort((a, b) => b.val - a.val).slice(0, topN);
+  return Object.values(modelMap).map(m => {
+    let bestName = m.name, bestVal = -1;
+    Object.entries(m._nameVotes).forEach(([n, v]) => { if (v > bestVal) { bestVal = v; bestName = n; } });
+    const { _nameVotes, ...rest } = m;
+    return { ...rest, name: bestName };
+  }).sort((a, b) => b.val - a.val).slice(0, topN);
 }
 
 const getProfitByCounterparty = (from, to) => {
@@ -906,13 +933,14 @@ app.get('/', async (req, res) => {
     const c = await common();
     const from = monthStart();
 
-    const [shipments, orders, stock, products, customers, stateMap] = await Promise.all([
+    const [shipments, orders, stock, products, customers, stateMap, familyMap] = await Promise.all([
       getRecentDemands(),
       getAllOrders(),
       getStock(),
       getProfitByProduct(from, undefined, 500),
       getProfitByCounterparty(from),
       getOrderStateMap(),
+      getFamilyMap(),
     ]).then(r => [
       r[0],
       r[1],
@@ -920,6 +948,7 @@ app.get('/', async (req, res) => {
       (r[3] || []).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)),
       (r[4] || []).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)),
       r[5],
+      r[6],
     ]);
 
     // Today's shipments (Sales Today)
@@ -988,7 +1017,7 @@ app.get('/', async (req, res) => {
       salesToday: salesToday/100, shipmentsToday, todayPCS,
       pending, pendingStates, pendingValue, pendingPCS,
       totalOrders: orders.length,
-      products: groupProductsByModel(products, 10),
+      products: groupProductsByModel(products, 10, familyMap),
       customers: customers.slice(0,10).map(r=>({
         name: r.counterparty?.name||'—',
         id:   (r.counterparty?.meta?.href||'').split('/').pop(),
@@ -1576,23 +1605,32 @@ app.get('/sku-analysis', async (req, res) => {
 
       return { demands, skuPCS: map };
     });
+    const familyMap = await getFamilyMap();
 
-    // ── Step 3: group by model (baseName) and flavour ─────────
+    // ── Step 3: group by model (baseName, merged across a cross-account
+    // rename via familyMap — see getFamilyMap) and flavour ─────────
     const modelMap = {};
     Object.entries(skuPCS).forEach(([fullName, pcs]) => {
-      const flavorM  = fullName.match(/\(([^)]+)\)\s*$/);
-      const baseName = baseNameOf(fullName);
-      const sku      = flavorM ? flavorM[1] : '—';
-      if (!modelMap[baseName]) modelMap[baseName] = { name: baseName, totalPCS: 0, skus: [] };
-      modelMap[baseName].totalPCS += pcs;
-      modelMap[baseName].skus.push({ fullName, sku, pcs });
+      const flavorM   = fullName.match(/\(([^)]+)\)\s*$/);
+      const baseName  = baseNameOf(fullName);
+      const familyKey = familyMap.get(baseName) || baseName;
+      const sku       = flavorM ? flavorM[1] : '—';
+      if (!modelMap[familyKey]) modelMap[familyKey] = { name: baseName, totalPCS: 0, skus: [], _nameVotes: {} };
+      const entry = modelMap[familyKey];
+      entry.totalPCS += pcs;
+      entry.skus.push({ fullName, sku, pcs });
+      entry._nameVotes[baseName] = (entry._nameVotes[baseName] || 0) + pcs;
     });
 
-    // Sort models and SKUs by PCS descending
-    const models = Object.values(modelMap).map(m => ({
-      ...m,
-      skus: m.skus.sort((a, b) => b.pcs - a.pcs)
-    })).sort((a, b) => b.totalPCS - a.totalPCS);
+    // Sort models and SKUs by PCS descending; display each merged model under
+    // whichever of its names sold the most (so a renamed product shows under
+    // its currently-active name once it outsells the frozen pre-rename history)
+    const models = Object.values(modelMap).map(m => {
+      let bestName = m.name, bestPcs = -1;
+      Object.entries(m._nameVotes).forEach(([n, p]) => { if (p > bestPcs) { bestPcs = p; bestName = n; } });
+      const { _nameVotes, ...rest } = m;
+      return { ...rest, name: bestName, skus: m.skus.sort((a, b) => b.pcs - a.pcs) };
+    }).sort((a, b) => b.totalPCS - a.totalPCS);
 
     // ── Flat SKU list for top/low tables ─────────────────────
     const allSKUs = [];
@@ -1800,17 +1838,19 @@ app.get('/customer-analytics', async (req, res) => {
     const agentFilter = `agent=${cpHref}`;
     const cpFilter    = `counterparty=${cpHref}`;
 
-    const [cpRes, ordRes, prodRes, stateRes] = await Promise.allSettled([
+    const [cpRes, ordRes, prodRes, stateRes, familyMapRes] = await Promise.allSettled([
       ms(`/entity/counterparty/${cpId}`),
       msAll(`/entity/customerorder?filter=${enc(agentFilter)}&order=moment,desc&expand=state`),
       ms(`/report/profit/byproduct?filter=${enc(cpFilter)}&limit=500`),
-      getOrderStateMap()
+      getOrderStateMap(),
+      getFamilyMap(),
     ]);
 
-    const cp       = cpRes.status==='fulfilled'   ? cpRes.value : {};
-    const orders   = ordRes.status==='fulfilled'  ? ordRes.value.rows : [];
-    const products = prodRes.status==='fulfilled' ? (prodRes.value.rows||[]).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)) : [];
-    const stateMap = stateRes.status==='fulfilled' ? stateRes.value : {};
+    const cp        = cpRes.status==='fulfilled'       ? cpRes.value : {};
+    const orders    = ordRes.status==='fulfilled'      ? ordRes.value.rows : [];
+    const products  = prodRes.status==='fulfilled'     ? (prodRes.value.rows||[]).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)) : [];
+    const stateMap  = stateRes.status==='fulfilled'    ? stateRes.value : {};
+    const familyMap = familyMapRes.status==='fulfilled' ? familyMapRes.value : null;
 
     const totalRevenue   = orders.reduce((a,r)=>a+(r.sum||0),0)/100;
     const avgOrderValue  = orders.length>0 ? totalRevenue/orders.length : 0;
@@ -1845,7 +1885,7 @@ app.get('/customer-analytics', async (req, res) => {
       cp: { name: cp.name||cpName, phone: cp.phone||'—', email: cp.email||'—', id: cpId },
       totalOrders: orders.length, totalRevenue, avgOrderValue, pending,
       orderList,
-      topProducts: groupProductsByModel(products, 10),
+      topProducts: groupProductsByModel(products, 10, familyMap),
       monthlyTrend,
       ordersJSON:  JSON.stringify(orderList),
       trendJSON:   JSON.stringify(monthlyTrend)
@@ -1873,14 +1913,16 @@ app.get('/product-analytics', async (req, res) => {
       return { key, from, to, label: MN[d.getMonth()] + ' ' + d.getFullYear() };
     });
 
-    // Fetch entity, stock, and per-month profit reports in parallel
-    const [entityRes, stockRes, ...mResults] = await Promise.allSettled([
+    // Fetch entity, stock, per-month profit reports, and the family map in parallel
+    const [entityRes, stockRes, familyMapRes, ...mResults] = await Promise.allSettled([
       ms(`/entity/${entityPath}/${id}`),
       ms('/report/stock/all?limit=1000'),
+      getFamilyMap(),
       ...monthRanges.map(m =>
         ms(`/report/profit/byproduct?momentFrom=${enc(m.from + ' 00:00:00')}&momentTo=${enc(m.to + ' 23:59:59')}&limit=1000`)
       )
     ]);
+    const familyMap = familyMapRes.status === 'fulfilled' ? familyMapRes.value : new Map();
 
     const entity   = entityRes.status === 'fulfilled' ? entityRes.value : {};
     const allStock = stockRes.status  === 'fulfilled' ? (stockRes.value.rows || []) : [];
@@ -1910,12 +1952,20 @@ app.get('/product-analytics', async (req, res) => {
       if (sid) knownIds.add(sid);
     });
 
+    // A product renamed between MoySklad accounts keeps the same article/code
+    // (see getFamilyMap / db/moysklad-queries.js's getProductFamilyMap), so
+    // its pre-rename name is included here too — otherwise this page would
+    // only ever show the currently-active account's slice of its history.
+    const familyCode = familyMap.get(baseName);
+    const baseNameAliases = familyCode
+      ? [...familyMap.entries()].filter(([, code]) => code === familyCode).map(([n]) => n)
+      : [baseName];
+
     // Does this profit-report row or demand position belong to our product?
     function nameMatches(name) {
-      return name === rawName || name === baseName ||
-             name.startsWith(baseName + ' ') ||
-             name.startsWith(baseName + '/') ||
-             name.startsWith(baseName + '(');
+      if (name === rawName) return true;
+      return baseNameAliases.some(b =>
+        name === b || name.startsWith(b + ' ') || name.startsWith(b + '/') || name.startsWith(b + '('));
     }
     function assortmentMatches(href, name) {
       const sid = (href || '').split('/').pop().split('?')[0];

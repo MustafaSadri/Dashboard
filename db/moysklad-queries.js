@@ -382,6 +382,20 @@ async function profitByProductHandler(qs) {
   };
 }
 
+// A product renamed between MoySklad accounts (e.g. the old account's
+// "ELFBAR GH23000 Disposable 850mAh Planet Edition" became the new account's
+// "ELFBAR GH23000") keeps the same article/code — MoySklad's own SKU number —
+// even though its name changed. Maps each parent product's base_name to that
+// code, so name-based model grouping (server.js's baseNameOf) can be given a
+// stable cross-rename key: two different base_names sharing one code are the
+// same real product line. Only 'product'-type rows carry the parent's own
+// code (variants have their own per-flavor code, not the model's).
+async function getProductFamilyMap() {
+  const { rows } = await query(
+    `SELECT base_name, code FROM ms_assortment WHERE type = 'product' AND code IS NOT NULL AND code != ''`);
+  return new Map(rows.map(r => [r.base_name, r.code]));
+}
+
 // ── /report/profit/bycounterparty — SUM(demand.sum) grouped by customer ────
 async function profitByCounterpartyHandler(qs) {
   const momentFrom = qs.get('momentFrom');
@@ -526,5 +540,5 @@ module.exports = {
   shimRequest, MS_BASE,
   sumOrderPositionsPCS, sumDemandPositionsPCS, sumDemandPCSByStore,
   employeesByIds, ordersByIds, orderPositionsPCSByOrder,
-  getSyncHealth,
+  getSyncHealth, getProductFamilyMap,
 };
