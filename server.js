@@ -161,6 +161,7 @@ async function fetchTallyStockTotal(asOfDate) {
 const PASSCODE                = process.env.PASSCODE || '1990';
 const PASSCODE_PARTNER        = process.env.PASSCODE_PARTNER || '1122';
 const PASSCODE_SALES_DIRECTOR = process.env.PASSCODE_SALES_DIRECTOR || '0901';
+const PASSCODE_ASSOCIATE      = process.env.PASSCODE_ASSOCIATE || '6501';
 
 const TOKEN   = process.env.TOKEN || '';
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
@@ -206,6 +207,11 @@ app.post('/login', (req, res) => {
   if (PASSCODE_SALES_DIRECTOR && req.body.passcode === PASSCODE_SALES_DIRECTOR) {
     req.session.loggedIn = true;
     req.session.role = 'sales_director';
+    return res.redirect('/loading');
+  }
+  if (PASSCODE_ASSOCIATE && req.body.passcode === PASSCODE_ASSOCIATE) {
+    req.session.loggedIn = true;
+    req.session.role = 'associate';
     return res.redirect('/loading');
   }
   res.render('login', { error: 'Incorrect passcode. Try again.' });

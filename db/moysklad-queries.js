@@ -10,7 +10,7 @@
 // This means every route/helper in server.js keeps working unmodified — they
 // have no idea whether the data came from the network or the database.
 const { query } = require('./pool');
-const { getMinDate } = require('../lib/request-context');
+const { getMinDate, getPriceOverride } = require('../lib/request-context');
 
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
 
@@ -72,6 +72,55 @@ function applyMinDateFloor(where, vals, momentCol) {
   newVals.push(minDate);
   const clause = `${momentCol} >= $${newVals.length}::timestamp`;
   return { where: where ? `${where} AND ${clause}` : `WHERE ${clause}`, vals: newVals };
+}
+// Query-time price override (see lib/request-context.js's PRICE_OVERRIDE) —
+// only ever non-null for the one role it's configured for. Builds a matching
+// pair of CASE expressions for a position row's price_kopecks/amount_kopecks,
+// true only when its parent order/demand belongs to the configured customer
+// and falls in the configured date window, and its base_name is one of the
+// configured product names. Appends its params to the end of `vals` so the
+// caller's existing $1..$N placeholders are unaffected; pass the returned
+// `vals` (not the original) to query().
+function positionOverrideExprs(vals, posAlias, parentAlias) {
+  const ov = getPriceOverride();
+  if (!ov) return { amountExpr: `${posAlias}.amount_kopecks`, priceExpr: `${posAlias}.price_kopecks`, vals };
+  const v = vals.slice();
+  v.push(ov.customerIds);       const pCust  = v.length;
+  v.push(ov.productBaseNames);  const pProd  = v.length;
+  v.push(ov.fromDate);          const pFrom  = v.length;
+  v.push(ov.toDate);            const pTo    = v.length;
+  v.push(ov.fixedPriceKopecks); const pPrice = v.length;
+  const cond = `${parentAlias}.customer_id = ANY($${pCust}::text[])
+                AND ${posAlias}.base_name = ANY($${pProd}::text[])
+                AND ${parentAlias}.moment >= $${pFrom}::timestamp AND ${parentAlias}.moment <= $${pTo}::timestamp`;
+  return {
+    amountExpr: `(CASE WHEN ${cond} THEN ${posAlias}.quantity * $${pPrice} ELSE ${posAlias}.amount_kopecks END)`,
+    priceExpr:  `(CASE WHEN ${cond} THEN $${pPrice} ELSE ${posAlias}.price_kopecks END)`,
+    vals: v,
+  };
+}
+// Same override expressed as a corrected order/demand-level sum_kopecks: the
+// stored total plus the delta between the overridden and real amount for any
+// of that row's own positions that match. Used wherever a query reads the
+// parent row's own total rather than summing positions itself.
+function sumKopecksExpr(vals, parentAlias, positionsTable, parentIdCol) {
+  const ov = getPriceOverride();
+  if (!ov) return { expr: `${parentAlias}.sum_kopecks`, vals };
+  const v = vals.slice();
+  v.push(ov.customerIds);       const pCust  = v.length;
+  v.push(ov.fromDate);          const pFrom  = v.length;
+  v.push(ov.toDate);            const pTo    = v.length;
+  v.push(ov.productBaseNames);  const pProd  = v.length;
+  v.push(ov.fixedPriceKopecks); const pPrice = v.length;
+  const expr = `(CASE WHEN ${parentAlias}.customer_id = ANY($${pCust}::text[])
+                       AND ${parentAlias}.moment >= $${pFrom}::timestamp AND ${parentAlias}.moment <= $${pTo}::timestamp
+                  THEN ${parentAlias}.sum_kopecks + COALESCE((
+                    SELECT SUM(CASE WHEN p2.base_name = ANY($${pProd}::text[])
+                                     THEN (p2.quantity * $${pPrice}) - p2.amount_kopecks ELSE 0 END)
+                    FROM ${positionsTable} p2 WHERE p2.${parentIdCol} = ${parentAlias}.id
+                  ), 0)
+                  ELSE ${parentAlias}.sum_kopecks END)`;
+  return { expr, vals: v };
 }
 function pageParams(qs, defaultLimit = 1000) {
   return {
@@ -175,11 +224,13 @@ async function demandListHandler(qs) {
   const clauses = parseFilterClauses(qs.get('filter'));
   let { where, vals } = buildWhere(clauses, DEMAND_FIELD_MAP);
   ({ where, vals } = applyMinDateFloor(where, vals, 'dm.moment'));
+  const { expr: sumExpr, vals: valsWithSum } = sumKopecksExpr(vals, 'dm', 'ms_demand_positions', 'demand_id');
+  vals = valsWithSum;
   const dir = orderDirection(qs);
   const { limit, offset } = pageParams(qs);
   vals.push(limit, offset);
   const sql = `
-    SELECT dm.id, dm.name, dm.sum_kopecks, dm.customer_id,
+    SELECT dm.id, dm.name, ${sumExpr} AS sum_kopecks, dm.customer_id,
            COALESCE(cp.name, dm.customer_name) AS customer_name,
            dm.owner_id, dm.order_id, dm.state_id,
            COALESCE(mst.name, dm.state_name) AS state_name, dm.store_id,
@@ -207,11 +258,13 @@ async function orderListHandler(qs) {
   const clauses = parseFilterClauses(qs.get('filter'));
   let { where, vals } = buildWhere(clauses, ORDER_FIELD_MAP);
   ({ where, vals } = applyMinDateFloor(where, vals, 'o.moment'));
+  const { expr: sumExpr, vals: valsWithSum } = sumKopecksExpr(vals, 'o', 'ms_order_positions', 'order_id');
+  vals = valsWithSum;
   const dir = orderDirection(qs);
   const { limit, offset } = pageParams(qs);
   vals.push(limit, offset);
   const sql = `
-    SELECT o.id, o.name, o.sum_kopecks, o.payed_sum_kopecks, o.customer_id,
+    SELECT o.id, o.name, ${sumExpr} AS sum_kopecks, o.payed_sum_kopecks, o.customer_id,
            COALESCE(cp.name, o.customer_name) AS customer_name,
            o.owner_id, o.state_id, COALESCE(mst.name, o.state_name) AS state_name,
            o.store_id, st.name AS store_name,
@@ -231,8 +284,10 @@ async function orderListHandler(qs) {
   return { rows: rows.map(rowToOrder), meta: { size: total } };
 }
 async function orderSingleHandler(id) {
+  const vals = [id];
+  const { expr: sumExpr, vals: valsWithSum } = sumKopecksExpr(vals, 'o', 'ms_order_positions', 'order_id');
   const { rows } = await query(
-    `SELECT o.id, o.name, o.sum_kopecks, o.payed_sum_kopecks, o.customer_id,
+    `SELECT o.id, o.name, ${sumExpr} AS sum_kopecks, o.payed_sum_kopecks, o.customer_id,
             COALESCE(cp.name, o.customer_name) AS customer_name,
             o.owner_id, o.state_id, COALESCE(mst.name, o.state_name) AS state_name,
             o.store_id, st.name AS store_name,
@@ -243,7 +298,7 @@ async function orderSingleHandler(id) {
      LEFT JOIN ms_stores st ON st.id = o.store_id
      LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
      LEFT JOIN ms_states mst ON mst.id = o.state_id
-     WHERE o.id = $1`, [id]);
+     WHERE o.id = $1`, valsWithSum);
   if (!rows.length) throw new Error('MS API 404 /entity/customerorder/' + id);
   return rowToOrder(rows[0]);
 }
@@ -251,21 +306,31 @@ async function orderSingleHandler(id) {
 // ── positions sub-resources ──────────────────────────────────────────────
 async function demandPositionsHandler(demandId, qs) {
   const { limit, offset } = pageParams(qs);
+  const { amountExpr, priceExpr, vals } = positionOverrideExprs([demandId], 'dp', 'd');
+  vals.push(limit, offset);
   const { rows } = await query(
-    `SELECT assortment_href, product_name, quantity, price_kopecks, discount, amount_kopecks,
+    `SELECT dp.assortment_href, dp.product_name, dp.quantity, ${priceExpr} AS price_kopecks,
+            dp.discount, ${amountExpr} AS amount_kopecks,
             COUNT(*) OVER() AS total_count
-     FROM ms_demand_positions WHERE demand_id=$1 ORDER BY id LIMIT $2 OFFSET $3`,
-    [demandId, limit, offset]);
+     FROM ms_demand_positions dp
+     JOIN ms_demands d ON d.id = dp.demand_id
+     WHERE dp.demand_id=$1 ORDER BY dp.id LIMIT $${vals.length - 1} OFFSET $${vals.length}`,
+    vals);
   const total = rows.length ? Number(rows[0].total_count) : 0;
   return { rows: rows.map(rowToPosition), meta: { size: total } };
 }
 async function orderPositionsHandler(orderId, qs) {
   const { limit, offset } = pageParams(qs);
+  const { amountExpr, priceExpr, vals } = positionOverrideExprs([orderId], 'op', 'o');
+  vals.push(limit, offset);
   const { rows } = await query(
-    `SELECT assortment_href, product_name, quantity, price_kopecks, discount, amount_kopecks,
+    `SELECT op.assortment_href, op.product_name, op.quantity, ${priceExpr} AS price_kopecks,
+            op.discount, ${amountExpr} AS amount_kopecks,
             COUNT(*) OVER() AS total_count
-     FROM ms_order_positions WHERE order_id=$1 ORDER BY id LIMIT $2 OFFSET $3`,
-    [orderId, limit, offset]);
+     FROM ms_order_positions op
+     JOIN ms_orders o ON o.id = op.order_id
+     WHERE op.order_id=$1 ORDER BY op.id LIMIT $${vals.length - 1} OFFSET $${vals.length}`,
+    vals);
   const total = rows.length ? Number(rows[0].total_count) : 0;
   return { rows: rows.map(rowToPosition), meta: { size: total } };
 }
@@ -350,6 +415,8 @@ async function profitByProductHandler(qs) {
   if (cpClause)   { vals.push(hrefTail(cpClause.value)); conds.push(`d.customer_id = $${vals.length}`); }
   let where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
   ({ where, vals } = applyMinDateFloor(where, vals, 'd.moment'));
+  const { amountExpr, vals: valsWithAmount } = positionOverrideExprs(vals, 'dp', 'd');
+  vals = valsWithAmount;
   vals.push(limit);
 
   // Group by assortment_href (the stable product id) rather than the raw
@@ -362,7 +429,7 @@ async function profitByProductHandler(qs) {
   const sql = `
     WITH agg AS (
       SELECT dp.assortment_href, COALESCE(a.name, dp.product_name) AS product_name,
-             SUM(dp.amount_kopecks) AS sell_sum,
+             SUM(${amountExpr}) AS sell_sum,
              SUM(dp.quantity) AS sell_qty
       FROM ms_demand_positions dp
       JOIN ms_demands d ON d.id = dp.demand_id
@@ -408,14 +475,16 @@ async function profitByCounterpartyHandler(qs) {
   if (momentTo)   { vals.push(momentTo);   conds.push(`moment <= $${vals.length}::timestamp`); }
   let where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
   ({ where, vals } = applyMinDateFloor(where, vals, 'moment'));
+  const { expr: sumExpr, vals: valsWithSum } = sumKopecksExpr(vals, 'dm', 'ms_demand_positions', 'demand_id');
+  vals = valsWithSum;
   vals.push(limit);
 
   const sql = `
     WITH agg AS (
       SELECT customer_id,
-             SUM(sum_kopecks) AS sell_sum,
+             SUM(${sumExpr}) AS sell_sum,
              COUNT(*) AS sales_count
-      FROM ms_demands
+      FROM ms_demands dm
       ${where}
       GROUP BY customer_id
     )
@@ -505,10 +574,11 @@ async function employeesByIds(ids) {
 }
 async function ordersByIds(ids) {
   if (!ids.length) return [];
+  const { expr: sumExpr, vals } = sumKopecksExpr([ids], 'o', 'ms_order_positions', 'order_id');
   const { rows } = await query(
-    `SELECT o.id, o.name, o.sum_kopecks, o.customer_id, COALESCE(cp.name, o.customer_name) AS customer_name, o.owner_id
+    `SELECT o.id, o.name, ${sumExpr} AS sum_kopecks, o.customer_id, COALESCE(cp.name, o.customer_name) AS customer_name, o.owner_id
      FROM ms_orders o LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
-     WHERE o.id = ANY($1::text[])`, [ids]);
+     WHERE o.id = ANY($1::text[])`, vals);
   return rows.map(r => ({
     id: r.id, name: r.name || '',
     sum: Number(r.sum_kopecks) || 0,
