@@ -150,6 +150,21 @@ CREATE TABLE IF NOT EXISTS ms_muted_models (
   muted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- App-level login accounts (separate from the MoySklad data model above).
+-- One row per real person; `role` drives everything role-based elsewhere
+-- (Tally visibility, MoySklad date floor, the Associate price override —
+-- see lib/request-context.js) exactly the way the old shared passcodes did.
+CREATE TABLE IF NOT EXISTS app_users (
+  id            SERIAL PRIMARY KEY,
+  username      TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  display_name  TEXT,
+  role          TEXT NOT NULL CHECK (role IN ('admin','partner','sales_director','associate')),
+  active        BOOLEAN NOT NULL DEFAULT true,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS ms_sync_meta (
   entity                    TEXT PRIMARY KEY,
   last_full_sync_at         TIMESTAMPTZ,

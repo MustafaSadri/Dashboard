@@ -1,0 +1,134 @@
+<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Manage Users'}) %>
+  <div class="page">
+
+    <% if (notice) { %>
+    <div style="background:rgba(79,174,138,.1);border:1px solid rgba(79,174,138,.3);border-radius:9px;padding:11px 14px;font-size:13px;color:#4FAE8A;margin-bottom:16px">
+      <i class="fas fa-circle-check"></i> <%- notice %>
+    </div>
+    <% } %>
+    <% if (error) { %>
+    <div style="background:rgba(229,72,77,.1);border:1px solid rgba(229,72,77,.3);border-radius:9px;padding:11px 14px;font-size:13px;color:#E5484D;margin-bottom:16px">
+      <i class="fas fa-circle-exclamation"></i> <%- error %>
+    </div>
+    <% } %>
+
+    <div style="display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start">
+
+      <!-- Accounts table -->
+      <div class="card">
+        <div class="card-title"><i class="fas fa-users-gear"></i> Accounts (<%- users.length %>)</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Display Name</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th style="text-align:right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+            <% if (users.length === 0) { %>
+              <tr><td colspan="6"><div class="empty">No accounts yet — add one on the right</div></td></tr>
+            <% } %>
+            <% users.forEach(function(u) { %>
+              <tr>
+                <td style="font-weight:600"><%- u.username %></td>
+                <td><%- u.display_name || '—' %></td>
+                <td><span style="font-size:11px;padding:3px 9px;border-radius:6px;background:var(--bg3);color:var(--text2)"><%- roleLabels[u.role] || u.role %></span></td>
+                <td>
+                  <% if (u.active) { %>
+                    <span style="font-size:11px;color:#4FAE8A">● Active</span>
+                  <% } else { %>
+                    <span style="font-size:11px;color:var(--text2)">● Deactivated</span>
+                  <% } %>
+                </td>
+                <td style="color:var(--text2);font-size:12px"><%- fmtDate(u.created_at) %></td>
+                <td>
+                  <div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+                    <button type="button" onclick="showResetForm(<%- u.id %>)"
+                      style="font-size:11px;padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text2);cursor:pointer">
+                      Reset Password
+                    </button>
+                    <form method="POST" action="/admin/users/<%- u.id %>/toggle-active" style="display:inline">
+                      <input type="hidden" name="active" value="<%- u.active ? 'false' : 'true' %>">
+                      <button type="submit"
+                        style="font-size:11px;padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text2);cursor:pointer">
+                        <%- u.active ? 'Deactivate' : 'Activate' %>
+                      </button>
+                    </form>
+                    <form method="POST" action="/admin/users/<%- u.id %>/delete" style="display:inline"
+                      onsubmit="return confirm('Permanently delete this account? This cannot be undone.')">
+                      <button type="submit"
+                        style="font-size:11px;padding:4px 9px;border-radius:6px;border:1px solid rgba(229,72,77,.3);background:none;color:#E5484D;cursor:pointer">
+                        Delete
+                      </button>
+                    </form>
+                  </div>
+                  <form id="resetForm<%- u.id %>" method="POST" action="/admin/users/<%- u.id %>/reset-password"
+                    style="display:none;margin-top:8px;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+                    <input type="password" name="password" placeholder="New password" required minlength="4"
+                      style="font-size:12px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);width:130px">
+                    <button type="submit"
+                      style="font-size:11px;padding:5px 10px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer">
+                      Save
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Add account -->
+      <div class="card" style="position:sticky;top:20px">
+        <div class="card-title"><i class="fas fa-user-plus"></i> Add Account</div>
+        <form method="POST" action="/admin/users" style="display:flex;flex-direction:column;gap:12px">
+          <div>
+            <label style="display:block;font-size:11px;color:var(--text2);margin-bottom:5px">Username</label>
+            <input type="text" name="username" required autocomplete="off"
+              style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text)">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;color:var(--text2);margin-bottom:5px">Display Name</label>
+            <input type="text" name="displayName" autocomplete="off"
+              style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text)">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;color:var(--text2);margin-bottom:5px">Password</label>
+            <input type="password" name="password" required minlength="4" autocomplete="new-password"
+              style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text)">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;color:var(--text2);margin-bottom:5px">Role</label>
+            <select name="role" required
+              style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text)">
+              <% roles.forEach(function(r) { %>
+                <option value="<%- r %>"><%- roleLabels[r] || r %></option>
+              <% }) %>
+            </select>
+          </div>
+          <button type="submit"
+            style="margin-top:4px;padding:10px;border-radius:8px;border:none;background:linear-gradient(135deg,#D97757,#5a52e0);color:#fff;font-size:13px;font-weight:600;cursor:pointer">
+            Create Account
+          </button>
+        </form>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+function showResetForm(id) {
+  var f = document.getElementById('resetForm' + id);
+  f.style.display = f.style.display === 'none' ? 'flex' : 'none';
+}
+</script>

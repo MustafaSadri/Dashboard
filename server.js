@@ -4,7 +4,8 @@ const session = require('express-session');
 const path    = require('path');
 const { MongoClient } = require('mongodb');
 const { getMutedModelSet, setModelMuted } = require('./db/mutes');
-const { runWithRole, getRole, getMinDate } = require('./lib/request-context');
+const { runWithRole, getRole, getMinDate, ROLE_LABELS } = require('./lib/request-context');
+const users = require('./db/users');
 const app     = express();
 
 // ── MongoDB ───────────────────────────────────────────────
@@ -154,15 +155,6 @@ async function fetchTallyStockTotal(asOfDate) {
   return total;
 }
 
-// ── Auth credentials ─────────────────────────────────────
-// Three roles: admin (everything), partner (everything except Tally),
-// sales_director (no Tally, and MoySklad data floored to 1 Sept 2026 —
-// see lib/request-context.js for where that floor is actually enforced).
-const PASSCODE                = process.env.PASSCODE || '1990';
-const PASSCODE_PARTNER        = process.env.PASSCODE_PARTNER || '1122';
-const PASSCODE_SALES_DIRECTOR = process.env.PASSCODE_SALES_DIRECTOR || '0901';
-const PASSCODE_ASSOCIATE      = process.env.PASSCODE_ASSOCIATE || '6501';
-
 const TOKEN   = process.env.TOKEN || '';
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
 // 'postgres' routes every MoySklad fetch through db/moysklad-queries.js (synced
@@ -193,28 +185,20 @@ app.get('/login', (req, res) => {
   res.render('login', { error: null });
 });
 
-app.post('/login', (req, res) => {
-  if (req.body.passcode === PASSCODE) {
-    req.session.loggedIn = true;
-    req.session.role = 'admin';
+app.post('/login', async (req, res) => {
+  try {
+    const user = await users.verifyLogin(req.body.username, req.body.password);
+    if (!user) return res.render('login', { error: 'Incorrect username or password. Try again.' });
+    req.session.loggedIn    = true;
+    req.session.role        = user.role;
+    req.session.userId      = user.id;
+    req.session.username    = user.username;
+    req.session.displayName = user.display_name || user.username;
     return res.redirect('/loading');
+  } catch (e) {
+    console.error('[login] failed:', e.message);
+    res.render('login', { error: 'Login is temporarily unavailable. Try again shortly.' });
   }
-  if (PASSCODE_PARTNER && req.body.passcode === PASSCODE_PARTNER) {
-    req.session.loggedIn = true;
-    req.session.role = 'partner';
-    return res.redirect('/loading');
-  }
-  if (PASSCODE_SALES_DIRECTOR && req.body.passcode === PASSCODE_SALES_DIRECTOR) {
-    req.session.loggedIn = true;
-    req.session.role = 'sales_director';
-    return res.redirect('/loading');
-  }
-  if (PASSCODE_ASSOCIATE && req.body.passcode === PASSCODE_ASSOCIATE) {
-    req.session.loggedIn = true;
-    req.session.role = 'associate';
-    return res.redirect('/loading');
-  }
-  res.render('login', { error: 'Incorrect passcode. Try again.' });
 });
 
 app.get('/loading', (req, res) => {
@@ -281,6 +265,8 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   res.locals.active       = '';
   res.locals.canViewTally = req.session.role === 'admin';
+  res.locals.isAdmin      = req.session.role === 'admin';
+  res.locals.displayName  = req.session.displayName || null;
   res.locals.empName   = 'Admin';
   res.locals.empLetter = 'A';
   res.locals.empRole   = 'System';
@@ -299,6 +285,62 @@ app.use((req, res, next) => {
   res.locals.fmtDate = (s) => s ? s.slice(0,10) : '—';
   res.locals.CUR = CUR;
   next();
+});
+
+// ── User management (Admin only) ──────────────────────────
+// Lets Admin create/deactivate accounts and reset passwords without ever
+// needing a code change or redeploy — see db/users.js. Every route here
+// re-checks role itself (not just the sidebar link's visibility), since a
+// non-admin could otherwise hit these URLs directly.
+function requireAdmin(req, res, next) {
+  if (req.session.role !== 'admin') return res.status(403).send('Access denied');
+  next();
+}
+
+app.get('/admin/users', requireAdmin, async (req, res) => {
+  const c = await common();
+  const list = await users.listUsers();
+  res.render('admin-users', { ...c, active: 'admin-users', users: list, roles: users.VALID_ROLES, roleLabels: ROLE_LABELS, error: null, notice: null });
+});
+
+app.post('/admin/users', requireAdmin, async (req, res) => {
+  const c = await common();
+  try {
+    await users.createUser({
+      username: req.body.username,
+      password: req.body.password,
+      displayName: req.body.displayName,
+      role: req.body.role,
+    });
+    const list = await users.listUsers();
+    res.render('admin-users', { ...c, active: 'admin-users', users: list, roles: users.VALID_ROLES, roleLabels: ROLE_LABELS, error: null, notice: `Account "${req.body.username}" created.` });
+  } catch (e) {
+    const list = await users.listUsers();
+    const msg = /duplicate key|already exists/i.test(e.message) ? 'That username is already taken.' : e.message;
+    res.render('admin-users', { ...c, active: 'admin-users', users: list, roles: users.VALID_ROLES, roleLabels: ROLE_LABELS, error: msg, notice: null });
+  }
+});
+
+app.post('/admin/users/:id/reset-password', requireAdmin, async (req, res) => {
+  const c = await common();
+  try {
+    await users.resetPassword(req.params.id, req.body.password);
+    const list = await users.listUsers();
+    res.render('admin-users', { ...c, active: 'admin-users', users: list, roles: users.VALID_ROLES, roleLabels: ROLE_LABELS, error: null, notice: 'Password updated.' });
+  } catch (e) {
+    const list = await users.listUsers();
+    res.render('admin-users', { ...c, active: 'admin-users', users: list, roles: users.VALID_ROLES, roleLabels: ROLE_LABELS, error: e.message, notice: null });
+  }
+});
+
+app.post('/admin/users/:id/toggle-active', requireAdmin, async (req, res) => {
+  await users.setActive(req.params.id, req.body.active === 'true');
+  res.redirect('/admin/users');
+});
+
+app.post('/admin/users/:id/delete', requireAdmin, async (req, res) => {
+  await users.deleteUser(req.params.id);
+  res.redirect('/admin/users');
 });
 
 // ── Moysklad API helper ──────────────────────────────────

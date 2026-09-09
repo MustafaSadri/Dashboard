@@ -87,23 +87,19 @@
       border: 1.5px solid var(--border);
       border-radius: 12px;
       color: var(--text);
-      font-size: 22px;
-      letter-spacing: 10px;
-      font-family: monospace;
+      font-size: 15px;
       outline: none;
       transition: border-color .2s, box-shadow .2s;
-      text-align: center;
     }
     .field-wrap input:focus {
       border-color: #D97757;
       box-shadow: 0 0 0 3px rgba(217,119,87,.15);
     }
     .field-wrap input::placeholder {
-      letter-spacing: 6px;
-      font-size: 18px;
       color: var(--text2);
       opacity: .5;
     }
+    .field-label { text-align: left; }
     .field-wrap .toggle-pw {
       position: absolute;
       right: 13px;
@@ -181,7 +177,7 @@
     </div>
 
     <div class="login-title">Welcome back</div>
-    <div class="login-sub">Enter your passcode to continue</div>
+    <div class="login-sub">Sign in to continue</div>
 
     <% if (error) { %>
     <div class="error-box">
@@ -192,14 +188,26 @@
 
     <form method="POST" action="/login">
       <div class="field-wrap">
-        <label class="field-label" for="passcode">Passcode</label>
+        <label class="field-label" for="username">Username</label>
+        <input
+          type="text"
+          id="username"
+          name="username"
+          placeholder="Username"
+          autocomplete="username"
+          autofocus
+          required
+        >
+      </div>
+
+      <div class="field-wrap">
+        <label class="field-label" for="password">Password</label>
         <input
           type="password"
-          id="passcode"
-          name="passcode"
-          placeholder="····"
-          autocomplete="new-password"
-          autofocus
+          id="password"
+          name="password"
+          placeholder="Password"
+          autocomplete="current-password"
           required
         >
         <button type="button" class="toggle-pw" onclick="togglePw()" tabindex="-1" id="pwEye">
@@ -226,7 +234,7 @@
   });
 
   function togglePw() {
-    var inp = document.getElementById('passcode');
+    var inp = document.getElementById('password');
     var eye = document.getElementById('pwEye');
     var show = inp.type === 'password';
     inp.type = show ? 'text' : 'password';
