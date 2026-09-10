@@ -1,4 +1,6 @@
 </div><!-- /main -->
+<% if (typeof canUseChat !== 'undefined' && canUseChat) { %>
 <%- include('chatbot') %>
+<% } %>
 </body>
 </html>

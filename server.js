@@ -266,6 +266,7 @@ app.use((req, res, next) => {
   res.locals.active       = '';
   res.locals.canViewTally = req.session.role === 'admin';
   res.locals.isAdmin      = req.session.role === 'admin';
+  res.locals.canUseChat   = req.session.role === 'admin' || req.session.role === 'partner';
   res.locals.displayName  = req.session.displayName || null;
   res.locals.empName   = 'Admin';
   res.locals.empLetter = 'A';
@@ -3618,6 +3619,13 @@ function getToolStatusText(toolUses) {
 }
 
 app.post('/api/chat', async (req, res) => {
+  // Chatbot is Admin/Partner only — Sales Director ("sales_director") and
+  // the KHAN-price-override role ("associate", displayed as "Sales
+  // Director") never get it, on top of the UI widget already being hidden
+  // for them (partials/chatbot, gated on canUseChat).
+  if (req.session.role !== 'admin' && req.session.role !== 'partner') {
+    return res.status(403).json({ error: 'Chat is not available for this account.' });
+  }
   try {
     const { messages } = req.body;
     if (!Array.isArray(messages) || messages.length === 0)
