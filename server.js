@@ -975,6 +975,45 @@ app.get('/api/order-pcs', async (req, res) => {
   }
 });
 
+// Model-wise breakdown of one order's contents — powers the "click an order
+// to see what's in it" popup (Customer Analytics' Order History, Orders
+// Status' per-status modal). Flavour variants of one model always sell at
+// the same unit price within a single order, so this groups by model
+// (baseNameOf) rather than listing every flavour line separately. Goes
+// through ms() like everything else, so a logged-in Associate/"Sales
+// Director" viewer automatically sees KHAN's GH23000 lines at the
+// overridden 650 RUB/unit — same as everywhere else in the app.
+app.get('/api/order/:id/items', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const data = await cached(`order_items_${id}`, 10 * 60 * 1000, async () => {
+      const [orderRes, posRes] = await Promise.all([
+        ms(`/entity/customerorder/${id}`),
+        ms(`/entity/customerorder/${id}/positions?limit=1000`),
+      ]);
+      const modelMap = {};
+      (posRes.rows || []).forEach(p => {
+        const fullName = p.assortment?.name || '—';
+        const base = baseNameOf(fullName);
+        if (!modelMap[base]) modelMap[base] = { model: base, pcs: 0, price: Math.round((p.price || 0) / 100), amount: 0 };
+        modelMap[base].pcs += Math.round(p.quantity || 0);
+        modelMap[base].amount += (p.sum || 0) / 100;
+      });
+      const items = Object.values(modelMap).sort((a, b) => b.amount - a.amount);
+      return {
+        name: orderRes.name || '—',
+        date: (orderRes.moment || '').slice(0, 10),
+        customer: orderRes.agent?.name || '—',
+        total: (orderRes.sum || 0) / 100,
+        items,
+      };
+    });
+    res.json({ ok: true, ...data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── DASHBOARD ────────────────────────────────────────────
 app.get('/', async (req, res) => {
   try {
@@ -1920,6 +1959,7 @@ app.get('/customer-analytics', async (req, res) => {
 
     // Order list for table (all orders, newest first)
     const orderList = orders.map(r=>({
+      id:    r.id,
       name:  r.name||'—',
       date:  (r.moment||'').slice(0,10),
       month: (r.moment||'').slice(0,7),

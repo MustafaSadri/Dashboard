@@ -122,8 +122,6 @@
               <th>Date</th>
               <th>Status</th>
               <th style="text-align:right">Order Value</th>
-              <th style="text-align:right">Paid</th>
-              <th style="text-align:right">Outstanding</th>
             </tr>
           </thead>
           <tbody id="orderBody"></tbody>
@@ -217,18 +215,16 @@ function applyFilter() {
   // Rebuild table
   const tbody = document.getElementById('orderBody');
   if(filtered.length===0){
-    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text2)">No orders in this period</td></tr>';
+    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text2)">No orders in this period</td></tr>';
     return;
   }
   tbody.innerHTML = filtered.map(o => {
-    const out = o.sum - o.paid;
-    return `<tr>
+    return `<tr style="cursor:pointer" onclick="showOrderItems('${o.id}')"
+      onmouseover="this.style.background='rgba(217,119,87,.06)'" onmouseout="this.style.background=''">
       <td><strong>${o.name}</strong></td>
       <td class="muted">${o.date}</td>
       <td><span class="badge ${statusClass(o.state)}">${o.state}</span></td>
       <td style="text-align:right;font-weight:600">${fmtFull(o.sum)}</td>
-      <td style="text-align:right;color:var(--accent2)">${fmtFull(o.paid)}</td>
-      <td style="text-align:right;color:${out>0?'var(--danger)':'var(--accent2)'}">${out>0?fmtFull(out):'—'}</td>
     </tr>`;
   }).join('');
 }
@@ -242,3 +238,4 @@ function clearFilter() {
 
 applyFilter();
 </script>
+<%- include('partials/order-items-modal') %>

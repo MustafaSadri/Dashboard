@@ -279,7 +279,7 @@ function renderModalRows(rows, isDelayed, isDisp) {
     var pcsCell = _pcsCache.hasOwnProperty(o.id)
       ? '<td style="text-align:center;font-weight:600">' + _pcsCache[o.id] + '</td>'
       : '<td style="text-align:center" data-pcs="' + o.id + '"><i class="fas fa-spinner fa-spin" style="font-size:10px;opacity:.35"></i></td>';
-    return '<tr>' +
+    return '<tr style="cursor:pointer" onclick="showOrderItems(\'' + o.id + '\')" title="Click to see what this order contains">' +
       '<td><span style="font-weight:600;color:var(--accent)">' + o.name + '</span></td>' +
       '<td>' + o.customer + '</td>' +
       pcsCell +
@@ -342,4 +342,5 @@ document.addEventListener('keydown', function(e) {
 });
 </script>
 
+<%- include('partials/order-items-modal') %>
 <%- include('partials/foot') %>
