@@ -1046,14 +1046,15 @@ app.get('/', async (req, res) => {
     const shipmentsToday = todayShipments.length;
     const todayPCS       = await getTodayPCS(todayShipments.map(d => d.id));
 
-    // Pending = has a named state AND is NOT dispatched / declined / cancelled / draft.
+    // Pending = has a named state AND is NOT dispatched / closed / declined / cancelled / draft.
     // Draft orders (no state, or state named "Draft"/"Черновик") are excluded entirely.
+    // "Closed"/"Закрыт" means fully paid and settled — not pending, same as Dispatched.
     const pendingOrders = orders.filter(r => {
       if (!r.state) return false;                                      // no state = draft
       const s = resolveState(r, stateMap).toLowerCase();
       if (!s) return false;                                            // unresolved state = draft
       if (/^draft$|черновик/.test(s)) return false;                   // state named "Draft"
-      return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
+      return !/dispatched|отгруж|closed|закрыт|declin|cancel|отмен|отклон|аннул/.test(s);
     });
     const pending = pendingOrders.length;
 
