@@ -150,6 +150,32 @@ CREATE TABLE IF NOT EXISTS ms_muted_models (
   muted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Incoming payment documents (MoySklad entity "paymentin") — separate from
+-- ms_orders.payed_sum_kopecks, which is only a running total with no date.
+-- This is what lets the Outstandings dashboard show an actual last-payment
+-- date per customer.
+CREATE TABLE IF NOT EXISTS ms_payments_in (
+  id             TEXT PRIMARY KEY,
+  name           TEXT NOT NULL DEFAULT '',
+  moment         TIMESTAMP,
+  sum_kopecks    BIGINT NOT NULL DEFAULT 0,
+  customer_id    TEXT,
+  customer_name  TEXT,
+  updated_at     TIMESTAMP,
+  synced_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ms_payments_in_customer ON ms_payments_in(customer_id);
+CREATE INDEX IF NOT EXISTS idx_ms_payments_in_moment ON ms_payments_in(moment);
+CREATE INDEX IF NOT EXISTS idx_ms_payments_in_updated ON ms_payments_in(updated_at);
+
+-- Per-customer credit limit for the Outstandings dashboard — app-level only,
+-- never sent to MoySklad. 0/absent = no limit set (never flagged over-limit).
+CREATE TABLE IF NOT EXISTS customer_credit_limits (
+  customer_id           TEXT PRIMARY KEY,
+  credit_limit_kopecks  BIGINT NOT NULL DEFAULT 0,
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- App-level login accounts (separate from the MoySklad data model above).
 -- One row per real person; `role` drives everything role-based elsewhere
 -- (Tally visibility, MoySklad date floor, the Associate price override —

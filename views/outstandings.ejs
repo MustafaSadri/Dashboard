@@ -1,0 +1,344 @@
+<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Outstandings'}) %>
+  <div class="page">
+
+    <!-- Summary -->
+    <div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:20px">
+      <div class="stat-card">
+        <div class="stat-label">Total Outstanding</div>
+        <div class="stat-value"><%- fmtShort(totalOutstanding) %></div>
+        <div class="stat-sub">since 1 Sept 2026</div>
+        <i class="fas fa-hand-holding-dollar stat-icon"></i>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Received</div>
+        <div class="stat-value" style="color:var(--accent2)"><%- fmtShort(totalReceived) %></div>
+        <div class="stat-sub">incoming payments</div>
+        <i class="fas fa-coins stat-icon"></i>
+      </div>
+      <div class="stat-card" style="cursor:pointer" onclick="showCustomerList('owing')" title="Click to see who owes">
+        <div class="stat-label">Customers Owing <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
+        <div class="stat-value"><%- owingCount %></div>
+        <div class="stat-sub">need to pay</div>
+        <i class="fas fa-users stat-icon"></i>
+      </div>
+      <div class="stat-card" style="cursor:pointer" onclick="showCustomerList('paidUp')" title="Click to see who's paid up">
+        <div class="stat-label">Paid Up <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
+        <div class="stat-value" style="color:var(--accent2)"><%- paidUpCount %></div>
+        <div class="stat-sub">of <%- customerCount %> customers</div>
+        <i class="fas fa-circle-check stat-icon"></i>
+      </div>
+      <div class="stat-card <%- overLimitCount > 0 ? 'danger' : '' %>" style="cursor:pointer" onclick="showCustomerList('overLimit')" title="Click to see who's over their limit">
+        <div class="stat-label">Over Credit Limit <i class="fas fa-arrow-up-right-from-square" style="font-size:9px;opacity:.6;margin-left:4px"></i></div>
+        <div class="stat-value" style="<%- overLimitCount > 0 ? 'color:var(--danger)' : '' %>"><%- overLimitCount %></div>
+        <div class="stat-sub">flagged</div>
+        <i class="fas fa-triangle-exclamation stat-icon"></i>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;align-items:start">
+
+      <div class="card">
+        <div class="card-title">
+          <i class="fas fa-scroll"></i> All Customers
+          <span style="margin-left:8px;font-size:12px;color:var(--text2);font-weight:400"><%- customers.length %> customer<%- customers.length!==1?'s':'' %> since 1 Sept 2026</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Status</th>
+                <th style="text-align:right">Orders</th>
+                <th style="text-align:right">Total Sum</th>
+                <th style="text-align:right">Paid</th>
+                <th style="text-align:right">Outstanding</th>
+                <th>Last Order</th>
+                <th>Last Payment</th>
+                <th style="text-align:right">Credit Limit</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (customers.length === 0) { %>
+                <tr><td colspan="9"><div class="empty">No customer orders since 1 Sept 2026 yet</div></td></tr>
+              <% } %>
+              <% customers.forEach(function(cx) { %>
+                <tr style="cursor:pointer" onclick="showCustomerDetail('<%- cx.customerId %>')"
+                  onmouseover="this.style.background='rgba(217,119,87,.06)'" onmouseout="this.style.background=''">
+                  <td>
+                    <div style="display:flex;align-items:center;gap:10px">
+                      <div style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+                                  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0">
+                        <%- cx.customerName.charAt(0).toUpperCase() %>
+                      </div>
+                      <div style="font-weight:600;font-size:13px"><%- cx.customerName %></div>
+                    </div>
+                  </td>
+                  <td>
+                    <% if (cx.overLimit) { %>
+                      <span style="font-size:10px;padding:3px 8px;border-radius:5px;background:rgba(229,72,77,.12);color:var(--danger);font-weight:600;white-space:nowrap">OVER LIMIT</span>
+                    <% } else if (cx.paidUp) { %>
+                      <span style="font-size:10px;padding:3px 8px;border-radius:5px;background:rgba(79,174,138,.12);color:var(--accent2);font-weight:600;white-space:nowrap">PAID UP</span>
+                    <% } else { %>
+                      <span style="font-size:10px;padding:3px 8px;border-radius:5px;background:rgba(240,180,41,.12);color:var(--warn);font-weight:600;white-space:nowrap">OWING</span>
+                    <% } %>
+                  </td>
+                  <td style="text-align:right"><%- cx.orderCount %></td>
+                  <td style="text-align:right"><%- fmt(cx.totalSum) %></td>
+                  <td style="text-align:right;color:var(--accent2)"><%- fmt(cx.totalPaid) %></td>
+                  <td style="text-align:right;font-weight:700;color:<%- cx.outstanding > 0 ? 'var(--danger)' : 'var(--text2)' %>"><%- cx.outstanding > 0 ? fmt(cx.outstanding) : '—' %></td>
+                  <td style="color:var(--text2);font-size:12px"><%- cx.lastOrderDate || '—' %></td>
+                  <td style="color:var(--text2);font-size:12px"><%- cx.lastPaymentDate || '—' %></td>
+                  <td style="text-align:right;color:var(--text2)"><%- cx.creditLimit > 0 ? fmt(cx.creditLimit) : '—' %></td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Recent Payments feed -->
+      <div class="card" style="position:sticky;top:20px">
+        <div class="card-title"><i class="fas fa-clock-rotate-left"></i> Recent Payments</div>
+        <div style="max-height:640px;overflow-y:auto">
+          <% if (recentPayments.length === 0) { %>
+            <div class="empty">No payments recorded since 1 Sept 2026 yet</div>
+          <% } %>
+          <% recentPayments.forEach(function(p) { %>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 4px;border-bottom:1px solid rgba(217,119,87,.06);cursor:pointer"
+              onclick="showCustomerDetail('<%- p.customerId %>')"
+              onmouseover="this.style.background='rgba(217,119,87,.06)'" onmouseout="this.style.background=''">
+              <div style="min-width:0">
+                <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><%- p.customerName %></div>
+                <div style="font-size:11px;color:var(--text2);margin-top:1px"><%- p.name %> · <%- p.date %></div>
+              </div>
+              <div style="font-size:13px;font-weight:700;color:var(--accent2);white-space:nowrap;flex-shrink:0"><%- fmt(p.sum) %></div>
+            </div>
+          <% }) %>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Filtered Customer List Modal (Owing / Paid Up / Over Limit) ── -->
+<div id="olModal" style="display:none;position:fixed;inset:0;z-index:999;align-items:center;justify-content:center;padding:20px">
+  <div onclick="closeOverLimitList()" style="position:absolute;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(3px)"></div>
+  <div style="position:relative;background:var(--bg2);border:1px solid var(--border);border-radius:14px;
+              width:100%;max-width:560px;max-height:82vh;display:flex;flex-direction:column;
+              box-shadow:0 24px 80px rgba(0,0,0,.6)">
+    <div style="padding:18px 22px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+      <div>
+        <div style="font-size:15px;font-weight:700" id="olTitle"><i id="olIcon" style="margin-right:6px"></i><span id="olTitleText">Customers</span></div>
+        <div style="font-size:12px;color:var(--text2);margin-top:1px" id="olSub"></div>
+      </div>
+      <button onclick="closeOverLimitList()"
+        style="width:30px;height:30px;border-radius:7px;background:var(--bg3);border:1px solid var(--border);
+               color:var(--text2);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-xmark"></i>
+      </button>
+    </div>
+    <div style="overflow-y:auto;flex:1" id="olBody"></div>
+  </div>
+</div>
+
+<!-- ── Customer Detail Modal ── -->
+<div id="odModal" style="display:none;position:fixed;inset:0;z-index:1000;align-items:center;justify-content:center;padding:20px">
+  <div onclick="closeCustomerDetail()" style="position:absolute;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(3px)"></div>
+  <div style="position:relative;background:var(--bg2);border:1px solid var(--border);border-radius:14px;
+              width:100%;max-width:680px;max-height:86vh;display:flex;flex-direction:column;
+              box-shadow:0 24px 80px rgba(0,0,0,.6)">
+    <div style="padding:18px 22px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+      <div>
+        <div style="font-size:16px;font-weight:700" id="odTitle">Customer</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:1px" id="odSub"></div>
+      </div>
+      <button onclick="closeCustomerDetail()"
+        style="width:30px;height:30px;border-radius:7px;background:var(--bg3);border:1px solid var(--border);
+               color:var(--text2);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-xmark"></i>
+      </button>
+    </div>
+    <div style="overflow-y:auto;flex:1" id="odBody">
+      <div style="text-align:center;padding:48px 20px;color:var(--text2)">
+        <i class="fas fa-spinner fa-spin" style="font-size:20px;display:block;margin-bottom:10px"></i>Loading…
+      </div>
+    </div>
+  </div>
+</div>
+
+<%- include('partials/foot') %>
+
+<script>
+function odFmt(n) { return '₽' + Math.round(n || 0).toLocaleString(); }
+
+const ALL_CUSTOMERS = <%- customersJSON %>;
+
+const CUSTOMER_LIST_FILTERS = {
+  owing:     { title: 'Customers Owing',  icon: 'fas fa-users',              color: 'var(--warn)',
+               match: function(cx) { return !cx.paidUp; },
+               empty: 'No customers currently owe anything' },
+  paidUp:    { title: 'Paid Up',          icon: 'fas fa-circle-check',       color: 'var(--accent2)',
+               match: function(cx) { return cx.paidUp; },
+               empty: 'No customers are paid up yet' },
+  overLimit: { title: 'Over Credit Limit', icon: 'fas fa-triangle-exclamation', color: 'var(--danger)',
+               match: function(cx) { return cx.overLimit; },
+               empty: "No one is over their credit limit" },
+};
+
+function showCustomerList(filterKey) {
+  var cfg  = CUSTOMER_LIST_FILTERS[filterKey];
+  var rows = ALL_CUSTOMERS.filter(cfg.match);
+  var body = document.getElementById('olBody');
+
+  document.getElementById('olTitleText').textContent = cfg.title;
+  document.getElementById('olIcon').className = cfg.icon;
+  document.getElementById('olIcon').style.color = cfg.color;
+  document.getElementById('olSub').textContent = rows.length + ' customer' + (rows.length !== 1 ? 's' : '');
+
+  if (rows.length === 0) {
+    body.innerHTML = '<div style="text-align:center;padding:48px 20px;color:var(--text2)">' +
+      '<i class="fas fa-circle-check" style="font-size:24px;display:block;margin-bottom:10px;color:var(--accent2);opacity:.6"></i>' +
+      cfg.empty + '</div>';
+  } else {
+    body.innerHTML = rows.map(function(cx) {
+      var rightLine1, rightLine2;
+      if (filterKey === 'paidUp') {
+        rightLine1 = '<div style="font-size:13px;font-weight:700;color:var(--accent2)">' + odFmt(cx.totalPaid) + '</div>';
+        rightLine2 = '<div style="font-size:11px;color:var(--text2)">paid in full</div>';
+      } else if (filterKey === 'overLimit') {
+        rightLine1 = '<div style="font-size:13px;font-weight:700;color:var(--danger)">' + odFmt(cx.outstanding) + '</div>';
+        rightLine2 = '<div style="font-size:11px;color:var(--danger)">+' + odFmt(cx.outstanding - cx.creditLimit) + ' over</div>';
+      } else {
+        rightLine1 = '<div style="font-size:13px;font-weight:700;color:var(--danger)">' + odFmt(cx.outstanding) + '</div>';
+        rightLine2 = '<div style="font-size:11px;color:var(--text2)">outstanding</div>';
+      }
+      var subLine = filterKey === 'overLimit'
+        ? 'Limit: ' + odFmt(cx.creditLimit)
+        : 'Last order: ' + (cx.lastOrderDate || '—');
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 22px;' +
+        'border-bottom:1px solid rgba(217,119,87,.06);cursor:pointer"' +
+        ' onclick="closeOverLimitList();showCustomerDetail(\'' + cx.customerId + '\')"' +
+        ' onmouseover="this.style.background=\'rgba(217,119,87,.06)\'" onmouseout="this.style.background=\'\'">' +
+        '<div>' +
+          '<div style="font-size:13px;font-weight:600">' + cx.customerName + '</div>' +
+          '<div style="font-size:11px;color:var(--text2);margin-top:1px">' + subLine + '</div>' +
+        '</div>' +
+        '<div style="text-align:right">' + rightLine1 + rightLine2 + '</div>' +
+        '</div>';
+    }).join('');
+  }
+  document.getElementById('olModal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeOverLimitList() {
+  document.getElementById('olModal').style.display = 'none';
+  if (document.getElementById('odModal').style.display !== 'flex') document.body.style.overflow = '';
+}
+
+function showCustomerDetail(customerId) {
+  var modal = document.getElementById('odModal');
+  var body  = document.getElementById('odBody');
+  document.getElementById('odTitle').textContent = 'Loading…';
+  document.getElementById('odSub').textContent = '';
+  body.innerHTML = '<div style="text-align:center;padding:48px 20px;color:var(--text2)">' +
+    '<i class="fas fa-spinner fa-spin" style="font-size:20px;display:block;margin-bottom:10px"></i>Loading…</div>';
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+
+  fetch('/api/customer/' + encodeURIComponent(customerId) + '/outstanding')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ok) throw new Error(data.error || 'Failed to load customer');
+      renderCustomerDetail(customerId, data);
+    })
+    .catch(function(e) {
+      document.getElementById('odTitle').textContent = 'Customer';
+      body.innerHTML = '<div style="text-align:center;padding:48px 20px;color:var(--danger)">' +
+        '<i class="fas fa-triangle-exclamation" style="font-size:22px;display:block;margin-bottom:10px"></i>' +
+        (e.message || 'Failed to load customer') + '</div>';
+    });
+}
+
+function renderCustomerDetail(customerId, data) {
+  document.getElementById('odTitle').textContent = data.customerName;
+  document.getElementById('odSub').textContent =
+    data.orders.length + ' order' + (data.orders.length !== 1 ? 's' : '') + ' since 1 Sept 2026';
+
+  var orderRows = data.orders.map(function(o) {
+    return '<tr style="border-bottom:1px solid rgba(217,119,87,.06)">' +
+      '<td style="padding:8px 12px;font-size:12px;font-weight:600">' + o.name + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;color:var(--text2)">' + (o.date || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;text-align:right">' + odFmt(o.sum) + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;text-align:right;color:var(--accent2)">' + odFmt(o.paid) + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;text-align:right;font-weight:600;color:' + (o.outstanding > 0 ? 'var(--danger)' : 'var(--text2)') + '">' +
+        (o.outstanding > 0 ? odFmt(o.outstanding) : '—') + '</td>' +
+      '</tr>';
+  }).join('') || '<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text2)">No orders</td></tr>';
+
+  var paymentRows = data.payments.map(function(p) {
+    return '<tr style="border-bottom:1px solid rgba(217,119,87,.06)">' +
+      '<td style="padding:8px 12px;font-size:12px;font-weight:600">' + p.name + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;color:var(--text2)">' + (p.date || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;text-align:right;color:var(--accent2)">' + odFmt(p.sum) + '</td>' +
+      '</tr>';
+  }).join('') || '<tr><td colspan="3" style="padding:16px;text-align:center;color:var(--text2)">No payments recorded</td></tr>';
+
+  document.getElementById('odBody').innerHTML =
+    '<div style="padding:16px 22px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px">' +
+      '<div><div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Total Sum</div>' +
+        '<div style="font-size:16px;font-weight:700;margin-top:2px">' + odFmt(data.totalSum) + '</div></div>' +
+      '<div><div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Total Paid</div>' +
+        '<div style="font-size:16px;font-weight:700;margin-top:2px;color:var(--accent2)">' + odFmt(data.totalPaid) + '</div></div>' +
+      '<div><div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Outstanding</div>' +
+        '<div style="font-size:16px;font-weight:700;margin-top:2px;color:var(--danger)">' + odFmt(data.outstanding) + '</div></div>' +
+    '</div>' +
+    '<div style="padding:0 22px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<label style="font-size:11px;color:var(--text2)">Credit Limit (₽)</label>' +
+      '<input type="number" id="odLimitInput" value="' + (data.creditLimit || '') + '" placeholder="No limit set" min="0"' +
+        ' style="width:140px;font-size:12px;padding:6px 9px;border-radius:7px;border:1px solid var(--border);background:var(--bg3);color:var(--text)">' +
+      '<button onclick="saveCreditLimit(\'' + customerId + '\')"' +
+        ' style="font-size:11px;padding:6px 12px;border-radius:7px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer">Save</button>' +
+      '<span id="odLimitMsg" style="font-size:11px;color:var(--accent2)"></span>' +
+    '</div>' +
+    '<div style="padding:0 22px 6px;font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Orders</div>' +
+    '<div style="padding:0 22px 16px"><table style="width:100%;border-collapse:collapse"><tbody>' + orderRows + '</tbody></table></div>' +
+    '<div style="padding:0 22px 6px;font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Payments</div>' +
+    '<div style="padding:0 22px 20px"><table style="width:100%;border-collapse:collapse"><tbody>' + paymentRows + '</tbody></table></div>';
+}
+
+function saveCreditLimit(customerId) {
+  var input = document.getElementById('odLimitInput');
+  var msg   = document.getElementById('odLimitMsg');
+  var val   = input.value;
+  fetch('/api/customer/' + encodeURIComponent(customerId) + '/credit-limit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ limit: val })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ok) throw new Error(data.error || 'Failed to save');
+      msg.textContent = 'Saved — refresh to see it reflected in the table';
+      setTimeout(function() { msg.textContent = ''; }, 4000);
+    })
+    .catch(function(e) { msg.style.color = 'var(--danger)'; msg.textContent = e.message || 'Failed to save'; });
+}
+
+function closeCustomerDetail() {
+  document.getElementById('odModal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var m = document.getElementById('odModal');
+    if (m && m.style.display !== 'none') closeCustomerDetail();
+  }
+});
+</script>

@@ -267,6 +267,7 @@ app.use((req, res, next) => {
   res.locals.canViewTally = req.session.role === 'admin';
   res.locals.isAdmin      = req.session.role === 'admin';
   res.locals.canUseChat   = req.session.role === 'admin' || req.session.role === 'partner';
+  res.locals.canViewOutstandings = ['admin', 'partner', 'associate'].includes(req.session.role);
   res.locals.displayName  = req.session.displayName || null;
   res.locals.empName   = 'Admin';
   res.locals.empLetter = 'A';
@@ -295,6 +296,18 @@ app.use((req, res, next) => {
 // non-admin could otherwise hit these URLs directly.
 function requireAdmin(req, res, next) {
   if (req.session.role !== 'admin') return res.status(403).send('Access denied');
+  next();
+}
+
+// Outstandings (receivables) — Admin, Partner, and "Sales Director" (the
+// role key is 'associate' — see lib/request-context.js's ROLE_LABELS for
+// why; it's the KHAN-price-override role, displayed as "Sales Director"
+// since the rename). The role key 'sales_director' itself displays as
+// "Employee" and does NOT get this — matches what was actually asked for
+// (admin/partner/"Sales Director" as shown in the UI, not the raw key names).
+function requireFullAccess(req, res, next) {
+  const allowed = ['admin', 'partner', 'associate'];
+  if (!allowed.includes(req.session.role)) return res.status(403).send('Access denied');
   next();
 }
 
@@ -1600,6 +1613,54 @@ app.get('/customers', async (req, res) => {
       chartOrderData: JSON.stringify(chartTop.map(x => x.orders))
     });
   } catch(e) { res.status(500).render('error',{message:e.message}); }
+});
+
+// ── OUTSTANDINGS (receivables) ───────────────────────────
+// Admin/Partner only — see requireFullAccess. Always scoped to 1 Sept 2026
+// onward (db/outstandings.js's CUTOVER), independent of role/date-floor
+// logic elsewhere: this dashboard is about the new account's receivables
+// by design, not a permissions restriction.
+app.get('/outstandings', requireFullAccess, async (req, res) => {
+  try {
+    const c = await common();
+    const outstandingsDb = require('./db/outstandings');
+    const [rows, recentPayments] = await Promise.all([
+      outstandingsDb.getOutstandingSummary(),
+      outstandingsDb.getRecentPayments(25),
+    ]);
+    const totalOutstanding = rows.reduce((a, r) => a + r.outstanding, 0);
+    const totalReceived    = rows.reduce((a, r) => a + r.totalReceived, 0);
+    const owingCount       = rows.filter(r => !r.paidUp).length;
+    const paidUpCount      = rows.filter(r => r.paidUp).length;
+    const overLimitCount = rows.filter(r => r.overLimit).length;
+    res.render('outstandings', {
+      ...c, active: 'outstandings',
+      customers: rows,
+      recentPayments,
+      totalOutstanding, totalReceived,
+      owingCount, paidUpCount, overLimitCount,
+      customerCount: rows.length,
+      customersJSON: JSON.stringify(rows),
+    });
+  } catch (e) { res.status(500).render('error', { message: e.message }); }
+});
+
+app.get('/api/customer/:id/outstanding', requireFullAccess, async (req, res) => {
+  try {
+    const data = await require('./db/outstandings').getCustomerDetail(req.params.id);
+    res.json({ ok: true, ...data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/customer/:id/credit-limit', requireFullAccess, async (req, res) => {
+  try {
+    await require('./db/outstandings').setCreditLimit(req.params.id, req.body.limit);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ── SKU ANALYSIS ─────────────────────────────────────────
