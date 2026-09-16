@@ -164,6 +164,12 @@ const TALLY_BASE    = process.env.TALLY_URL || process.env.TALLY_BASE || 'http:/
 const TALLY_COMPANY = process.env.TALLY_COMPANY || '';
 const PORT = process.env.PORT || 3000;
 const CUR     = '₽';
+// Old MoySklad account was retired 31 Aug 2026 and its token has since
+// expired — any order from before this date that was never dispatched/closed
+// can no longer change state (nothing syncs that account anymore), so it
+// would otherwise sit "pending" forever. The Pending Orders card only
+// reflects currently actionable business, i.e. the active account.
+const ACCOUNT_CUTOVER_DATE = '2026-09-01';
 
 // ── Express setup ────────────────────────────────────────
 app.set('view engine', 'ejs');
@@ -1062,8 +1068,13 @@ app.get('/', async (req, res) => {
     // Pending = has a named state AND is NOT dispatched / closed / declined / cancelled / draft.
     // Draft orders (no state, or state named "Draft"/"Черновик") are excluded entirely.
     // "Closed"/"Закрыт" means fully paid and settled — not pending, same as Dispatched.
+    // Also excludes anything from before the account cutover — a leftover
+    // old-account order stuck in a non-final state can never actually be
+    // dispatched now (see ACCOUNT_CUTOVER_DATE above), so it isn't real
+    // pending work, just frozen history.
     const pendingOrders = orders.filter(r => {
       if (!r.state) return false;                                      // no state = draft
+      if ((r.moment || '') < ACCOUNT_CUTOVER_DATE) return false;        // retired account, frozen state
       const s = resolveState(r, stateMap).toLowerCase();
       if (!s) return false;                                            // unresolved state = draft
       if (/^draft$|черновик/.test(s)) return false;                   // state named "Draft"
@@ -2228,6 +2239,10 @@ app.get('/product-analytics', async (req, res) => {
       currentStock: currentStock2, avgDaily,
       outCount: outCount2, lowCount: lowCount2,
       variants, monthlyTrend, flavorBreakdown,
+      // The role key 'associate' displays as "Sales Director" (see
+      // lib/request-context.js's ROLE_LABELS) — per-unit average selling
+      // price is hidden from that role on this page's Month-wise Sales table.
+      hideAvgUnit: getRole() === 'associate',
       trendJSON:           JSON.stringify(monthlyTrend),
       variantsJSON:        JSON.stringify(variants),
       flavorBreakdownJSON: JSON.stringify(flavorBreakdown)
