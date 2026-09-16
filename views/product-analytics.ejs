@@ -52,7 +52,7 @@
       <div class="stat-card">
         <div class="stat-label">Avg Daily Sales</div>
         <div class="stat-value"><%- avgDaily %></div>
-        <div class="stat-sub">Units/day (<%- monthRangesCount %>mo avg)</div>
+        <div class="stat-sub">Units/day (6mo avg)</div>
         <i class="fas fa-chart-line stat-icon"></i>
       </div>
     </div>
@@ -172,7 +172,7 @@
               <th>Month</th>
               <th style="text-align:right">Qty Sold</th>
               <th style="text-align:right">Revenue</th>
-              <% if (!hideAvgUnit) { %><th style="text-align:right">Avg/Unit</th><% } %>
+              <th style="text-align:right">Avg/Unit</th>
             </tr>
           </thead>
           <tbody id="monthBody"></tbody>
@@ -181,7 +181,7 @@
               <td><strong>Total</strong></td>
               <td style="text-align:right;font-weight:700" id="footQty"></td>
               <td style="text-align:right;font-weight:700;color:var(--accent2)" id="footVal"></td>
-              <% if (!hideAvgUnit) { %><td></td><% } %>
+              <td></td>
             </tr>
           </tfoot>
         </table>
@@ -195,7 +195,6 @@
 <script>
 const TREND    = <%- trendJSON %>;
 const VARIANTS = <%- variantsJSON %>;
-const HIDE_AVG_UNIT = <%- hideAvgUnit ? 'true' : 'false' %>;
 const COLORS   = { accent:'#D97757', accent2:'#4FAE8A', warn:'#F0B429', danger:'#E5484D', text2:'#A69A8D' };
 
 // Set percentage bar widths (avoids EJS-in-style linter errors)
@@ -281,12 +280,11 @@ function applyFilter() {
   const tbody = document.getElementById('monthBody');
   tbody.innerHTML = trendFiltered.map(m => {
     const avg = m.qty>0 ? m.val/m.qty : 0;
-    const avgCell = HIDE_AVG_UNIT ? '' : `<td style="text-align:right" class="muted">${avg>0?fmtFull(avg):'—'}</td>`;
     return `<tr>
       <td>${m.label}</td>
       <td style="text-align:right;font-weight:600">${m.qty}</td>
       <td style="text-align:right;color:var(--accent2)">${fmtFull(m.val)}</td>
-      ${avgCell}
+      <td style="text-align:right" class="muted">${avg>0?fmtFull(avg):'—'}</td>
     </tr>`;
   }).join('');
 

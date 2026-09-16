@@ -2055,7 +2055,7 @@ app.get('/product-analytics', async (req, res) => {
     const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const now = new Date();
 
-    let monthRanges = Array.from({ length: 6 }, (_, i) => {
+    const monthRanges = Array.from({ length: 6 }, (_, i) => {
       const d   = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
       const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
       const from = key + '-01';
@@ -2063,13 +2063,6 @@ app.get('/product-analytics', async (req, res) => {
       const to   = localDateStr(last);
       return { key, from, to, label: MN[d.getMonth()] + ' ' + d.getFullYear() };
     });
-
-    // The role key 'associate' displays as "Sales Director" (see
-    // lib/request-context.js's ROLE_LABELS) — per-unit average selling
-    // price is hidden from that role entirely on this page, and its
-    // month-wise table never shows anything before the account cutover.
-    const isSalesDirectorRole = getRole() === 'associate';
-    if (isSalesDirectorRole) monthRanges = monthRanges.filter(m => m.key >= '2026-09');
 
     // Fetch entity, stock, per-month profit reports, and the family map in parallel
     const [entityRes, stockRes, familyMapRes, ...mResults] = await Promise.allSettled([
@@ -2180,12 +2173,7 @@ app.get('/product-analytics', async (req, res) => {
 
     const totalQty = monthlyTrend.reduce((a, m) => a + m.qty, 0);
     const totalVal = monthlyTrend.reduce((a, m) => a + m.val, 0);
-    // Day-count follows monthRanges (not a hardcoded 180 = 6mo), since the
-    // Sales Director/"associate" role above may only be looking at a few
-    // post-cutover months, not the full 6.
-    const totalDays = monthRanges.reduce((a, m) =>
-      a + Math.round((new Date(m.to) - new Date(m.from)) / 86400000) + 1, 0);
-    const avgDaily = totalQty > 0 && totalDays > 0 ? (totalQty / totalDays).toFixed(2) : '0.00';
+    const avgDaily = totalQty > 0 ? (totalQty / 180).toFixed(2) : '0.00';
 
     // Build per-flavour sales from all 6 months of profit report rows
     const flavorSalesMap = {};
@@ -2240,8 +2228,6 @@ app.get('/product-analytics', async (req, res) => {
       currentStock: currentStock2, avgDaily,
       outCount: outCount2, lowCount: lowCount2,
       variants, monthlyTrend, flavorBreakdown,
-      monthRangesCount: monthRanges.length,
-      hideAvgUnit: isSalesDirectorRole,
       trendJSON:           JSON.stringify(monthlyTrend),
       variantsJSON:        JSON.stringify(variants),
       flavorBreakdownJSON: JSON.stringify(flavorBreakdown)
