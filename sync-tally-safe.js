@@ -1,8 +1,9 @@
 // ─────────────────────────────────────────────────────────────
 //  PLATINA  Safe Tally → MongoDB Sync  (accounts team laptops)
 //
-//  Syncs ledgers + stock only — no voucher dump so Tally never crashes.
-//  Voucher history is already in MongoDB from the main laptop sync.
+//  Syncs ledgers, stock, and a rolling last-3-months window of vouchers
+//  (recomputed fresh every run) — older voucher history already in
+//  MongoDB from a prior full/6-month sync is left untouched.
 //
 //  Run:  node sync-tally-safe.js
 // ─────────────────────────────────────────────────────────────
@@ -100,7 +101,7 @@ function parseLedgers(xml) {
 async function main() {
   console.log('\n╔════════════════════════════════════════╗');
   console.log('║  PLATINA  Safe Tally → MongoDB Sync    ║');
-  console.log('║  Ledgers + Stock only (no vouchers)    ║');
+  console.log('║  Ledgers + Stock + last 3mo vouchers   ║');
   console.log('╚════════════════════════════════════════╝\n');
 
   if (!MONGO_URI) { console.error('✗  MONGODB_URI not set in .env'); process.exit(1); }
@@ -141,12 +142,12 @@ async function main() {
     console.log(`           ✓  ${r.upsertedCount} new · ${r.modifiedCount} updated\n`);
   }
 
-  // ── STEP 2: Vouchers — last 2 days only ──────────────────
-  console.log('[ 2 / 4 ]  Syncing recent vouchers (last 2 days) ...');
+  // ── STEP 2: Vouchers — rolling last 3 months ─────────────
+  console.log('[ 2 / 4 ]  Syncing recent vouchers (last 3 months) ...');
   try {
     const today    = todayISO();
-    const twoDaysAgo = new Date(); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-    const fromDate = `${twoDaysAgo.getFullYear()}-${String(twoDaysAgo.getMonth()+1).padStart(2,'0')}-${String(twoDaysAgo.getDate()).padStart(2,'0')}`;
+    const threeMonthsAgo = new Date(); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    const fromDate = `${threeMonthsAgo.getFullYear()}-${String(threeMonthsAgo.getMonth()+1).padStart(2,'0')}-${String(threeMonthsAgo.getDate()).padStart(2,'0')}`;
     process.stdout.write(`  Fetching ${fromDate} → ${today} ... `);
 
     const co   = TALLY_COMPANY ? `<SVCURRENTCOMPANY>${escapeXml(TALLY_COMPANY)}</SVCURRENTCOMPANY>` : '';
@@ -167,7 +168,7 @@ async function main() {
 </TDLMESSAGE></TDL>
 </DESC></BODY></ENVELOPE>`);
 
-    // Parse and filter strictly to last 2 days in JS (backup if Tally ignores dates)
+    // Parse and filter strictly to the last 3 months in JS (backup if Tally ignores dates)
     const recentVouchers = [];
     for (const blk of blocks(vXml, 'VOUCHER')) {
       const dateStr = (() => { const t = String(stripXml(getTag(blk,'DATE'))||'').trim(); return /^\d{8}$/.test(t)?`${t.slice(0,4)}-${t.slice(4,6)}-${t.slice(6,8)}`:t.slice(0,10)||null; })();
@@ -199,7 +200,7 @@ async function main() {
       await db.collection('tally_vouchers').bulkWrite(ops, { ordered: false });
       console.log(`           ✓  ${recentVouchers.length} vouchers upserted (history untouched)\n`);
     } else {
-      console.log('           ✓  No new vouchers in last 2 days\n');
+      console.log('           ✓  No new vouchers in last 3 months\n');
     }
   } catch(e) {
     console.log(`           ⚠  Skipped — ${e.message}`);
@@ -270,7 +271,7 @@ async function main() {
   console.log('╠════════════════════════════════════════╣');
   console.log(`║  Ledgers     : ${String(ledgers.length).padEnd(24)}║`);
   console.log(`║  Stock items : ${String(stockItems.length).padEnd(24)}║`);
-  console.log(`║  Vouchers    : last 2 days (upserted)  ║`);
+  console.log(`║  Vouchers    : last 3 months (upserted)║`);
   console.log('╚════════════════════════════════════════╝');
   console.log('\n✓  Ledger balances and stock updated in MongoDB.');
   console.log('   Run sync-tally-full.js from main laptop for voucher history.\n');
