@@ -115,6 +115,12 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  /* Flex items default to min-width:auto, which lets an oversized
+     descendant (e.g. the mobile chart's horizontal-scroll wrapper) stretch
+     .main wider than the viewport instead of being clipped/scrolled inside
+     it. min-width:0 restores normal containment; harmless on desktop where
+     nothing is ever wider than its container to begin with. */
+  min-width: 0;
 }
 
 /* ── TOPBAR ──────────────────────────────────── */

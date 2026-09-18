@@ -89,7 +89,9 @@
         </div>
       </div>
       <div id="chartData" data-monthly='<%- monthlyData %>' data-daily='<%- weeklyData %>' style="display:none"></div>
-      <div class="chart-box" style="height:280px"><canvas id="weeklyChart"></canvas></div>
+      <div class="chart-box" id="chartScrollWrap" style="height:280px;overflow-x:auto;overflow-y:hidden">
+        <div id="chartInner" style="height:100%;min-width:100%"><canvas id="weeklyChart"></canvas></div>
+      </div>
       <div id="showMoreWrap" style="text-align:center;margin-top:14px">
         <button id="showMoreBtn" onclick="loadMoreMonths()"
           style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:7px 22px;border-radius:7px;font-size:12px;cursor:pointer;transition:all .15s"
@@ -192,6 +194,9 @@ function fmtFull(v) {
 }
 
 // ── Growth % + value label plugin ────────────────────────
+function isDarkTheme() {
+  try { return localStorage.getItem('platina_theme') === 'dark'; } catch(e) { return false; }
+}
 const growthPlugin = {
   id: 'growthLabels',
   afterDatasetsDraw(chart) {
@@ -199,11 +204,15 @@ const growthPlugin = {
     const { ctx } = chart;
     const barMeta = chart.getDatasetMeta(0);
     const barVals = chart.data.datasets[0].data;
+    // Bars are a translucent orange (rgba(217,119,87,.65)) over the card
+    // background — reads as a light coral in light theme (needs dark text)
+    // and a deeper, more saturated orange in dark theme (needs light text).
+    const valueColor = isDarkTheme() ? 'rgba(255,255,255,.95)' : 'rgba(30,24,21,.88)';
     barMeta.data.forEach((bar, i) => {
       const curr = barVals[i];
       // Value label inside bar top
       ctx.save();
-      ctx.fillStyle = 'rgba(255,255,255,.82)';
+      ctx.fillStyle = valueColor;
       ctx.font = '600 10px Inter, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
@@ -220,6 +229,17 @@ const growthPlugin = {
       ctx.save();
       ctx.font = 'bold 10px Inter, sans-serif';
       const tw = ctx.measureText(text).width + 10;
+      // Available room = distance to the nearest neighboring bar's center.
+      // On a wide (desktop/tablet) chart this is always plenty, so the pill
+      // draws exactly as before there. On a narrow mobile chart with many
+      // months, it can shrink below the pill's own width — skip drawing it
+      // for that bar rather than let it overlap its neighbor (the same
+      // figure is still in the tooltip on tap).
+      const neighborDist = Math.min(
+        i > 0 ? Math.abs(bar.x - barMeta.data[i - 1].x) : Infinity,
+        i < barMeta.data.length - 1 ? Math.abs(bar.x - barMeta.data[i + 1].x) : Infinity
+      );
+      if (tw > neighborDist * 0.92) { ctx.restore(); return; }
       const px = bar.x - tw / 2, py = bar.y - 24;
       ctx.fillStyle = pct === null ? 'rgba(217,119,87,.2)' : pct >= 0 ? 'rgba(79,174,138,.18)' : 'rgba(229,72,77,.18)';
       roundRect(ctx, px, py, tw, 16, 4);
@@ -314,11 +334,35 @@ const weeklyChart = new Chart(document.getElementById('weeklyChart'), {
 const barOf  = m => m.value;
 const lineOf = m => m.count;
 
+// On a narrow phone, squeezing every bar into the visible width is what was
+// making the labels overlap/vanish. Below MOBILE_CHART_BREAKPOINT, give each
+// bar a fixed minimum pixel width instead and let the chart's own box
+// scroll horizontally — newest month renders first (leftmost), so the
+// default (unscrolled) view already shows the most recent, most-relevant
+// months, and swiping right reaches older ones. Desktop/tablet never hits
+// this (chartScrollWrap is always wide enough there), so it's untouched.
+const MOBILE_CHART_BREAKPOINT = 480;
+const MIN_PX_PER_BAR = 58;
+function applyChartScrollWidth(barCount) {
+  const wrap = document.getElementById('chartInner');
+  const scrollBox = document.getElementById('chartScrollWrap');
+  if (!wrap || !scrollBox) return;
+  if (window.innerWidth <= MOBILE_CHART_BREAKPOINT && barCount > 0) {
+    const neededWidth = barCount * MIN_PX_PER_BAR;
+    const availWidth  = scrollBox.clientWidth || window.innerWidth;
+    wrap.style.width = Math.max(neededWidth, availWidth) + 'px';
+  } else {
+    wrap.style.width = '100%';
+  }
+}
+
 function renderMonthly() {
   const display = [...allMonths].reverse();
+  applyChartScrollWidth(display.length);
   weeklyChart.data.labels = display.map(m => m.label);
   weeklyChart.data.datasets[0].data = display.map(barOf);
   weeklyChart.data.datasets[1].data = display.map(lineOf);
+  weeklyChart.resize();
   weeklyChart.update();
   const newest = allMonths[allMonths.length - 1]?.label || '';
   const oldest = allMonths[0]?.label || '';
@@ -335,14 +379,25 @@ function makeDayLabel(daysAgo) {
 function renderDaily() {
   const reversed = [...DAILY].reverse();
   const offset   = DAILY.length - 1;
+  applyChartScrollWidth(reversed.length);
   weeklyChart.data.labels = reversed.map((_, i) => makeDayLabel(offset - i));
   weeklyChart.data.datasets[0].data = reversed.map(barOf);
   weeklyChart.data.datasets[1].data = reversed.map(lineOf);
+  weeklyChart.resize();
   weeklyChart.update();
   document.getElementById('chartTitle').textContent      = 'Revenue — Last 15 Days';
   document.getElementById('chartRangeLabel').textContent = `${makeDayLabel(offset)} → ${makeDayLabel(0)}`;
   document.getElementById('showMoreWrap').style.display  = 'none';
 }
+
+let _chartResizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(_chartResizeTimer);
+  _chartResizeTimer = setTimeout(() => {
+    applyChartScrollWidth(weeklyChart.data.labels.length);
+    weeklyChart.resize();
+  }, 150);
+});
 
 function render() { currentView === 'monthly' ? renderMonthly() : renderDaily(); }
 
