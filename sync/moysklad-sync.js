@@ -524,18 +524,26 @@ async function syncPaymentsIn(client) {
 // separately check for it. This does a lightweight "which IDs still exist"
 // reconciliation over a recent rolling window (deletions of old historical
 // records are rare/low-value to chase, so we don't scan the full history).
-// Throttled to once/hour (via ms_sync_meta) since it's extra API load on
-// top of the regular incremental ticks.
+//
+// Two passes, both using the shared reconcileWindow() below:
+//   - Fast (3 days, every tick): catches someone creating then deleting an
+//     order/demand within minutes — otherwise that could sit "live" on the
+//     dashboard for up to an hour, which reads as a real bug to a viewer.
+//     A 3-day window is small (a few dozen records at most), so running it
+//     every ~2 minutes alongside the regular sync is cheap.
+//   - Full (30 days, hourly): safety net for anything the fast pass's
+//     window missed. Throttled since re-fetching a full month is real API
+//     load on top of the regular incremental ticks.
 const RECONCILE_WINDOW_DAYS = 30;
 const RECONCILE_INTERVAL_HOURS = 1;
+const RECONCILE_FAST_WINDOW_DAYS = 3;
 
-async function reconcileRecentDeletions(client) {
-  const entity = 'reconcile';
+async function reconcileWindow(client, entity, windowDays, intervalHours) {
   try {
     const state = await getSyncState(client, entity);
-    if (state?.last_full_sync_at) {
+    if (state?.last_full_sync_at && intervalHours > 0) {
       const hoursSince = (Date.now() - new Date(state.last_full_sync_at).getTime()) / 3600000;
-      if (hoursSince < RECONCILE_INTERVAL_HOURS) return;
+      if (hoursSince < intervalHours) return;
     }
 
     // Never reach earlier than this account's own start date — critical when
@@ -545,7 +553,7 @@ async function reconcileRecentDeletions(client) {
     // Takes the latest (most restrictive) of three floors: the rolling window,
     // MS_SYNC_FROM, and the hard-coded ACCOUNT_CUTOVER_DATE — the last one
     // can't be silently disabled by a missing/stale env var on some deployment.
-    const rollingSince = new Date(Date.now() - RECONCILE_WINDOW_DAYS * 24 * 3600 * 1000)
+    const rollingSince = new Date(Date.now() - windowDays * 24 * 3600 * 1000)
       .toISOString().slice(0, 10) + ' 00:00:00';
     const floorSince = `${MS_SYNC_FROM} 00:00:00`;
     const hardFloor   = `${ACCOUNT_CUTOVER_DATE} 00:00:00`;
@@ -576,11 +584,18 @@ async function reconcileRecentDeletions(client) {
       last_full_sync_at: new Date(), last_incremental_sync_at: new Date(),
       last_status: 'ok', last_error: null, last_rows: removed,
     });
-    if (removed) console.log(`[ms-sync] reconcile: removed ${removed} record(s) deleted upstream on MoySklad`);
+    if (removed) console.log(`[ms-sync] ${entity}: removed ${removed} record(s) deleted upstream on MoySklad`);
   } catch (e) {
     await upsertMeta(client, entity, { last_status: 'error', last_error: e.message.slice(0, 500) }).catch(() => {});
-    console.error('[ms-sync] reconcile failed:', e.message);
+    console.error(`[ms-sync] ${entity} failed:`, e.message);
   }
+}
+
+async function reconcileVeryRecentDeletions(client) {
+  return reconcileWindow(client, 'reconcile_fast', RECONCILE_FAST_WINDOW_DAYS, 0);
+}
+async function reconcileRecentDeletions(client) {
+  return reconcileWindow(client, 'reconcile', RECONCILE_WINDOW_DAYS, RECONCILE_INTERVAL_HOURS);
 }
 
 // Each entity gets its own short-lived connection rather than one client held
@@ -594,12 +609,18 @@ async function withClient(pool, fn) {
   // unexpected connection drop, independent of any query's promise
   // rejection. Without a listener here, that's an unhandled error and
   // it takes the whole process down — this converts it into a log line.
-  client.on('error', (e) => console.error('[ms-sync] client connection error:', e.message));
+  // Must be removed before release(): the pool can hand back the same
+  // underlying client on a later connect(), and this runs every sync
+  // tick forever, so a listener left attached here accumulates one more
+  // every ~2 minutes for as long as the process lives.
+  const onError = (e) => console.error('[ms-sync] client connection error:', e.message);
+  client.on('error', onError);
   try {
     await fn(client);
   } catch (e) {
     console.error('[ms-sync] step failed outside its own try/catch:', e.message);
   } finally {
+    client.removeListener('error', onError);
     client.release();
   }
 }
@@ -616,6 +637,7 @@ async function runSync() {
   await withClient(pool, syncOrders);
   await withClient(pool, syncDemands);
   await withClient(pool, syncPaymentsIn);
+  await withClient(pool, reconcileVeryRecentDeletions);
   await withClient(pool, reconcileRecentDeletions);
 }
 
