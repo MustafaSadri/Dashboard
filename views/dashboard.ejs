@@ -200,7 +200,6 @@ function isDarkTheme() {
 const growthPlugin = {
   id: 'growthLabels',
   afterDatasetsDraw(chart) {
-    if (currentView !== 'monthly') return;
     const { ctx } = chart;
     const barMeta = chart.getDatasetMeta(0);
     const barVals = chart.data.datasets[0].data;
@@ -218,10 +217,13 @@ const growthPlugin = {
       ctx.textBaseline = 'top';
       ctx.fillText(fmtTick(curr), bar.x, bar.y + 5);
       ctx.restore();
-      // Growth % pill vs previous month (older is to the right).
-      // For the current (leftmost, i=0) bar: compare against pro-rata of prev month
-      // (same number of days elapsed) so an incomplete month never shows fake -ve growth.
-      const prev = (i === 0 && allMonths.length > 1) ? PREV_MONTH_PRO_RATA : barVals[i + 1];
+      // Growth % pill vs the previous point (older is to the right, both views).
+      // Monthly's current (leftmost, i=0) bar compares against a pro-rata
+      // same-day-count slice of the previous month, so an incomplete month
+      // never shows a fake negative. Daily doesn't need that — every day in
+      // the 15-day window is already a complete day.
+      const prev = (currentView === 'monthly' && i === 0 && allMonths.length > 1)
+        ? PREV_MONTH_PRO_RATA : barVals[i + 1];
       if (prev == null) return;
       const pct   = prev === 0 ? null : ((curr - prev) / prev * 100);
       const text  = pct === null ? 'NEW' : (pct >= 0 ? '▲' : '▼') + ' ' + Math.abs(pct).toFixed(0) + '%';
@@ -298,8 +300,10 @@ const weeklyChart = new Chart(document.getElementById('weeklyChart'), {
             const idx = c.dataIndex;
             if (c.datasetIndex === 0) {
               const curr = c.raw;
-              // Current month (idx=0): use pro-rata so comparison is day-for-day fair
-              const isCurrentMonth = idx === 0 && allMonths.length > 1;
+              // Current month (idx=0, monthly view only): use pro-rata so
+              // comparison is day-for-day fair. Daily view has no such case —
+              // every day in the 15-day window is already complete.
+              const isCurrentMonth = currentView === 'monthly' && idx === 0 && allMonths.length > 1;
               const prev = isCurrentMonth ? PREV_MONTH_PRO_RATA : c.dataset.data[idx + 1];
               if (prev == null) return `Revenue: ${fmtFull(curr)}`;
               const pct  = prev === 0 ? '∞' : ((curr - prev) / prev * 100).toFixed(1) + '%';
@@ -377,16 +381,17 @@ function makeDayLabel(daysAgo) {
 }
 
 function renderDaily() {
-  const reversed = [...DAILY].reverse();
-  const offset   = DAILY.length - 1;
-  applyChartScrollWidth(reversed.length);
-  weeklyChart.data.labels = reversed.map((_, i) => makeDayLabel(offset - i));
-  weeklyChart.data.datasets[0].data = reversed.map(barOf);
-  weeklyChart.data.datasets[1].data = reversed.map(lineOf);
+  // DAILY[i] is already "i days ago" (index 0 = today) — same newest-first,
+  // left-to-right convention as the monthly view, so no reversal needed.
+  const offset = DAILY.length - 1;
+  applyChartScrollWidth(DAILY.length);
+  weeklyChart.data.labels = DAILY.map((_, i) => makeDayLabel(i));
+  weeklyChart.data.datasets[0].data = DAILY.map(barOf);
+  weeklyChart.data.datasets[1].data = DAILY.map(lineOf);
   weeklyChart.resize();
   weeklyChart.update();
   document.getElementById('chartTitle').textContent      = 'Revenue — Last 15 Days';
-  document.getElementById('chartRangeLabel').textContent = `${makeDayLabel(offset)} → ${makeDayLabel(0)}`;
+  document.getElementById('chartRangeLabel').textContent = `${makeDayLabel(0)} → ${makeDayLabel(offset)}`;
   document.getElementById('showMoreWrap').style.display  = 'none';
 }
 
