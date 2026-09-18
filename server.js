@@ -1241,13 +1241,20 @@ app.get('/orders-status', async (req, res) => {
     });
 
     // Summary counts
+    // New/Accepted/Ready-to-Dispatch/Delayed only count orders from the
+    // active account (see ACCOUNT_CUTOVER_DATE) — a leftover old-account
+    // order stuck in one of these non-final states can never actually
+    // progress now (nothing syncs that account anymore), so it isn't real
+    // current business, just frozen history. Total/Dispatched/Draft stay
+    // full-6-month, since those aren't claims about what needs action today.
     const total      = orders.length;
-    const newCount   = orders.filter(o => /new|нов/i.test(o.stateL)).length;
-    const accCount   = orders.filter(o => /accept|принят|подтверж/i.test(o.stateL)).length;
-    const readyCount = orders.filter(o => /ready|готов/i.test(o.stateL)).length;
+    const active     = orders.filter(o => o.createdDate >= ACCOUNT_CUTOVER_DATE);
+    const newCount   = active.filter(o => /new|нов/i.test(o.stateL)).length;
+    const accCount   = active.filter(o => /accept|принят|подтверж/i.test(o.stateL)).length;
+    const readyCount = active.filter(o => /ready|готов/i.test(o.stateL)).length;
     const dispCount  = orders.filter(o => o.dispatched || /dispatch|отгруз/i.test(o.stateL)).length;
     const draftCount = orders.filter(o => !o.hasState || /^draft$|черновик/i.test(o.stateL)).length;
-    const delayCount = orders.filter(o => o.delayDays > 0).length;
+    const delayCount = active.filter(o => o.delayDays > 0).length;
     const withTime   = orders.filter(o => o.dispatchTime !== null);
     const avgDispatch = withTime.length > 0
       ? (withTime.reduce((a, o) => a + o.dispatchTime, 0) / withTime.length).toFixed(1) : '—';

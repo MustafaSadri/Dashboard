@@ -215,15 +215,21 @@ function badgeHtml(state) {
   return '<span class="badge ' + cls + '">' + (state||'Draft') + '</span>';
 }
 
+// Matches server.js's active-account filter for New/Accepted/Ready/Delayed —
+// a leftover old-account order stuck in one of these non-final states can
+// never progress now, so it's excluded the same way the card counts are.
+var ACCOUNT_CUTOVER_DATE = '2026-09-01';
+
 function openModal(filter, title, icon, color) {
   _modalRows = ORDERS.filter(function(o) {
+    var isActive = o.createdDate >= ACCOUNT_CUTOVER_DATE;
     if (filter === 'all')       return true;
-    if (filter === 'new')       return /new|нов/i.test(o.stateL);
-    if (filter === 'accepted')  return /accept|принят|подтверж/i.test(o.stateL);
-    if (filter === 'ready')     return /ready|готов/i.test(o.stateL);
+    if (filter === 'new')       return isActive && /new|нов/i.test(o.stateL);
+    if (filter === 'accepted')  return isActive && /accept|принят|подтверж/i.test(o.stateL);
+    if (filter === 'ready')     return isActive && /ready|готов/i.test(o.stateL);
     if (filter === 'dispatched')return o.dispatched || /dispatch|отгруз/i.test(o.stateL);
     if (filter === 'draft')     return !o.stateL || /draft|черновик/i.test(o.stateL);
-    if (filter === 'delayed')   return o.delayDays > 0;
+    if (filter === 'delayed')   return isActive && o.delayDays > 0;
     return false;
   });
 
