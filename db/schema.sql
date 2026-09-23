@@ -150,6 +150,23 @@ CREATE TABLE IF NOT EXISTS ms_muted_models (
   muted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Outgoing sales invoices (MoySklad entity "invoiceout") — powers the
+-- order-vs-shipment-vs-invoice mismatch check alongside ms_demands.
+CREATE TABLE IF NOT EXISTS ms_invoices_out (
+  id             TEXT PRIMARY KEY,
+  name           TEXT NOT NULL DEFAULT '',
+  moment         TIMESTAMP,
+  sum_kopecks    BIGINT NOT NULL DEFAULT 0,
+  customer_id    TEXT,
+  customer_name  TEXT,
+  order_id       TEXT,
+  updated_at     TIMESTAMP,
+  synced_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ms_invoices_out_order ON ms_invoices_out(order_id);
+CREATE INDEX IF NOT EXISTS idx_ms_invoices_out_moment ON ms_invoices_out(moment);
+CREATE INDEX IF NOT EXISTS idx_ms_invoices_out_updated ON ms_invoices_out(updated_at);
+
 -- Incoming payment documents (MoySklad entity "paymentin") — separate from
 -- ms_orders.payed_sum_kopecks, which is only a running total with no date.
 -- This is what lets the Outstandings dashboard show an actual last-payment

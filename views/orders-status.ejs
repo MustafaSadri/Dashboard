@@ -229,7 +229,8 @@ function openModal(filter, title, icon, color) {
     if (filter === 'ready')     return isActive && /ready|готов/i.test(o.stateL);
     if (filter === 'dispatched')return o.dispatched || /dispatch|отгруз/i.test(o.stateL);
     if (filter === 'draft')     return !o.stateL || /draft|черновик/i.test(o.stateL);
-    if (filter === 'delayed')   return isActive && o.delayDays > 0;
+    if (filter === 'delayed')   return isActive && o.delayDays > 0 &&
+      (/new|нов/i.test(o.stateL) || /accept|принят|подтверж/i.test(o.stateL) || /ready|готов/i.test(o.stateL));
     return false;
   });
 

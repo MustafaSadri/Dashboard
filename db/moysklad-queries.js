@@ -248,6 +248,44 @@ async function demandListHandler(qs) {
   return { rows: rows.map(rowToDemand), meta: { size: total } };
 }
 
+// ── /entity/invoiceout — outgoing sales invoices ───────────────────────────
+const INVOICE_FIELD_MAP = {
+  moment:    { col: 'iv.moment', type: 'timestamp' },
+  updatedAt: { col: 'iv.updated_at', type: 'timestamp' },
+  agent:     { col: 'iv.customer_id', type: 'href_id' },
+};
+function rowToInvoice(r) {
+  return {
+    id: r.id,
+    name: r.name || '',
+    moment: r.moment_s,
+    sum: Number(r.sum_kopecks) || 0,
+    agent: { name: r.customer_name || '—', meta: r.customer_id ? { href: cpHref(r.customer_id) } : {} },
+    customerOrder: r.order_id ? { meta: { href: ordHref(r.order_id) } } : null,
+  };
+}
+async function invoiceListHandler(qs) {
+  const clauses = parseFilterClauses(qs.get('filter'));
+  let { where, vals } = buildWhere(clauses, INVOICE_FIELD_MAP);
+  ({ where, vals } = applyMinDateFloor(where, vals, 'iv.moment'));
+  const dir = orderDirection(qs);
+  const { limit, offset } = pageParams(qs);
+  vals.push(limit, offset);
+  const sql = `
+    SELECT iv.id, iv.name, iv.sum_kopecks, iv.customer_id,
+           COALESCE(cp.name, iv.customer_name) AS customer_name, iv.order_id,
+           to_char(iv.moment,'YYYY-MM-DD HH24:MI:SS')||'.000' AS moment_s,
+           COUNT(*) OVER() AS total_count
+    FROM ms_invoices_out iv
+    LEFT JOIN ms_counterparties cp ON cp.id = iv.customer_id
+    ${where}
+    ORDER BY iv.moment ${dir} NULLS LAST
+    LIMIT $${vals.length - 1} OFFSET $${vals.length}`;
+  const { rows } = await query(sql, vals);
+  const total = rows.length ? Number(rows[0].total_count) : 0;
+  return { rows: rows.map(rowToInvoice), meta: { size: total } };
+}
+
 // ── /entity/customerorder ────────────────────────────────────────────────
 const ORDER_FIELD_MAP = {
   moment:    { col: 'o.moment', type: 'timestamp' },
@@ -511,6 +549,7 @@ async function shimRequest(path) {
   if (rp === '/report/stock/all')               return stockAllHandler(qs);
   if (rp === '/entity/customerorder/metadata')  return statesMetadataHandler();
   if (rp === '/entity/demand')                  return demandListHandler(qs);
+  if (rp === '/entity/invoiceout')              return invoiceListHandler(qs);
   if (rp === '/entity/customerorder')           return orderListHandler(qs);
   if (rp === '/entity/counterparty')            return counterpartyListHandler(qs);
   if (rp === '/entity/employee')                return employeeListHandler(qs);

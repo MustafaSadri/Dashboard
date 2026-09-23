@@ -922,17 +922,23 @@ function resolveState(r, stateMap) {
 //  ROUTES
 // ════════════════════════════════════════════════════════
 
-// ── Order-Shipment Value Mismatch API ────────────────────
-// Returns orders where total shipped value ≠ order value.
-// Happens when a sales order is edited after its shipment is created.
+// ── Order Health Check API (mismatches + housekeeping alerts) ────
+// Flags sales orders that need a human look, independently, per order:
+//  1. Shipped/invoiced value ≠ order value (order edited after the
+//     shipment/invoice was already created).
+//  2. Fully paid but status was never moved to Closed (easy to forget).
+//  3. Status says Dispatched but no shipment document actually exists.
 app.get('/api/order-shipment-mismatch', async (req, res) => {
   try {
     const filterStr = `moment>=2025-12-01 00:00:00`;
-    const [orders, demands] = await Promise.all([
+    const [orders, demands, invoices, stateMap] = await Promise.all([
       cached('mismatch_orders', 5*60*1000, () =>
         msAll(`/entity/customerorder?filter=${enc(filterStr)}&expand=agent&order=moment,desc`).then(r => r.rows || [])),
       cached('mismatch_demands', 5*60*1000, () =>
-        msAll(`/entity/demand?filter=${enc(filterStr)}&order=moment,desc`).then(r => r.rows || []))
+        msAll(`/entity/demand?filter=${enc(filterStr)}&order=moment,desc`).then(r => r.rows || [])),
+      cached('mismatch_invoices', 5*60*1000, () =>
+        msAll(`/entity/invoiceout?filter=${enc(filterStr)}&order=moment,desc`).then(r => r.rows || [])),
+      getOrderStateMap(),
     ]);
 
     // Sum all shipments per order
@@ -947,24 +953,71 @@ app.get('/api/order-shipment-mismatch', async (req, res) => {
       shippedList[oid].push({ name: d.name, sum: Math.round((d.sum || 0) / 100), date: (d.moment || '').slice(0, 10) });
     });
 
+    // Sum all sales invoices per order — same pattern as shipments above
+    const invoicedSum  = {};  // orderId → total invoiced (kopecks)
+    const invoicedList = {};  // orderId → [{name, sum, date}]
+    invoices.forEach(inv => {
+      const href = inv.customerOrder?.meta?.href || '';
+      if (!href) return;
+      const oid = href.split('/').pop().split('?')[0];
+      invoicedSum[oid]  = (invoicedSum[oid] || 0) + (inv.sum || 0);
+      if (!invoicedList[oid]) invoicedList[oid] = [];
+      invoicedList[oid].push({ name: inv.name, sum: Math.round((inv.sum || 0) / 100), date: (inv.moment || '').slice(0, 10) });
+    });
+
     const mismatches = [];
     orders.forEach(o => {
-      if (!shippedSum[o.id]) return;                        // no shipment yet — skip
-      const diff = (o.sum || 0) - shippedSum[o.id];
-      if (Math.abs(diff) < 100) return;                     // within ₹1 — ignore rounding
+      const hasShipment = shippedSum[o.id] != null;
+      const hasInvoice  = invoicedSum[o.id] != null;
+
+      const stateLabel  = resolveState(o, stateMap);
+      const stateL      = stateLabel.toLowerCase();
+      const isClosed     = /closed|закрыт/i.test(stateL);
+      const isDeclined   = /declin|cancel|отмен|отклон|аннул/i.test(stateL);
+      const isDispatched = /dispatched|отгруж/i.test(stateL);
+      // Old-account orders (pre-cutover) are frozen history from a retired
+      // MoySklad account — flagging them as "never closed" isn't actionable,
+      // so these two housekeeping checks only look at current-account orders.
+      const isCurrentAccount = (o.moment || '') >= ACCOUNT_CUTOVER_DATE;
+
+      // Fully (or over-) paid but status never moved to Closed
+      const paidNotClosed = isCurrentAccount && (o.payedSum || 0) > 0 && (o.payedSum || 0) >= (o.sum || 0) && !isClosed && !isDeclined
+        ? { paidSum: Math.round((o.payedSum || 0) / 100), orderSum: Math.round((o.sum || 0) / 100), state: stateLabel || 'No status' }
+        : null;
+
+      // Status says Dispatched but no shipment document exists at all
+      const dispatchedNoShipment = isCurrentAccount && isDispatched && !hasShipment
+        ? { state: stateLabel }
+        : null;
+
+      if (!hasShipment && !hasInvoice && !paidNotClosed && !dispatchedNoShipment) return;  // nothing to flag
+
+      const shipDiff = hasShipment ? (o.sum || 0) - shippedSum[o.id] : null;
+      const invDiff  = hasInvoice  ? (o.sum || 0) - invoicedSum[o.id] : null;
+      const shipMismatched = shipDiff !== null && Math.abs(shipDiff) >= 100;  // within ₹1 — ignore rounding
+      const invMismatched  = invDiff  !== null && Math.abs(invDiff)  >= 100;
+      if (!shipMismatched && !invMismatched && !paidNotClosed && !dispatchedNoShipment) return;
+
       mismatches.push({
-        id:          o.id,
-        name:        o.name,
-        customer:    o.agent?.name || '—',
-        date:        (o.moment || '').slice(0, 10),
-        orderSum:    Math.round((o.sum || 0) / 100),
-        shippedSum:  Math.round(shippedSum[o.id] / 100),
-        difference:  Math.round(diff / 100),
-        shipments:   shippedList[o.id] || []
+        id:              o.id,
+        name:            o.name,
+        customer:        o.agent?.name || '—',
+        date:            (o.moment || '').slice(0, 10),
+        orderSum:        Math.round((o.sum || 0) / 100),
+        shippedSum:      hasShipment ? Math.round(shippedSum[o.id] / 100) : null,
+        difference:      shipMismatched ? Math.round(shipDiff / 100) : null,
+        shipments:       shippedList[o.id] || [],
+        invoicedSum:     hasInvoice ? Math.round(invoicedSum[o.id] / 100) : null,
+        invoiceDifference: invMismatched ? Math.round(invDiff / 100) : null,
+        invoices:        invoicedList[o.id] || [],
+        paidNotClosed,
+        dispatchedNoShipment,
       });
     });
 
-    mismatches.sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference));
+    const score = m => (m.paidNotClosed ? 1e12 : 0) + (m.dispatchedNoShipment ? 1e11 : 0) +
+      Math.max(Math.abs(m.difference || 0), Math.abs(m.invoiceDifference || 0));
+    mismatches.sort((a, b) => score(b) - score(a));
     res.json({ ok: true, count: mismatches.length, mismatches });
   } catch(e) {
     console.error('/api/order-shipment-mismatch:', e.message);
@@ -1254,7 +1307,11 @@ app.get('/orders-status', async (req, res) => {
     const readyCount = active.filter(o => /ready|готов/i.test(o.stateL)).length;
     const dispCount  = orders.filter(o => o.dispatched || /dispatch|отгруз/i.test(o.stateL)).length;
     const draftCount = orders.filter(o => !o.hasState || /^draft$|черновик/i.test(o.stateL)).length;
-    const delayCount = active.filter(o => o.delayDays > 0).length;
+    // Delayed only counts orders still actionable (New/Accepted/Ready) — a
+    // Declined/Cancelled or Draft order past its planned delivery date isn't
+    // a delay, it's just closed-out business that never shipped.
+    const isDelayable = o => /new|нов/i.test(o.stateL) || /accept|принят|подтверж/i.test(o.stateL) || /ready|готов/i.test(o.stateL);
+    const delayCount = active.filter(o => o.delayDays > 0 && isDelayable(o)).length;
     const withTime   = orders.filter(o => o.dispatchTime !== null);
     const avgDispatch = withTime.length > 0
       ? (withTime.reduce((a, o) => a + o.dispatchTime, 0) / withTime.length).toFixed(1) : '—';

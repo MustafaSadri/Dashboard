@@ -23,9 +23,9 @@
         <!-- modal header -->
         <div style="display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--border);background:rgba(240,180,41,.07)">
           <i class="fas fa-triangle-exclamation" style="color:#F0B429;font-size:16px"></i>
-          <span style="font-weight:700;font-size:15px">Order vs Shipment Value Mismatch</span>
+          <span style="font-weight:700;font-size:15px">Order Alerts</span>
           <span id="mismatchModalCount" style="background:rgba(240,180,41,.2);color:#F0B429;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-left:4px"></span>
-          <span style="font-size:11px;color:var(--text2);margin-left:6px">Sales order value changed after shipment was created</span>
+          <span style="font-size:11px;color:var(--text2);margin-left:6px">Value mismatches, paid-but-not-closed, and dispatched-but-not-shipped orders</span>
           <button onclick="closeMismatchModal()" style="margin-left:auto;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:4px 8px">
             <i class="fas fa-xmark"></i>
           </button>
@@ -458,33 +458,73 @@ async function loadMismatch() {
 
     document.getElementById('mismatchBar').style.display = 'block';
     document.getElementById('mismatchBtnText').textContent =
-      `${data.count} Order${data.count > 1 ? 's' : ''} — Shipment value doesn't match sales order value`;
+      `${data.count} Order${data.count > 1 ? 's' : ''} need${data.count > 1 ? '' : 's'} attention — value mismatch, unclosed, or undispatched`;
     document.getElementById('mismatchModalCount').textContent = data.count;
 
-    // Build modal table
+    // Build modal table — a shipment block and/or an invoice block per
+    // order, whichever document type that order actually has and disagrees
+    // with the order's own value, plus housekeeping tags (paid-not-closed,
+    // dispatched-but-no-shipment) when those apply.
     const rows = data.mismatches.map(m => {
-      const over  = m.difference < 0;  // shipped more than order
-      const color = over ? '#ff5050' : '#F0B429';
-      const label = over ? 'Over-shipped by' : 'Short-shipped by';
-      const ships = m.shipments.map(s =>
+      const docs = m.shipments.map(s =>
         `<div style="font-size:11px;color:var(--text2);padding:2px 0">
            ${s.date} &nbsp;·&nbsp; ${s.name} &nbsp;·&nbsp; ${fmtRub(s.sum)}
          </div>`
       ).join('');
+      const invs = m.invoices.map(inv =>
+        `<div style="font-size:11px;color:var(--text2);padding:2px 0">
+           ${inv.date} &nbsp;·&nbsp; ${inv.name} &nbsp;·&nbsp; ${fmtRub(inv.sum)}
+         </div>`
+      ).join('');
+
+      let shipBlock = '';
+      if (m.difference !== null) {
+        const over  = m.difference < 0;  // shipped more than order
+        const color = over ? '#ff5050' : '#F0B429';
+        const label = over ? 'Over-shipped by' : 'Short-shipped by';
+        shipBlock = `<div style="text-align:right;white-space:nowrap;margin-bottom:8px">
+            <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px">Shipments</div>
+            <div style="font-size:12px;color:var(--text2)">Shipped &nbsp;<strong style="color:var(--text)">${fmtRub(m.shippedSum)}</strong></div>
+            <div style="margin-top:2px;font-size:12px;font-weight:700;color:${color}">${label} ${fmtRub(Math.abs(m.difference))}</div>
+          </div>`;
+      }
+      let invBlock = '';
+      if (m.invoiceDifference !== null) {
+        const over  = m.invoiceDifference < 0;  // invoiced more than order
+        const color = over ? '#ff5050' : '#F0B429';
+        const label = over ? 'Over-invoiced by' : 'Short-invoiced by';
+        invBlock = `<div style="text-align:right;white-space:nowrap">
+            <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px">Sales Invoice</div>
+            <div style="font-size:12px;color:var(--text2)">Invoiced &nbsp;<strong style="color:var(--text)">${fmtRub(m.invoicedSum)}</strong></div>
+            <div style="margin-top:2px;font-size:12px;font-weight:700;color:${color}">${label} ${fmtRub(Math.abs(m.invoiceDifference))}</div>
+          </div>`;
+      }
+
+      let tags = '';
+      if (m.paidNotClosed) {
+        tags += `<span style="display:inline-block;background:rgba(64,160,255,.15);color:#40A0FF;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:12px;margin-right:6px">
+            FULLY PAID · STILL "${(m.paidNotClosed.state || 'NO STATUS').toUpperCase()}"
+          </span>`;
+      }
+      if (m.dispatchedNoShipment) {
+        tags += `<span style="display:inline-block;background:rgba(255,80,80,.15);color:#ff5050;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:12px;margin-right:6px">
+            "${(m.dispatchedNoShipment.state || '').toUpperCase()}" · NO SHIPMENT CREATED
+          </span>`;
+      }
+
       return `<div style="padding:12px 0;border-bottom:1px solid var(--border)">
         <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
           <div style="flex:1;min-width:200px">
+            ${tags ? `<div style="margin-bottom:5px">${tags}</div>` : ''}
             <div style="font-weight:700;font-size:13px">${m.name}
               <span style="font-weight:400;font-size:12px;color:var(--text2);margin-left:6px">${m.customer}</span>
             </div>
             <div style="font-size:11px;color:var(--text2);margin-top:2px">${m.date}</div>
-            <div style="margin-top:6px">${ships}</div>
+            <div style="font-size:12px;color:var(--text2);margin-top:6px">Order &nbsp;<strong style="color:var(--text)">${fmtRub(m.orderSum)}</strong>${m.paidNotClosed ? ` &nbsp;·&nbsp; Paid &nbsp;<strong style="color:var(--text)">${fmtRub(m.paidNotClosed.paidSum)}</strong>` : ''}</div>
+            ${docs ? `<div style="margin-top:6px">${docs}</div>` : ''}
+            ${invs ? `<div style="margin-top:6px">${invs}</div>` : ''}
           </div>
-          <div style="text-align:right;white-space:nowrap">
-            <div style="font-size:12px;color:var(--text2)">Order &nbsp;<strong style="color:var(--text)">${fmtRub(m.orderSum)}</strong></div>
-            <div style="font-size:12px;color:var(--text2);margin-top:2px">Shipped &nbsp;<strong style="color:var(--text)">${fmtRub(m.shippedSum)}</strong></div>
-            <div style="margin-top:4px;font-size:12px;font-weight:700;color:${color}">${label} ${fmtRub(Math.abs(m.difference))}</div>
-          </div>
+          <div>${shipBlock}${invBlock}</div>
         </div>
       </div>`;
     }).join('');

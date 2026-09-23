@@ -518,6 +518,60 @@ async function syncPaymentsIn(client) {
   }
 }
 
+// Outgoing sales invoices ("invoiceout") — powers the dashboard's order vs
+// shipment vs invoice mismatch check (a sales order edited after its
+// shipment and/or invoice was already created). Uses the same MS_SYNC_FROM
+// floor as orders/demands, since the mismatch check scans that same range.
+async function syncInvoicesOut(client) {
+  const entity = 'invoices_out';
+  try {
+    const state = await getSyncState(client, entity);
+    const isFirst = !state?.last_full_sync_at;
+    const needsFull = isFirst || !state.watermark_s;
+
+    if (needsFull && !isFirst && coolingDown(state)) {
+      console.warn(`[ms-sync] invoices_out: no watermark yet, but a full resync already ran within the last ${FULL_SYNC_COOLDOWN_HOURS}h — skipping this tick to avoid hammering the API`);
+      await upsertMeta(client, entity, { last_status: 'skipped_cooldown', last_error: null });
+      return;
+    }
+
+    const filterField = needsFull ? 'moment' : 'updated';
+    const since = needsFull ? `${MS_SYNC_FROM} 00:00:00` : state.watermark_s;
+    const filter = buildDateBoundedFilter([since ? `${filterField}>=${since}` : null]);
+    const rawRows = await msAll('/entity/invoiceout', `${filter}&expand=agent&order=moment,asc`);
+
+    let maxUpdated = state?.watermark_s || null;
+    const rows = rawRows.map(r => {
+      if (r.updated && (!maxUpdated || r.updated > maxUpdated)) maxUpdated = r.updated;
+      return {
+        id: r.id, name: r.name || '',
+        moment: (r.moment || '').slice(0, 19) || null,
+        sum_kopecks: Math.round(r.sum || 0),
+        customer_id: hrefTail(r.agent?.meta?.href) || null, customer_name: r.agent?.name || null,
+        order_id: hrefTail(r.customerOrder?.meta?.href) || null,
+        updated_at: (r.updated || '').slice(0, 19) || null,
+      };
+    });
+    if (!maxUpdated && rawRows.length) {
+      maxUpdated = fallbackWatermark();
+      console.warn(`[ms-sync] invoices_out: no updated on any row — using clock-based fallback watermark ${maxUpdated}`);
+    }
+
+    const cols = ['id', 'name', 'moment', 'sum_kopecks', 'customer_id', 'customer_name', 'order_id', 'updated_at'];
+    await batchUpsert(client, 'ms_invoices_out', cols, ['id'], rows);
+
+    await upsertMeta(client, entity, {
+      last_full_sync_at: needsFull ? new Date() : state.last_full_sync_at,
+      last_incremental_sync_at: new Date(), watermark: maxUpdated,
+      last_status: 'ok', last_error: null, last_rows: rows.length,
+    });
+    console.log(`[ms-sync] invoices_out: ${rows.length} synced (${needsFull ? 'full' : 'incremental'})`);
+  } catch (e) {
+    await upsertMeta(client, entity, { last_status: 'error', last_error: e.message.slice(0, 500) }).catch(() => {});
+    console.error('[ms-sync] invoices_out failed:', e.message);
+  }
+}
+
 // Incremental sync (filter=updated>=watermark) can only ever ADD or UPDATE
 // rows — a record deleted on MoySklad simply stops appearing in results,
 // generating no event to catch, so it lingers in our DB forever unless we
@@ -637,6 +691,7 @@ async function runSync() {
   await withClient(pool, syncOrders);
   await withClient(pool, syncDemands);
   await withClient(pool, syncPaymentsIn);
+  await withClient(pool, syncInvoicesOut);
   await withClient(pool, reconcileVeryRecentDeletions);
   await withClient(pool, reconcileRecentDeletions);
 }
