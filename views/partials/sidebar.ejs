@@ -41,6 +41,11 @@
       <a href="/sku-analysis" class="nav-item <%- active==='sku-analysis'?'active':'' %>" onclick="closeSidebarOnMobile()">
         <i class="fas fa-tags"></i> SKU Analysis
       </a>
+      <% if (typeof canViewContainerStock !== 'undefined' && canViewContainerStock) { %>
+      <a href="<%- containerStockUrl %>" class="nav-item" target="_blank" rel="noopener" onclick="closeSidebarOnMobile()">
+        <i class="fas fa-truck-ramp-box"></i> Container Stock <i class="fas fa-arrow-up-right-from-square" style="font-size:10px;margin-left:auto;opacity:.6"></i>
+      </a>
+      <% } %>
     </div>
 
     <div class="nav-section">

@@ -274,6 +274,8 @@ app.use((req, res, next) => {
   res.locals.isAdmin      = req.session.role === 'admin';
   res.locals.canUseChat   = req.session.role === 'admin' || req.session.role === 'partner';
   res.locals.canViewOutstandings = ['admin', 'partner', 'associate'].includes(req.session.role);
+  res.locals.canViewContainerStock = ['admin', 'partner'].includes(req.session.role);
+  res.locals.containerStockUrl = 'https://container-stock-app.onrender.com/';
   res.locals.displayName  = req.session.displayName || null;
   res.locals.empName   = 'Admin';
   res.locals.empLetter = 'A';
