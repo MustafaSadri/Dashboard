@@ -178,9 +178,11 @@ CREATE TABLE IF NOT EXISTS ms_payments_in (
   sum_kopecks    BIGINT NOT NULL DEFAULT 0,
   customer_id    TEXT,
   customer_name  TEXT,
+  description    TEXT,
   updated_at     TIMESTAMP,
   synced_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE ms_payments_in ADD COLUMN IF NOT EXISTS description TEXT;
 CREATE INDEX IF NOT EXISTS idx_ms_payments_in_customer ON ms_payments_in(customer_id);
 CREATE INDEX IF NOT EXISTS idx_ms_payments_in_moment ON ms_payments_in(moment);
 CREATE INDEX IF NOT EXISTS idx_ms_payments_in_updated ON ms_payments_in(updated_at);

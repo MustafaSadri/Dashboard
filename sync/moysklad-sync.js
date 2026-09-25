@@ -495,6 +495,7 @@ async function syncPaymentsIn(client) {
         moment: (r.moment || '').slice(0, 19) || null,
         sum_kopecks: Math.round(r.sum || 0),
         customer_id: hrefTail(r.agent?.meta?.href) || null, customer_name: r.agent?.name || null,
+        description: r.description || null,
         updated_at: (r.updated || '').slice(0, 19) || null,
       };
     });
@@ -503,7 +504,7 @@ async function syncPaymentsIn(client) {
       console.warn(`[ms-sync] payments_in: no updated on any row — using clock-based fallback watermark ${maxUpdated}`);
     }
 
-    const cols = ['id', 'name', 'moment', 'sum_kopecks', 'customer_id', 'customer_name', 'updated_at'];
+    const cols = ['id', 'name', 'moment', 'sum_kopecks', 'customer_id', 'customer_name', 'description', 'updated_at'];
     await batchUpsert(client, 'ms_payments_in', cols, ['id'], rows);
 
     await upsertMeta(client, entity, {
@@ -612,7 +613,9 @@ async function reconcileWindow(client, entity, windowDays, intervalHours) {
     const floorSince = `${MS_SYNC_FROM} 00:00:00`;
     const hardFloor   = `${ACCOUNT_CUTOVER_DATE} 00:00:00`;
     const sinceStr = [rollingSince, floorSince, hardFloor].sort().pop();
-    const filter = `&filter=${encodeURIComponent('moment>=' + sinceStr)}&order=moment,asc`;
+    // expand=agent,state so the same rows can also be used to correct drifted
+    // fields below (bare hrefs alone don't carry .agent.name/.state.name).
+    const filter = `&filter=${encodeURIComponent('moment>=' + sinceStr)}&expand=agent,state&order=moment,asc`;
 
     let removed = 0;
 
@@ -623,6 +626,33 @@ async function reconcileWindow(client, entity, windowDays, intervalHours) {
     if (staleOrderIds.length) {
       await client.query('DELETE FROM ms_orders WHERE id = ANY($1::text[])', [staleOrderIds]);
       removed += staleOrderIds.length;
+    }
+
+    // Correct drifted fields (payedSum above all) on the orders that are
+    // still live. MoySklad recalculates an order's payedSum whenever a
+    // payment gets applied to it, but does NOT bump the order's own
+    // `updated` timestamp when it does — so the regular incremental sync
+    // (which only re-fetches rows where updated>=watermark) can permanently
+    // miss that change and leave payed_sum_kopecks stuck at a stale value,
+    // silently overstating what a customer still owes. This window already
+    // re-fetches these rows to check for deletions, so it costs nothing
+    // extra to also re-upsert their current sum/payedSum/state here.
+    if (liveOrders.length) {
+      const cols = ['id', 'name', 'moment', 'date', 'sum_kopecks', 'payed_sum_kopecks', 'customer_id', 'customer_name',
+                    'owner_id', 'state_id', 'state_name', 'delivery_planned_moment', 'store_id', 'updated_at'];
+      const refreshRows = liveOrders.map(r => ({
+        id: r.id, name: r.name || '',
+        moment: (r.moment || '').slice(0, 19) || null,
+        date: (r.moment || '').slice(0, 10) || null,
+        sum_kopecks: Math.round(r.sum || 0), payed_sum_kopecks: Math.round(r.payedSum || 0),
+        customer_id: hrefTail(r.agent?.meta?.href) || null, customer_name: r.agent?.name || null,
+        owner_id: hrefTail(r.owner?.meta?.href) || null,
+        state_id: hrefTail(r.state?.meta?.href) || null, state_name: r.state?.name || null,
+        delivery_planned_moment: (r.deliveryPlannedMoment || '').slice(0, 19) || null,
+        store_id: hrefTail(r.store?.meta?.href) || null,
+        updated_at: (r.updated || '').slice(0, 19) || null,
+      }));
+      await batchUpsert(client, 'ms_orders', cols, ['id'], refreshRows);
     }
 
     const liveDemands = await msAll('/entity/demand', filter);

@@ -1718,6 +1718,7 @@ app.get('/outstandings', requireFullAccess, async (req, res) => {
       owingCount, paidUpCount, overLimitCount,
       customerCount: rows.length,
       customersJSON: JSON.stringify(rows),
+      recentPaymentsJSON: JSON.stringify(recentPayments),
     });
   } catch (e) { res.status(500).render('error', { message: e.message }); }
 });

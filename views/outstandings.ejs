@@ -41,9 +41,20 @@
     <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;align-items:start">
 
       <div class="card">
-        <div class="card-title">
+        <div class="card-title" style="flex-wrap:wrap;gap:10px">
           <i class="fas fa-scroll"></i> All Customers
           <span style="margin-left:8px;font-size:12px;color:var(--text2);font-weight:400"><%- customers.length %> customer<%- customers.length!==1?'s':'' %> since 1 Sept 2026</span>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <div style="position:relative">
+              <i class="fas fa-magnifying-glass" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text2)"></i>
+              <input type="text" id="customerSearch" placeholder="Search customer…" oninput="filterCustomers(this.value)"
+                style="padding:7px 10px 7px 28px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:12px;width:180px">
+            </div>
+            <button onclick="downloadReport()"
+              style="display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">
+              <i class="fas fa-file-arrow-down"></i> Download Report
+            </button>
+          </div>
         </div>
         <div class="table-wrap">
           <table>
@@ -60,12 +71,12 @@
                 <th style="text-align:right">Credit Limit</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody id="customersTbody">
               <% if (customers.length === 0) { %>
                 <tr><td colspan="9"><div class="empty">No customer orders since 1 Sept 2026 yet</div></td></tr>
               <% } %>
               <% customers.forEach(function(cx) { %>
-                <tr style="cursor:pointer" onclick="showCustomerDetail('<%- cx.customerId %>')"
+                <tr style="cursor:pointer" data-name="<%- cx.customerName.toLowerCase() %>" onclick="showCustomerDetail('<%- cx.customerId %>')"
                   onmouseover="this.style.background='rgba(217,119,87,.06)'" onmouseout="this.style.background=''">
                   <td>
                     <div style="display:flex;align-items:center;gap:10px">
@@ -113,6 +124,9 @@
               <div style="min-width:0">
                 <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><%- p.customerName %></div>
                 <div style="font-size:11px;color:var(--text2);margin-top:1px"><%- p.name %> · <%- p.date %></div>
+                <% if (p.narration) { %>
+                <div style="font-size:11px;color:var(--text2);margin-top:1px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><%- p.narration %></div>
+                <% } %>
               </div>
               <div style="font-size:13px;font-weight:700;color:var(--accent2);white-space:nowrap;flex-shrink:0"><%- fmt(p.sum) %></div>
             </div>
@@ -173,10 +187,20 @@
 
 <%- include('partials/foot') %>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script>
 function odFmt(n) { return '₽' + Math.round(n || 0).toLocaleString(); }
 
 const ALL_CUSTOMERS = <%- customersJSON %>;
+const RECENT_PAYMENTS = <%- recentPaymentsJSON %>;
+
+function filterCustomers(q) {
+  q = (q || '').trim().toLowerCase();
+  document.querySelectorAll('#customersTbody tr[data-name]').forEach(function(tr) {
+    tr.style.display = tr.getAttribute('data-name').indexOf(q) !== -1 ? '' : 'none';
+  });
+}
 
 const CUSTOMER_LIST_FILTERS = {
   owing:     { title: 'Customers Owing',  icon: 'fas fa-users',              color: 'var(--warn)',
@@ -285,9 +309,10 @@ function renderCustomerDetail(customerId, data) {
     return '<tr style="border-bottom:1px solid rgba(217,119,87,.06)">' +
       '<td style="padding:8px 12px;font-size:12px;font-weight:600">' + p.name + '</td>' +
       '<td style="padding:8px 12px;font-size:12px;color:var(--text2)">' + (p.date || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;color:var(--text2);font-style:italic">' + (p.narration || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:12px;text-align:right;color:var(--accent2)">' + odFmt(p.sum) + '</td>' +
       '</tr>';
-  }).join('') || '<tr><td colspan="3" style="padding:16px;text-align:center;color:var(--text2)">No payments recorded</td></tr>';
+  }).join('') || '<tr><td colspan="4" style="padding:16px;text-align:center;color:var(--text2)">No payments recorded</td></tr>';
 
   document.getElementById('odBody').innerHTML =
     '<div style="padding:16px 22px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px">' +
@@ -341,4 +366,70 @@ document.addEventListener('keydown', function(e) {
     if (m && m.style.display !== 'none') closeCustomerDetail();
   }
 });
+
+function downloadReport() {
+  var jsPDFLib = window.jspdf && window.jspdf.jsPDF;
+  if (!jsPDFLib) { alert('PDF library failed to load — check your internet connection and try again.'); return; }
+  var doc = new jsPDFLib({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  var now = new Date();
+  var stamp = now.toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' }) + ' ' +
+    now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' });
+
+  doc.setFontSize(16); doc.setFont(undefined, 'bold');
+  doc.text('Platina — Outstandings Report', 40, 40);
+  doc.setFontSize(10); doc.setFont(undefined, 'normal');
+  doc.text('Generated ' + stamp + '  ·  since 1 Sept 2026', 40, 58);
+
+  doc.autoTable({
+    startY: 72,
+    theme: 'plain',
+    styles: { fontSize: 9, cellPadding: 4 },
+    head: [['Total Outstanding', 'Total Received', 'Customers Owing', 'Paid Up', 'Over Credit Limit']],
+    body: [[
+      odFmt(<%- totalOutstanding %>), odFmt(<%- totalReceived %>),
+      String(<%- owingCount %>), String(<%- paidUpCount %>) + ' of ' + String(<%- customerCount %>),
+      String(<%- overLimitCount %>)
+    ]],
+    headStyles: { fillColor: [217,119,87], textColor: 255, fontStyle: 'bold' },
+  });
+
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 20,
+    head: [['Customer', 'Status', 'Orders', 'Total Sum', 'Paid', 'Outstanding', 'Last Order', 'Last Payment', 'Credit Limit']],
+    body: ALL_CUSTOMERS.map(function(cx) {
+      var status = cx.overLimit ? 'OVER LIMIT' : (cx.paidUp ? 'PAID UP' : 'OWING');
+      return [
+        cx.customerName, status, cx.orderCount,
+        odFmt(cx.totalSum), odFmt(cx.totalPaid),
+        cx.outstanding > 0 ? odFmt(cx.outstanding) : '—',
+        cx.lastOrderDate || '—', cx.lastPaymentDate || '—',
+        cx.creditLimit > 0 ? odFmt(cx.creditLimit) : '—',
+      ];
+    }),
+    styles: { fontSize: 8, cellPadding: 4 },
+    headStyles: { fillColor: [217,119,87], textColor: 255, fontStyle: 'bold' },
+    didParseCell: function(data) {
+      if (data.section === 'body' && data.column.index === 1) {
+        if (data.cell.raw === 'OWING') data.cell.styles.textColor = [180,130,0];
+        if (data.cell.raw === 'OVER LIMIT') data.cell.styles.textColor = [200,50,50];
+        if (data.cell.raw === 'PAID UP') data.cell.styles.textColor = [60,140,110];
+      }
+    },
+  });
+
+  doc.addPage();
+  doc.setFontSize(13); doc.setFont(undefined, 'bold');
+  doc.text('Recent Payments', 40, 40);
+  doc.autoTable({
+    startY: 56,
+    head: [['Customer', 'Payment No.', 'Date', 'Narration', 'Amount']],
+    body: RECENT_PAYMENTS.map(function(p) {
+      return [p.customerName, p.name, p.date || '—', p.narration || '—', odFmt(p.sum)];
+    }),
+    styles: { fontSize: 9, cellPadding: 4 },
+    headStyles: { fillColor: [217,119,87], textColor: 255, fontStyle: 'bold' },
+  });
+
+  doc.save('Platina-Outstandings-Report-' + now.toISOString().slice(0,10) + '.pdf');
+}
 </script>

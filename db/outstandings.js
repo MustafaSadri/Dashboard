@@ -83,7 +83,7 @@ async function getOutstandingSummary() {
 async function getRecentPayments(limit = 25) {
   const { rows } = await query(`
     SELECT p.id, p.name, to_char(p.moment, 'YYYY-MM-DD') AS date,
-           p.sum_kopecks, p.customer_id, COALESCE(cp.name, p.customer_name) AS customer_name
+           p.sum_kopecks, p.customer_id, COALESCE(cp.name, p.customer_name) AS customer_name, p.description
     FROM ms_payments_in p
     LEFT JOIN ms_counterparties cp ON cp.id = p.customer_id
     WHERE p.moment >= $1::timestamp
@@ -95,6 +95,7 @@ async function getRecentPayments(limit = 25) {
     sum: Number(r.sum_kopecks) / 100,
     customerId: r.customer_id,
     customerName: r.customer_name || '—',
+    narration: r.description || null,
   }));
 }
 
@@ -109,7 +110,7 @@ async function getCustomerDetail(customerId) {
       ORDER BY moment DESC
     `, [customerId, CUTOVER]),
     query(`
-      SELECT id, name, to_char(moment, 'YYYY-MM-DD') AS date, sum_kopecks
+      SELECT id, name, to_char(moment, 'YYYY-MM-DD') AS date, sum_kopecks, description
       FROM ms_payments_in WHERE customer_id = $1 AND moment >= $2::timestamp
       ORDER BY moment DESC
     `, [customerId, CUTOVER]),
@@ -125,6 +126,7 @@ async function getCustomerDetail(customerId) {
   }));
   const payments = paymentsRes.rows.map(r => ({
     id: r.id, name: r.name, date: r.date, sum: Number(r.sum_kopecks) / 100,
+    narration: r.description || null,
   }));
 
   const totalSum = orders.reduce((a, o) => a + o.sum, 0);
