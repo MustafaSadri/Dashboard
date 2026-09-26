@@ -35,8 +35,8 @@
            padding:6px 10px;cursor:pointer;font-size:13px;transition:all .2s;margin-left:8px">
     <i class="fas fa-sun"></i>
   </button>
-  <a href="javascript:location.reload()" class="topbar-refresh" title="Refresh data">
-    <i class="fas fa-rotate-right"></i>
+  <a href="javascript:void(0)" class="topbar-refresh" id="forceRefreshBtn" onclick="forceRefreshSync()" title="Sync latest data from MoySklad">
+    <i class="fas fa-rotate-right" id="forceRefreshIcon"></i>
   </a>
   <a href="/logout" title="Sign out"
     style="background:none;border:1px solid var(--border);color:var(--text2);border-radius:8px;
@@ -105,4 +105,82 @@ document.addEventListener('click', function(e) {
     p.style.display = 'none';
   }
 });
+
+// ── Force refresh: sync latest data from MoySklad, then reload ──────────
+// Used by the topbar refresh button and by the pull-to-refresh gesture
+// below — both just need "go get the newest data right now" instead of
+// waiting for the background 2-minute cron tick.
+var _forceRefreshing = false;
+function forceRefreshSync() {
+  if (_forceRefreshing) return;
+  _forceRefreshing = true;
+  var icon = document.getElementById('forceRefreshIcon');
+  if (icon) icon.classList.add('fa-spin');
+  fetch('/api/ms/sync', { method: 'POST' })
+    .catch(function() { /* still reload below even if the sync call itself failed */ })
+    .then(function() { location.reload(); });
+}
+
+// ── Pull-to-refresh (mobile) ──────────────────────────────────────────────
+// Regular mobile Safari's own pull-down gesture just does a plain page
+// reload (no way to hook into it from page JS), so this replaces it with a
+// custom gesture: pulling down from the very top of the page runs the same
+// force-sync as the topbar button instead of a bare reload.
+(function() {
+  var startY = 0, pulling = false, dragging = false, indicator, iconEl, textEl;
+  var THRESHOLD = 70;
+
+  function ensureIndicator() {
+    if (indicator) return;
+    indicator = document.createElement('div');
+    indicator.style.cssText = 'position:fixed;top:0;left:0;right:0;height:0;overflow:hidden;' +
+      'display:flex;align-items:center;justify-content:center;gap:6px;' +
+      'background:var(--bg2);color:var(--accent);font-size:12px;font-weight:600;z-index:2000';
+    indicator.innerHTML = '<i class="fas fa-arrow-down" id="ptrIcon"></i><span id="ptrText">Pull to sync latest data</span>';
+    document.body.appendChild(indicator);
+    iconEl = document.getElementById('ptrIcon');
+    textEl = document.getElementById('ptrText');
+  }
+
+  document.addEventListener('touchstart', function(e) {
+    if (_forceRefreshing || window.scrollY > 0) { dragging = false; return; }
+    startY = e.touches[0].clientY;
+    dragging = true;
+    pulling = false;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function(e) {
+    if (!dragging) return;
+    var dy = e.touches[0].clientY - startY;
+    if (dy <= 0) { pulling = false; if (indicator) indicator.style.height = '0px'; return; }
+    ensureIndicator();
+    pulling = true;
+    var h = Math.min(dy * 0.5, 90);
+    indicator.style.height = h + 'px';
+    if (h >= THRESHOLD) {
+      iconEl.className = 'fas fa-rotate-right';
+      textEl.textContent = 'Release to sync';
+    } else {
+      iconEl.className = 'fas fa-arrow-down';
+      textEl.textContent = 'Pull to sync latest data';
+    }
+    if (dy > 8) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchend', function() {
+    if (!dragging) return;
+    dragging = false;
+    if (!pulling || !indicator) return;
+    var h = parseInt(indicator.style.height, 10) || 0;
+    if (h >= THRESHOLD) {
+      iconEl.className = 'fas fa-spinner fa-spin';
+      textEl.textContent = 'Syncing…';
+      indicator.style.height = '48px';
+      forceRefreshSync();
+    } else {
+      indicator.style.height = '0px';
+    }
+    pulling = false;
+  }, { passive: true });
+})();
 </script>
