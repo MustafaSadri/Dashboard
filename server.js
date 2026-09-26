@@ -3723,7 +3723,10 @@ app.post('/api/ms/sync', async (req, res) => {
     return res.status(410).json({ ok: false, message: 'MoySklad sync is disabled (MS_SYNC_ENABLED=false)' });
   }
   try {
-    await require('./sync/moysklad-sync').runSync();
+    await require('./sync/moysklad-sync').runQuickSync();
+    // Manual refresh must show the just-synced data on the next page load,
+    // not whatever the in-memory cache held from before the sync.
+    _cache.clear();
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });

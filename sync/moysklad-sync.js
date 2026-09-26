@@ -792,6 +792,26 @@ async function runSync() {
   await withClient(pool, reconcileRecentDeletions);
 }
 
+// Manual "refresh now" from the dashboard. Skips reference data (states,
+// employees, stores, assortment) that the regular scheduled sync keeps up to
+// date anyway, and runs the rest in two parallel batches instead of one after
+// another. Each batch stays under MoySklad's 5-concurrent-requests limit.
+async function runQuickSync() {
+  const pool = getPool();
+  await Promise.all([
+    withClient(pool, syncOrders),
+    withClient(pool, syncDemands),
+    withClient(pool, syncPaymentsIn),
+    withClient(pool, syncInvoicesOut),
+  ]);
+  await Promise.all([
+    withClient(pool, syncStock),
+    withClient(pool, syncCounterparties),
+    withClient(pool, syncSalesReturns),
+    withClient(pool, reconcileVeryRecentDeletions),
+  ]);
+}
+
 async function getSyncStatus() {
   const pool = getPool();
   const { rows } = await pool.query(
@@ -799,7 +819,7 @@ async function getSyncStatus() {
   return rows;
 }
 
-module.exports = { runSync, getSyncStatus };
+module.exports = { runSync, runQuickSync, getSyncStatus };
 
 if (require.main === module) {
   runSync()
