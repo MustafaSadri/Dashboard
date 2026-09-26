@@ -24,9 +24,16 @@ async function setCreditLimit(customerId, limitRub) {
     [customerId, kopecks]);
 }
 
-// One row per customer with at least one order since 1 Sept 2026 — everyone,
-// not just who currently owes: a customer who has paid off everything shows
-// with outstanding=0/paidUp=true rather than disappearing from the list.
+// One row per customer with at least one *shipped* order since 1 Sept 2026 —
+// everyone, not just who currently owes: a customer who has paid off
+// everything shows with outstanding=0/paidUp=true rather than disappearing.
+// Only orders with an actual shipment (ms_demands row) count towards a
+// customer's sum/paid/outstanding — an order that's still New/Accepted/Ready,
+// or one that got Declined/Cancelled, never shipped any goods, so it isn't a
+// real receivable yet (or ever). Requiring a real shipment record is more
+// robust than matching on the order's state name, and also covers the case
+// where state_name never resolved (see resolveState's stateMap fallback in
+// server.js) — a Closed order still qualifies since it was shipped first.
 async function getOutstandingSummary() {
   const ordersRes = await query(`
     SELECT o.customer_id, COALESCE(cp.name, o.customer_name) AS customer_name,
@@ -38,6 +45,7 @@ async function getOutstandingSummary() {
     FROM ms_orders o
     LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
     WHERE o.moment >= $1::timestamp AND o.customer_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM ms_demands d WHERE d.order_id = o.id)
     GROUP BY o.customer_id, COALESCE(cp.name, o.customer_name)
     ORDER BY outstanding DESC, total_sum DESC
   `, [CUTOVER]);
@@ -107,6 +115,7 @@ async function getCustomerDetail(customerId) {
     query(`
       SELECT id, name, to_char(moment, 'YYYY-MM-DD') AS date, sum_kopecks, payed_sum_kopecks, state_name
       FROM ms_orders WHERE customer_id = $1 AND moment >= $2::timestamp
+        AND EXISTS (SELECT 1 FROM ms_demands d WHERE d.order_id = ms_orders.id)
       ORDER BY moment DESC
     `, [customerId, CUTOVER]),
     query(`
