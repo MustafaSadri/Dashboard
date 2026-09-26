@@ -142,7 +142,7 @@ async function batchUpsert(client, table, cols, conflictCols, rows, batchSize = 
 // ── Sync meta (per-entity watermark/status) ─────────────────────────────
 async function getSyncState(client, entity) {
   const { rows } = await client.query(
-    `SELECT last_full_sync_at, to_char(watermark,'YYYY-MM-DD HH24:MI:SS') AS watermark_s
+    `SELECT last_full_sync_at, last_incremental_sync_at, to_char(watermark,'YYYY-MM-DD HH24:MI:SS') AS watermark_s
      FROM ms_sync_meta WHERE entity=$1`, [entity]);
   return rows[0] || null;
 }
@@ -524,10 +524,20 @@ async function syncPaymentsIn(client) {
 // for, same idea as syncPaymentsIn above (a dated event ms_orders'
 // running totals alone can't give). Always floored to ACCOUNT_CUTOVER_DATE,
 // same reasoning as payments_in.
+//
+// Returns are rare (far rarer than orders/payments), so unlike the other
+// entities this one doesn't need checking every 2-minute tick — it's
+// throttled to its own slower interval regardless of full/incremental state.
+const SALES_RETURNS_INTERVAL_HOURS = 4;
+
 async function syncSalesReturns(client) {
   const entity = 'sales_returns';
   try {
     const state = await getSyncState(client, entity);
+    if (state?.last_incremental_sync_at) {
+      const hoursSince = (Date.now() - new Date(state.last_incremental_sync_at).getTime()) / 3600000;
+      if (hoursSince < SALES_RETURNS_INTERVAL_HOURS) return;
+    }
     const isFirst = !state?.last_full_sync_at;
     const needsFull = isFirst || !state.watermark_s;
 
