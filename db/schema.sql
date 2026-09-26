@@ -167,6 +167,27 @@ CREATE INDEX IF NOT EXISTS idx_ms_invoices_out_order ON ms_invoices_out(order_id
 CREATE INDEX IF NOT EXISTS idx_ms_invoices_out_moment ON ms_invoices_out(moment);
 CREATE INDEX IF NOT EXISTS idx_ms_invoices_out_updated ON ms_invoices_out(updated_at);
 
+-- Sales returns (MoySklad entity "salesreturn") — goods a customer sent
+-- back against one of their shipments. Links to the shipment (ms_demands),
+-- not directly to the order; the order is resolved by joining through
+-- ms_demands.order_id. Reduces what a customer still owes on that order,
+-- same as a payment would, but tracked separately so the app can show it
+-- explicitly rather than silently blending it into "Paid".
+CREATE TABLE IF NOT EXISTS ms_sales_returns (
+  id             TEXT PRIMARY KEY,
+  name           TEXT NOT NULL DEFAULT '',
+  moment         TIMESTAMP,
+  sum_kopecks    BIGINT NOT NULL DEFAULT 0,
+  customer_id    TEXT,
+  customer_name  TEXT,
+  demand_id      TEXT,
+  updated_at     TIMESTAMP,
+  synced_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ms_sales_returns_demand ON ms_sales_returns(demand_id);
+CREATE INDEX IF NOT EXISTS idx_ms_sales_returns_customer ON ms_sales_returns(customer_id);
+CREATE INDEX IF NOT EXISTS idx_ms_sales_returns_moment ON ms_sales_returns(moment);
+
 -- Incoming payment documents (MoySklad entity "paymentin") — separate from
 -- ms_orders.payed_sum_kopecks, which is only a running total with no date.
 -- This is what lets the Outstandings dashboard show an actual last-payment

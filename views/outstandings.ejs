@@ -296,7 +296,9 @@ function renderCustomerDetail(customerId, data) {
 
   var orderRows = data.orders.map(function(o) {
     return '<tr style="border-bottom:1px solid rgba(217,119,87,.06)">' +
-      '<td style="padding:8px 12px;font-size:12px;font-weight:600">' + o.name + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;font-weight:600">' + o.name +
+        (o.returned > 0 ? ' <span style="font-size:10px;font-weight:700;color:#40A0FF;background:rgba(64,160,255,.12);padding:1px 6px;border-radius:8px;margin-left:4px">↩ RETURNED ' + odFmt(o.returned) + '</span>' : '') +
+      '</td>' +
       '<td style="padding:8px 12px;font-size:12px;color:var(--text2)">' + (o.date || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:12px;text-align:right">' + odFmt(o.sum) + '</td>' +
       '<td style="padding:8px 12px;font-size:12px;text-align:right;color:var(--accent2)">' + odFmt(o.paid) + '</td>' +
@@ -314,12 +316,24 @@ function renderCustomerDetail(customerId, data) {
       '</tr>';
   }).join('') || '<tr><td colspan="4" style="padding:16px;text-align:center;color:var(--text2)">No payments recorded</td></tr>';
 
+  var returnRows = (data.returns || []).map(function(rt) {
+    return '<tr style="border-bottom:1px solid rgba(217,119,87,.06)">' +
+      '<td style="padding:8px 12px;font-size:12px;font-weight:600">' + rt.name + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;color:var(--text2)">' + (rt.date || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;color:var(--text2)">' + (rt.demandName ? 'against shipment ' + rt.demandName : '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:12px;text-align:right;color:#40A0FF">' + odFmt(rt.sum) + '</td>' +
+      '</tr>';
+  }).join('');
+
+  var hasReturns = data.totalReturned > 0;
   document.getElementById('odBody').innerHTML =
-    '<div style="padding:16px 22px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px">' +
+    '<div style="padding:16px 22px;display:grid;grid-template-columns:repeat(' + (hasReturns ? 4 : 3) + ',1fr);gap:10px">' +
       '<div><div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Total Sum</div>' +
         '<div style="font-size:16px;font-weight:700;margin-top:2px">' + odFmt(data.totalSum) + '</div></div>' +
       '<div><div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Total Paid</div>' +
         '<div style="font-size:16px;font-weight:700;margin-top:2px;color:var(--accent2)">' + odFmt(data.totalPaid) + '</div></div>' +
+      (hasReturns ? '<div><div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Returned</div>' +
+        '<div style="font-size:16px;font-weight:700;margin-top:2px;color:#40A0FF">' + odFmt(data.totalReturned) + '</div></div>' : '') +
       '<div><div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Outstanding</div>' +
         '<div style="font-size:16px;font-weight:700;margin-top:2px;color:var(--danger)">' + odFmt(data.outstanding) + '</div></div>' +
     '</div>' +
@@ -334,7 +348,9 @@ function renderCustomerDetail(customerId, data) {
     '<div style="padding:0 22px 6px;font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Orders</div>' +
     '<div style="padding:0 22px 16px"><table style="width:100%;border-collapse:collapse"><tbody>' + orderRows + '</tbody></table></div>' +
     '<div style="padding:0 22px 6px;font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Payments</div>' +
-    '<div style="padding:0 22px 20px"><table style="width:100%;border-collapse:collapse"><tbody>' + paymentRows + '</tbody></table></div>';
+    '<div style="padding:0 22px 20px"><table style="width:100%;border-collapse:collapse"><tbody>' + paymentRows + '</tbody></table></div>' +
+    (returnRows ? '<div style="padding:0 22px 6px;font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Returns</div>' +
+    '<div style="padding:0 22px 20px"><table style="width:100%;border-collapse:collapse"><tbody>' + returnRows + '</tbody></table></div>' : '');
 }
 
 function saveCreditLimit(customerId) {
@@ -384,9 +400,10 @@ function downloadReport() {
     startY: 72,
     theme: 'plain',
     styles: { fontSize: 9, cellPadding: 4 },
-    head: [['Total Outstanding', 'Total Received', 'Customers Owing', 'Paid Up', 'Over Credit Limit']],
+    head: [['Total Outstanding', 'Total Received', 'Total Returned', 'Customers Owing', 'Paid Up', 'Over Credit Limit']],
     body: [[
       odFmt(<%- totalOutstanding %>), odFmt(<%- totalReceived %>),
+      odFmt(ALL_CUSTOMERS.reduce(function(a,cx){ return a + (cx.totalReturned||0); }, 0)),
       String(<%- owingCount %>), String(<%- paidUpCount %>) + ' of ' + String(<%- customerCount %>),
       String(<%- overLimitCount %>)
     ]],
@@ -395,12 +412,13 @@ function downloadReport() {
 
   doc.autoTable({
     startY: doc.lastAutoTable.finalY + 20,
-    head: [['Customer', 'Status', 'Orders', 'Total Sum', 'Paid', 'Outstanding', 'Last Order', 'Last Payment', 'Credit Limit']],
+    head: [['Customer', 'Status', 'Orders', 'Total Sum', 'Paid', 'Returned', 'Outstanding', 'Last Order', 'Last Payment', 'Credit Limit']],
     body: ALL_CUSTOMERS.map(function(cx) {
       var status = cx.overLimit ? 'OVER LIMIT' : (cx.paidUp ? 'PAID UP' : 'OWING');
       return [
         cx.customerName, status, cx.orderCount,
         odFmt(cx.totalSum), odFmt(cx.totalPaid),
+        cx.totalReturned > 0 ? odFmt(cx.totalReturned) : '—',
         cx.outstanding > 0 ? odFmt(cx.outstanding) : '—',
         cx.lastOrderDate || '—', cx.lastPaymentDate || '—',
         cx.creditLimit > 0 ? odFmt(cx.creditLimit) : '—',

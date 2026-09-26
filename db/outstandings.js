@@ -39,11 +39,17 @@ async function getOutstandingSummary() {
     SELECT o.customer_id, COALESCE(cp.name, o.customer_name) AS customer_name,
            SUM(o.sum_kopecks) AS total_sum,
            SUM(o.payed_sum_kopecks) AS total_paid,
-           SUM(GREATEST(o.sum_kopecks - o.payed_sum_kopecks, 0)) AS outstanding,
+           SUM(COALESCE(ret.returned_kopecks, 0)) AS total_returned,
+           SUM(GREATEST(o.sum_kopecks - o.payed_sum_kopecks - COALESCE(ret.returned_kopecks, 0), 0)) AS outstanding,
            COUNT(*) AS order_count,
            to_char(MAX(o.moment), 'YYYY-MM-DD') AS last_order_date
     FROM ms_orders o
     LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
+    LEFT JOIN (
+      SELECT dm.order_id, SUM(sr.sum_kopecks) AS returned_kopecks
+      FROM ms_sales_returns sr JOIN ms_demands dm ON dm.id = sr.demand_id
+      GROUP BY dm.order_id
+    ) ret ON ret.order_id = o.id
     WHERE o.moment >= $1::timestamp AND o.customer_id IS NOT NULL
       AND EXISTS (SELECT 1 FROM ms_demands d WHERE d.order_id = o.id)
     GROUP BY o.customer_id, COALESCE(cp.name, o.customer_name)
@@ -74,6 +80,7 @@ async function getOutstandingSummary() {
       customerName: r.customer_name || '—',
       totalSum: Number(r.total_sum) / 100,
       totalPaid: Number(r.total_paid) / 100,
+      totalReturned: Number(r.total_returned) / 100,
       totalReceived: (totalReceivedMap[r.customer_id] || 0) / 100,
       outstanding: outstandingRub,
       paidUp: outstandingRub <= 0,
@@ -110,18 +117,32 @@ async function getRecentPayments(limit = 25) {
 // Full order + payment history for one customer, since 1 Sept 2026 — powers
 // the click-through detail view.
 async function getCustomerDetail(customerId) {
-  const [cpRes, ordersRes, paymentsRes, limits] = await Promise.all([
+  const [cpRes, ordersRes, paymentsRes, returnsRes, limits] = await Promise.all([
     query('SELECT id, name FROM ms_counterparties WHERE id = $1', [customerId]),
     query(`
-      SELECT id, name, to_char(moment, 'YYYY-MM-DD') AS date, sum_kopecks, payed_sum_kopecks, state_name
-      FROM ms_orders WHERE customer_id = $1 AND moment >= $2::timestamp
-        AND EXISTS (SELECT 1 FROM ms_demands d WHERE d.order_id = ms_orders.id)
-      ORDER BY moment DESC
+      SELECT o.id, o.name, to_char(o.moment, 'YYYY-MM-DD') AS date, o.sum_kopecks, o.payed_sum_kopecks, o.state_name,
+             COALESCE(ret.returned_kopecks, 0) AS returned_kopecks
+      FROM ms_orders o
+      LEFT JOIN (
+        SELECT dm.order_id, SUM(sr.sum_kopecks) AS returned_kopecks
+        FROM ms_sales_returns sr JOIN ms_demands dm ON dm.id = sr.demand_id
+        GROUP BY dm.order_id
+      ) ret ON ret.order_id = o.id
+      WHERE o.customer_id = $1 AND o.moment >= $2::timestamp
+        AND EXISTS (SELECT 1 FROM ms_demands d WHERE d.order_id = o.id)
+      ORDER BY o.moment DESC
     `, [customerId, CUTOVER]),
     query(`
       SELECT id, name, to_char(moment, 'YYYY-MM-DD') AS date, sum_kopecks, description
       FROM ms_payments_in WHERE customer_id = $1 AND moment >= $2::timestamp
       ORDER BY moment DESC
+    `, [customerId, CUTOVER]),
+    query(`
+      SELECT sr.id, sr.name, to_char(sr.moment, 'YYYY-MM-DD') AS date, sr.sum_kopecks, dm.name AS demand_name
+      FROM ms_sales_returns sr
+      LEFT JOIN ms_demands dm ON dm.id = sr.demand_id
+      WHERE sr.customer_id = $1 AND sr.moment >= $2::timestamp
+      ORDER BY sr.moment DESC
     `, [customerId, CUTOVER]),
     getCreditLimits(),
   ]);
@@ -130,26 +151,32 @@ async function getCustomerDetail(customerId) {
     id: r.id, name: r.name, date: r.date,
     sum: Number(r.sum_kopecks) / 100,
     paid: Number(r.payed_sum_kopecks) / 100,
-    outstanding: Math.max(0, Number(r.sum_kopecks) - Number(r.payed_sum_kopecks)) / 100,
+    returned: Number(r.returned_kopecks) / 100,
+    outstanding: Math.max(0, Number(r.sum_kopecks) - Number(r.payed_sum_kopecks) - Number(r.returned_kopecks)) / 100,
     state: r.state_name || '—',
   }));
   const payments = paymentsRes.rows.map(r => ({
     id: r.id, name: r.name, date: r.date, sum: Number(r.sum_kopecks) / 100,
     narration: r.description || null,
   }));
+  const returns = returnsRes.rows.map(r => ({
+    id: r.id, name: r.name, date: r.date, sum: Number(r.sum_kopecks) / 100,
+    demandName: r.demand_name || null,
+  }));
 
   const totalSum = orders.reduce((a, o) => a + o.sum, 0);
   const totalPaid = orders.reduce((a, o) => a + o.paid, 0);
+  const totalReturned = orders.reduce((a, o) => a + o.returned, 0);
   const outstanding = orders.reduce((a, o) => a + o.outstanding, 0);
 
   return {
     customerId,
     customerName: cpRes.rows[0]?.name || '—',
-    totalSum, totalPaid, outstanding,
+    totalSum, totalPaid, totalReturned, outstanding,
     lastOrderDate: orders[0]?.date || null,
     lastPaymentDate: payments[0]?.date || null,
     creditLimit: (limits[customerId] || 0) / 100,
-    orders, payments,
+    orders, payments, returns,
   };
 }
 

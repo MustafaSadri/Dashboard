@@ -519,6 +519,61 @@ async function syncPaymentsIn(client) {
   }
 }
 
+// Sales returns ("salesreturn") — goods a customer sent back against a
+// shipment. Reduces what they still owe on the order that shipment was
+// for, same idea as syncPaymentsIn above (a dated event ms_orders'
+// running totals alone can't give). Always floored to ACCOUNT_CUTOVER_DATE,
+// same reasoning as payments_in.
+async function syncSalesReturns(client) {
+  const entity = 'sales_returns';
+  try {
+    const state = await getSyncState(client, entity);
+    const isFirst = !state?.last_full_sync_at;
+    const needsFull = isFirst || !state.watermark_s;
+
+    if (needsFull && !isFirst && coolingDown(state)) {
+      console.warn(`[ms-sync] sales_returns: no watermark yet, but a full resync already ran within the last ${FULL_SYNC_COOLDOWN_HOURS}h — skipping this tick to avoid hammering the API`);
+      await upsertMeta(client, entity, { last_status: 'skipped_cooldown', last_error: null });
+      return;
+    }
+
+    const filterField = needsFull ? 'moment' : 'updated';
+    const since = needsFull ? `${ACCOUNT_CUTOVER_DATE} 00:00:00` : state.watermark_s;
+    const filter = buildDateBoundedFilter([since ? `${filterField}>=${since}` : null]);
+    const rawRows = await msAll('/entity/salesreturn', `${filter}&expand=agent&order=moment,asc`);
+
+    let maxUpdated = state?.watermark_s || null;
+    const rows = rawRows.map(r => {
+      if (r.updated && (!maxUpdated || r.updated > maxUpdated)) maxUpdated = r.updated;
+      return {
+        id: r.id, name: r.name || '',
+        moment: (r.moment || '').slice(0, 19) || null,
+        sum_kopecks: Math.round(r.sum || 0),
+        customer_id: hrefTail(r.agent?.meta?.href) || null, customer_name: r.agent?.name || null,
+        demand_id: hrefTail(r.demand?.meta?.href) || null,
+        updated_at: (r.updated || '').slice(0, 19) || null,
+      };
+    });
+    if (!maxUpdated && rawRows.length) {
+      maxUpdated = fallbackWatermark();
+      console.warn(`[ms-sync] sales_returns: no updated on any row — using clock-based fallback watermark ${maxUpdated}`);
+    }
+
+    const cols = ['id', 'name', 'moment', 'sum_kopecks', 'customer_id', 'customer_name', 'demand_id', 'updated_at'];
+    await batchUpsert(client, 'ms_sales_returns', cols, ['id'], rows);
+
+    await upsertMeta(client, entity, {
+      last_full_sync_at: needsFull ? new Date() : state.last_full_sync_at,
+      last_incremental_sync_at: new Date(), watermark: maxUpdated,
+      last_status: 'ok', last_error: null, last_rows: rows.length,
+    });
+    console.log(`[ms-sync] sales_returns: ${rows.length} synced (${needsFull ? 'full' : 'incremental'})`);
+  } catch (e) {
+    await upsertMeta(client, entity, { last_status: 'error', last_error: e.message.slice(0, 500) }).catch(() => {});
+    console.error('[ms-sync] sales_returns failed:', e.message);
+  }
+}
+
 // Outgoing sales invoices ("invoiceout") — powers the dashboard's order vs
 // shipment vs invoice mismatch check (a sales order edited after its
 // shipment and/or invoice was already created). Uses the same MS_SYNC_FROM
@@ -721,6 +776,7 @@ async function runSync() {
   await withClient(pool, syncOrders);
   await withClient(pool, syncDemands);
   await withClient(pool, syncPaymentsIn);
+  await withClient(pool, syncSalesReturns);
   await withClient(pool, syncInvoicesOut);
   await withClient(pool, reconcileVeryRecentDeletions);
   await withClient(pool, reconcileRecentDeletions);
