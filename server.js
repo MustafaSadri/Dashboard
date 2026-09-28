@@ -919,6 +919,17 @@ function resolveState(r, stateMap) {
   return stateMap[id] || '';
 }
 
+// The one definition of a "pending" order — Dashboard's Pending Orders card
+// and the chatbot both use this, so their counts can never disagree.
+function isPendingOrder(r, stateMap) {
+  if (!r.state) return false;                                      // no state = draft
+  if ((r.moment || '') < ACCOUNT_CUTOVER_DATE) return false;        // retired account, frozen state
+  const s = resolveState(r, stateMap).toLowerCase();
+  if (!s) return false;                                            // unresolved state = draft
+  if (/^draft$|черновик/.test(s)) return false;                   // state named "Draft"
+  return !/dispatched|отгруж|closed|закрыт|declin|cancel|отмен|отклон|аннул/.test(s);
+}
+
 
 // ════════════════════════════════════════════════════════
 //  ROUTES
@@ -1129,14 +1140,7 @@ app.get('/', async (req, res) => {
     // old-account order stuck in a non-final state can never actually be
     // dispatched now (see ACCOUNT_CUTOVER_DATE above), so it isn't real
     // pending work, just frozen history.
-    const pendingOrders = orders.filter(r => {
-      if (!r.state) return false;                                      // no state = draft
-      if ((r.moment || '') < ACCOUNT_CUTOVER_DATE) return false;        // retired account, frozen state
-      const s = resolveState(r, stateMap).toLowerCase();
-      if (!s) return false;                                            // unresolved state = draft
-      if (/^draft$|черновик/.test(s)) return false;                   // state named "Draft"
-      return !/dispatched|отгруж|closed|закрыт|declin|cancel|отмен|отклон|аннул/.test(s);
-    });
+    const pendingOrders = orders.filter(r => isPendingOrder(r, stateMap));
     const pending = pendingOrders.length;
 
     // Count by actual state name for card sub-label
@@ -1316,6 +1320,16 @@ app.get('/orders-status', async (req, res) => {
     // a delay, it's just closed-out business that never shipped.
     const isDelayable = o => /new|нов/i.test(o.stateL) || /accept|принят|подтверж/i.test(o.stateL) || /ready|готов/i.test(o.stateL);
     const delayCount = active.filter(o => o.delayDays > 0 && isDelayable(o)).length;
+    // Any other open status set up in MoySklad (e.g. "Out of Stock") gets its
+    // own card, so an order never counts as pending on the Dashboard while
+    // having no card here.
+    const KNOWN_STATE = /new|нов|accept|принят|подтверж|ready|готов|dispatch|отгруз|отгруж|^draft$|черновик|closed|закрыт|declin|cancel|отмен|отклон|аннул/i;
+    const extraMap = {};
+    active.forEach(o => {
+      if (!o.hasState || !o.stateL || KNOWN_STATE.test(o.stateL)) return;
+      extraMap[o.state] = (extraMap[o.state] || 0) + 1;
+    });
+    const extraStatuses = Object.entries(extraMap).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
     const withTime   = orders.filter(o => o.dispatchTime !== null);
     const avgDispatch = withTime.length > 0
       ? (withTime.reduce((a, o) => a + o.dispatchTime, 0) / withTime.length).toFixed(1) : '—';
@@ -1339,7 +1353,7 @@ app.get('/orders-status', async (req, res) => {
 
     res.render('orders-status', {
       ...c, active: 'orders-status',
-      total, newCount, accCount, readyCount, dispCount, draftCount, delayCount, avgDispatch,
+      total, newCount, accCount, readyCount, dispCount, draftCount, delayCount, avgDispatch, extraStatuses,
       salesmen,
       ordersJSON: JSON.stringify(orders)
     });
@@ -2420,15 +2434,13 @@ async function toolQueryMoysklad({ data_type = 'demands', period = 'this_month',
         const re = new RegExp(filter.slice(9), 'i');
         filtered = filtered.filter(o => re.test(agentName(o)));
       }
-      const pending = filtered.filter(o => {
-        const s = resolveState(o, sMap).toLowerCase();
-        return !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(s);
-      });
+      const pending = filtered.filter(o => isPendingOrder(o, sMap));
       const totalRevenue = filtered.reduce((a, o) => a + Math.round((o.sum || 0) / 100), 0);
       return JSON.stringify({
         period, data_type: 'orders', source: 'MoySklad Live API',
         total: { revenue: totalRevenue, count: filtered.length },
         pending_count: pending.length,
+        pending_value: pending.reduce((a, o) => a + Math.round((o.sum || 0) / 100), 0),
         orders: filtered.slice(0, N).map(o => ({
           name: o.name || '—',
           date: (o.moment || '').slice(0, 10),
@@ -2895,7 +2907,11 @@ async function buildChatContext() {
     const pct   = (a, b) => b > 0 ? ((a-b)/b*100).toFixed(1)+'%' : 'N/A';
 
     // ── Fetch MoySklad live + Tally DB in parallel ────────────────────────
-    const db = await getMongoDb().catch(() => null);
+    // Tally is Admin-only everywhere else in the app, so it must stay out of
+    // the chat context for Partner too, not just out of the Tally tools.
+    // cached() keys by role, so each role gets its own context.
+    const isAdminCtx = getRole() === 'admin';
+    const db = isAdminCtx ? await getMongoDb().catch(() => null) : null;
     const [demandsR, stockR, profProdR, profCustR, ordersR, stateMapR,
            tallyLedR, tallyVouchR, tallyStockR, tallyMonthR] = await Promise.allSettled([
       getDemandsFromDec25(),
@@ -2942,7 +2958,7 @@ async function buildChatContext() {
       monthMap[mo].revenue += Math.round((d.sum||0)/100); monthMap[mo].shipments++;
     });
     const stockWithStatus = stock.map(s => ({ name:s.assortment?.name||s.name||'—', qty:s.quantity||0, status:(s.quantity||0)<=0?'out':(s.quantity||0)<100?'low':'ok' }));
-    const pendingOrders = allOrders.filter(o => !/dispatched|отгруж|declin|cancel|отмен|отклон|аннул/.test(resolveState(o,sMap).toLowerCase()));
+    const pendingOrders = allOrders.filter(o => isPendingOrder(o, sMap));
 
     // ── Tally ledger aggregations ─────────────────────────────────────────
     const debtors   = tallyLed.filter(l => l.type === 'debtor'   && (l.balance||0) > 0).sort((a,b) => b.balance - a.balance);
@@ -2980,11 +2996,11 @@ async function buildChatContext() {
     L.push(
       `You are PLATINA AI — the Business Intelligence assistant for PLATINA, a wholesale trading company.`,
       `Today: ${today} | Month: ${curMonthName} | ${daysIntoMonth} days elapsed`,
-      `Currency: MoySklad data in ₽ (Russian Ruble) | Tally data in ₹ (Indian Rupee)`,
+      isAdminCtx ? `Currency: MoySklad data in ₽ (Russian Ruble) | Tally data in ₹ (Indian Rupee)` : `Currency: ₽ (Russian Ruble)`,
       ``,
       `━━━ DATA SOURCES ━━━`,
-      `• MoySklad: Live API — shipments, orders, inventory, customers, salesmen (data from Dec 2025)`,
-      `• Tally: MongoDB DB — vouchers (Jan 2024+), ledgers, stock, debtors, creditors, expenses`,
+      `• MoySklad: shipments, orders, invoices, payments, returns, inventory, customers, salesmen (synced every minute)`,
+      ...(isAdminCtx ? [`• Tally: accounting — vouchers (Feb 2024+), ledgers, stock, debtors, creditors, expenses, P&L`] : []),
       ``,
       `━━━ TOOLS — ALWAYS USE TOOLS FOR DATA QUESTIONS ━━━`,
       ``,
@@ -2994,6 +3010,7 @@ async function buildChatContext() {
       `   period:    "today"|"this_month"|"last_month"|"this_year"|"YYYY-MM"|"YYYY-MM-DD:YYYY-MM-DD"`,
       `   filter:    "product:NAME" | "customer:NAME" | "status:low" | "status:out"`,
       ``,
+      ...(isAdminCtx ? [
       `2. query_tally(data_type, period, filter)`,
       `   data_type options:`,
       `   • "snapshot"          → P&L summary (sales, purchases, expenses, net profit, cash, bank)`,
@@ -3013,6 +3030,7 @@ async function buildChatContext() {
       `3. compare_sources(comparison_type, period)`,
       `   comparison_type: "sales_total"|"customer_outstanding"|"monthly_trend"`,
       ``,
+      ] : []),
       `4. web_search(query) — market trends, regulations, prices, external data only`,
       ``,
       `5. predict_sales(horizon, filter)`,
@@ -3021,8 +3039,29 @@ async function buildChatContext() {
       `6. analyze(analysis_type, period)`,
       `   types: "health_report"|"growth_rate"|"slow_moving"|"day_of_week"|"avg_order_value"|"customer_frequency"|"peak_hours"|"top_days"`,
       ``,
+      `7. run_moysklad_sql(sql, purpose) — write your own read-only SQL over MoySklad data (schema in the tool description)`,
+      ...(isAdminCtx ? [`8. run_tally_query(collection, operation, …) — write your own read-only MongoDB query over Tally data`] : []),
+      ``,
+      `━━━ ANSWER ANY QUESTION ━━━`,
+      `- The fixed tools cover common questions. For ANYTHING else — a specific order, customer, product, date range, filter, join, ranking or comparison they don't give exactly — write your own query with run_moysklad_sql${isAdminCtx ? ' / run_tally_query' : ''}. Never say the data isn't available without trying a query first.`,
+      `- Accuracy first: numbers must come from a tool result, never estimated or rounded beyond display formatting. If a query errors, fix it and retry. MoySklad figures are as of the last sync (every minute).`,
+      `- NEVER add up, subtract, average or otherwise calculate numbers yourself — mental arithmetic causes wrong totals. Every total, sum, count, difference or percentage must come directly from a tool (e.g. SUM/COUNT in run_moysklad_sql, or the totals a tool already returns). If you need a total that no result contains, run a query for it.`,
+      `- Money format: MoySklad amounts are Russian rubles — write ₽1,290,000 or ₽1.29M (never lakh/crore for rubles).${isAdminCtx ? ' Tally amounts are Indian rupees — ₹ with lakh/crore is fine.' : ''}`,
+      ...(isAdminCtx ? [
+      ``,
+      `━━━ MOYSKLAD AND TALLY ARE SEPARATE — NEVER MIX THEM ━━━`,
+      `- They are two different systems (MoySklad = operations in ₽, Tally = accounting in ₹). Never add, net, average or merge a MoySklad figure with a Tally figure.`,
+      `- In every answer that contains data, put MoySklad data under the heading "📦 From MoySklad" and Tally data under the heading "📒 From Tally". If only one source is used, still show its heading.`,
+      `- If a question could be answered from both, answer from each separately under its own heading. For comparisons (compare_sources), show them side by side with clearly labeled columns — never as one combined number.`,
+      ] : [
+      ``,
+      `- Put data under the heading "📦 From MoySklad".`,
+      `- If asked about Tally or accounting data (P&L, ledgers, debtors in Tally, etc.), reply in one short line that Tally data isn't available for this account — nothing more.`,
+      ]),
+      ``,
       `━━━ DECISION RULES ━━━`,
       `- MoySklad shipments/orders/customers/stock/salesmen → query_moysklad`,
+      ...(isAdminCtx ? [
       `- Tally: outstanding receivables, debtors, payments, purchases, expenses, P&L → query_tally`,
       `- "Who owes us money" / overdue / receivables → query_tally data_type="overdue" or "debtors"`,
       `- "Which customer hasn't paid" → query_tally data_type="overdue"`,
@@ -3032,14 +3071,22 @@ async function buildChatContext() {
       `- "Monthly Tally trend" → query_tally data_type="monthly_sales"`,
       `- "Tally stock" / "inventory value" → query_tally data_type="stock"
 - "gross profit" / "GP" / "margin" / "opening stock" / "closing stock" / "profitability this month" → query_tally data_type="gross_profit"`,
+      `- MoySklad vs Tally comparison → compare_sources`,
+      ] : []),
       `- "Salesman performance" → query_moysklad group_by="salesman"`,
       `- "SKU / flavour breakdown" → query_moysklad group_by="sku"`,
       `- "Sales forecast" → predict_sales`,
       `- "Business health" → analyze analysis_type="health_report"`,
       `- "Slow moving stock" → analyze analysis_type="slow_moving"`,
-      `- MoySklad vs Tally comparison → compare_sources`,
+      `- "Customer outstanding / who owes us" in MoySklad → run_moysklad_sql using the outstanding rule in its description`,
       `- "Today's summary" / "daily summary" / "total PCS sold today" → use the TODAY snapshot below (already includes total PCS and warehouse-wise PCS breakdown — e.g. Yuzhnie Varota, Lublino Shop, Berlin Office). Always mention the warehouse-wise split when answering daily PCS summaries. For other periods use query_moysklad group_by="warehouse".`,
       `- Always use tools. Never guess numbers. Lead with the answer. Tables for multi-row data.`,
+      ``,
+      `━━━ REPLY STYLE — SHORT AND PRECISE ━━━`,
+      `- Answer only what was asked. First line = the direct answer with the exact number(s).`,
+      `- Keep it to a few lines. Use a small table only when listing several items (top 10 max unless asked for more).`,
+      `- No introductions, no restating the question, no methodology, no commentary after a table, no recommendations, tips or "next steps" unless the user asks for them.`,
+      `- Give longer analysis only when the user explicitly asks for detail, a report, or an explanation.`,
       ``,
       `${'═'.repeat(70)}`,
       `LIVE SNAPSHOT (${new Date().toLocaleString('en-IN')})`,
@@ -3081,7 +3128,8 @@ async function buildChatContext() {
       });
     }
 
-    sec(`PENDING ORDERS — ${pendingOrders.length} not dispatched (MoySklad)`);
+    const pendingValue = pendingOrders.reduce((a, o) => a + Math.round((o.sum || 0) / 100), 0);
+    sec(`PENDING ORDERS — ${pendingOrders.length} not dispatched, total value ₽${pendingValue.toLocaleString('en-US')} (MoySklad)`);
     pendingOrders.slice(0,10).forEach(o => L.push(`  • ${o.name||'—'} | ${agentName(o)} | ${resolveState(o,sMap)||'—'} | ${fmtS((o.sum||0)/100)}`));
 
     // ── Tally section ──
@@ -3540,6 +3588,86 @@ function resolvePeriod(period) {
 }
 
 // ── Chat tools definition ─────────────────────────────────
+// ── Free-form query tools (anything the fixed tools above don't cover) ─────
+// Both are strictly read-only and capped, and each labels its own source so
+// the model never mixes MoySklad and Tally figures.
+const AI_QUERY_MAX_ROWS = 300;
+
+// MoySklad: a single SELECT over the Postgres mirror, run inside a READ ONLY
+// transaction as the chat_readonly role (db/schema.sql), which can only see
+// ms_* business tables — never app_users, never writes. Declared as a cursor,
+// which Postgres only accepts for a query, and fetched with a row cap.
+async function toolRunMoyskladSql({ sql } = {}) {
+  const source = 'MoySklad (database mirror, synced from MoySklad every minute)';
+  const q = String(sql || '').trim().replace(/;\s*$/, '');
+  if (!q) return JSON.stringify({ source, error: 'Empty query.' });
+  if (q.includes(';')) return JSON.stringify({ source, error: 'Only one SELECT statement is allowed (no semicolons).' });
+  if (!/^(select|with)\b/i.test(q)) return JSON.stringify({ source, error: 'Only SELECT / WITH queries are allowed.' });
+  // SET LOCAL ROLE isn't a hard boundary on its own: the connection's real
+  // user can switch back via set_config('role', …), and the *_to_xml family
+  // runs arbitrary nested SQL. Reject those (and admin pg_* functions) outright.
+  if (/\b(set_config|query_to_xml\w*|table_to_xml\w*|cursor_to_xml\w*|schema_to_xml\w*|database_to_xml\w*|dblink\w*|lo_\w+|pg_\w+)\s*\(/i.test(q) || /\bapp_users\b/i.test(q))
+    return JSON.stringify({ source, error: 'That function or table is not allowed in chat queries.' });
+  const client = await require('./db/pool').getPool().connect();
+  try {
+    await client.query('BEGIN READ ONLY');
+    await client.query('SET LOCAL ROLE chat_readonly');
+    await client.query("SET LOCAL statement_timeout = '15s'");
+    await client.query(`DECLARE ai_cur NO SCROLL CURSOR FOR ${q}`);
+    const r = await client.query(`FETCH ${AI_QUERY_MAX_ROWS + 1} FROM ai_cur`);
+    const truncated = r.rows.length > AI_QUERY_MAX_ROWS;
+    return JSON.stringify({ source, row_count: Math.min(r.rows.length, AI_QUERY_MAX_ROWS), truncated, rows: r.rows.slice(0, AI_QUERY_MAX_ROWS) });
+  } catch (e) {
+    return JSON.stringify({ source, error: e.message });
+  } finally {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
+  }
+}
+
+// Tally: find / aggregate / count / distinct on the tally_* MongoDB
+// collections only. Stages and operators that write or run arbitrary JS
+// ($out, $merge, $where, $function, $accumulator) are rejected anywhere in
+// the request.
+const TALLY_COLLECTIONS = ['tally_vouchers', 'tally_vouchers_archive', 'tally_ledgers', 'tally_groups',
+  'tally_stock', 'tally_stock_monthly', 'tally_stock_history', 'tally_gp_monthly',
+  'tally_fy_snapshots', 'tally_group_snapshots', 'tally_snapshots'];
+const TALLY_FORBIDDEN_KEYS = new Set(['$out', '$merge', '$where', '$function', '$accumulator']);
+function hasForbiddenKey(v) {
+  if (Array.isArray(v)) return v.some(hasForbiddenKey);
+  if (v && typeof v === 'object') return Object.keys(v).some(k => TALLY_FORBIDDEN_KEYS.has(k) || hasForbiddenKey(v[k]));
+  return false;
+}
+async function toolRunTallyQuery({ collection, operation = 'find', filter = {}, projection, sort, limit, pipeline, field } = {}) {
+  const source = 'Tally (MongoDB, synced from Tally)';
+  if (!TALLY_COLLECTIONS.includes(collection)) return JSON.stringify({ source, error: 'Unknown collection. Allowed: ' + TALLY_COLLECTIONS.join(', ') });
+  if (hasForbiddenKey([filter, projection, sort, pipeline])) return JSON.stringify({ source, error: 'Write stages and JavaScript operators are not allowed.' });
+  const db = await getMongoDb().catch(() => null);
+  if (!db) return JSON.stringify({ source, error: 'Tally database is not reachable.' });
+  const col = db.collection(collection);
+  const cap = Math.min(Math.max(parseInt(limit, 10) || 100, 1), AI_QUERY_MAX_ROWS);
+  const opts = { maxTimeMS: 15000 };
+  try {
+    let rows;
+    if (operation === 'count') return JSON.stringify({ source, collection, count: await col.countDocuments(filter || {}, opts) });
+    if (operation === 'distinct') {
+      if (!field) return JSON.stringify({ source, error: 'distinct needs a field.' });
+      rows = await col.distinct(field, filter || {}, opts);
+      return JSON.stringify({ source, collection, field, values: rows.slice(0, AI_QUERY_MAX_ROWS), truncated: rows.length > AI_QUERY_MAX_ROWS });
+    }
+    if (operation === 'aggregate') {
+      if (!Array.isArray(pipeline)) return JSON.stringify({ source, error: 'aggregate needs a pipeline array.' });
+      rows = await col.aggregate([...pipeline, { $limit: AI_QUERY_MAX_ROWS + 1 }], opts).toArray();
+    } else {
+      rows = await col.find(filter || {}, { ...opts, projection: projection || { _id: 0 }, sort, limit: cap + 1 }).toArray();
+    }
+    const max = operation === 'aggregate' ? AI_QUERY_MAX_ROWS : cap;
+    return JSON.stringify({ source, collection, row_count: Math.min(rows.length, max), truncated: rows.length > max, rows: rows.slice(0, max) });
+  } catch (e) {
+    return JSON.stringify({ source, error: e.message });
+  }
+}
+
 const CHAT_TOOLS = [
   {
     name: 'query_moysklad',
@@ -3713,6 +3841,71 @@ ROUTING:
       },
       required: ['query']
     }
+  },
+  {
+    name: 'run_moysklad_sql',
+    description: `Write and run your own read-only SQL (PostgreSQL) over the MoySklad data. Use this for ANY MoySklad question the fixed tools don't answer exactly — custom filters, joins, specific orders/customers/products, comparisons, unusual groupings. Exact numbers, not estimates. One SELECT (or WITH … SELECT) only, max ${AI_QUERY_MAX_ROWS} rows returned — aggregate in SQL rather than pulling raw rows. Data is synced from MoySklad every minute.
+
+TABLES (all money columns are *_kopecks — divide by 100.0 for ₽; "moment" is a timestamp in Moscow local time):
+• ms_orders — customer (sales) orders: id, name (order no.), moment, sum_kopecks, payed_sum_kopecks, customer_id, customer_name, owner_id (salesman), state_id, state_name (often NULL — JOIN ms_states for the status), delivery_planned_moment, store_id
+• ms_order_positions — order lines: order_id, product_name, base_name (model, flavour stripped), quantity, price_kopecks, discount, amount_kopecks
+• ms_demands — SHIPMENTS = actual sales/revenue: id, name, moment, sum_kopecks, customer_id, customer_name, owner_id, order_id, state_id, store_id (warehouse)
+• ms_demand_positions — shipment lines: demand_id, demand_date, product_name, base_name, quantity (PCS), price_kopecks, discount, amount_kopecks
+• ms_invoices_out — sales invoices: id, name, moment, sum_kopecks, customer_id, order_id
+• ms_payments_in — incoming customer payments: id, name, moment, sum_kopecks, customer_id, customer_name, description (narration)
+• ms_sales_returns — goods returned by customers: id, name, moment, sum_kopecks, customer_id, demand_id (the shipment returned against; order = ms_demands.order_id)
+• ms_counterparties — customers: id, name, code, email, phone
+• ms_employees — salesmen/staff: id, name, short_fio, position (join on owner_id)
+• ms_stores — warehouses: id, name (e.g. Yuzhnie Varota, Lublino Shop)
+• ms_states — status names: id, name (join on state_id)
+• ms_assortment — products: href, id, name, base_name, code, article
+• ms_stock — current stock: name, quantity, reserve, price_kopecks, folder_name, status ('ok'|'low'|'out')
+• customer_credit_limits — customer_id, credit_limit_kopecks
+
+BUSINESS RULES (match the dashboard exactly):
+• Sales / revenue = shipments (ms_demands), not orders.
+• The current MoySklad account started 2026-09-01. Earlier rows are merged history from the old account — fine for sales history, but old orders have frozen statuses.
+• Pending orders = moment >= '2026-09-01' AND the order has a status AND the status is not Draft/Dispatched/Closed/Declined/Cancelled (English or Russian names).
+• Customer outstanding (receivables) = orders since 2026-09-01 that have at least one shipment: sum − payed_sum − sales returns against that order's shipments.
+• Product model = base_name.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        sql: { type: 'string', description: 'A single PostgreSQL SELECT or WITH query. No semicolons.' },
+        purpose: { type: 'string', description: 'One line: what this query answers.' }
+      },
+      required: ['sql']
+    }
+  },
+  {
+    name: 'run_tally_query',
+    description: `Run your own read-only MongoDB query over the TALLY accounting data (amounts in ₹). Use this for ANY Tally question the query_tally tool doesn't answer exactly. operation: "find" (filter/projection/sort/limit), "aggregate" (pipeline), "count" (filter), "distinct" (field + filter). Max ${AI_QUERY_MAX_ROWS} rows — aggregate rather than pulling raw documents.
+
+COLLECTIONS:
+• tally_vouchers — every voucher from 2026-01-01 on: dateStr ('YYYY-MM-DD'), month ('YYYY-MM'), type ('Sales'|'Purchase'|'Credit Note'|'Journal'|'Stock Journal'), voucherNumber, party, amount, narration
+• tally_vouchers_archive — older vouchers (2024-02 onward), same fields + fyKey. It OVERLAPS tally_vouchers for Jan–May 2026: for dates on/after 2026-01-01 use tally_vouchers only, and the archive only for earlier dates, so nothing is double counted.
+• tally_ledgers — every ledger account: name, parent (group), type ('debtor'|'creditor'|'sales'|'purchase'|'expense'|'direct_expense'|'bank'|'cash'|'other'), balance
+• tally_groups — account groups: name, parent
+• tally_stock — current stock items: name, parent, qty, value
+• tally_stock_monthly — month, stockValue, itemCount | tally_stock_history — date, month, totalValue
+• tally_gp_monthly — month, openingStock, closingStock, sales, purchases, cogs, grossProfit, gpMargin
+• tally_fy_snapshots — per financial year (fyKey e.g. 'FY-2026-27'): netSales, netPurch, directExp, indirectExp, indirectIncome, openingStock, closingStock, cogs, grossProfit, netProfit
+• tally_group_snapshots — period P&L by group | tally_snapshots — periodic full dashboard snapshots (syncedAt)`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        collection: { type: 'string', enum: TALLY_COLLECTIONS },
+        operation: { type: 'string', enum: ['find', 'aggregate', 'count', 'distinct'] },
+        filter: { type: 'object', description: 'MongoDB filter (find/count/distinct)' },
+        projection: { type: 'object' },
+        sort: { type: 'object' },
+        limit: { type: 'number' },
+        pipeline: { type: 'array', items: { type: 'object' }, description: 'Aggregation pipeline (aggregate)' },
+        field: { type: 'string', description: 'Field name (distinct)' },
+        purpose: { type: 'string', description: 'One line: what this query answers.' }
+      },
+      required: ['collection', 'operation']
+    }
   }
 ];
 
@@ -3762,6 +3955,8 @@ function getToolStatusText(toolUses) {
     if (t.name === 'analyze')         return `analytics · ${(t.input.analysis_type||'').replace(/_/g,' ')}`;
     if (t.name === 'predict_sales')   return 'sales forecast';
     if (t.name === 'compare_sources') return 'comparing Tally vs MoySklad';
+    if (t.name === 'run_moysklad_sql') return `MoySklad custom query${t.input.purpose ? ' · ' + t.input.purpose : ''}`;
+    if (t.name === 'run_tally_query')  return `Tally custom query${t.input.purpose ? ' · ' + t.input.purpose : ''}`;
     return t.name;
   });
   return `Fetching ${labels.join(' + ')}…`;
@@ -3802,7 +3997,7 @@ app.post('/api/chat', async (req, res) => {
     // directly, so this can't be forgotten at some other call site later.
     const activeTools = req.session.role === 'admin'
       ? CHAT_TOOLS
-      : CHAT_TOOLS.filter(t => t.name !== 'query_tally' && t.name !== 'compare_sources');
+      : CHAT_TOOLS.filter(t => t.name !== 'query_tally' && t.name !== 'compare_sources' && t.name !== 'run_tally_query');
 
     // Agentic loop: allow up to 5 rounds (each round may have multiple tool calls)
     for (let round = 0; round < 5; round++) {
@@ -3843,6 +4038,8 @@ app.post('/api/chat', async (req, res) => {
           // refuse explicitly rather than trust that alone.
           if (t.name === 'query_tally')      return tallyBlocked ? Promise.resolve(JSON.stringify({ error: 'Tally access is not available for this account.' })) : toolQueryTally(t.input);
           if (t.name === 'compare_sources')  return tallyBlocked ? Promise.resolve(JSON.stringify({ error: 'Tally access is not available for this account.' })) : toolCompareSources(t.input);
+          if (t.name === 'run_tally_query')  return tallyBlocked ? Promise.resolve(JSON.stringify({ error: 'Tally access is not available for this account.' })) : toolRunTallyQuery(t.input);
+          if (t.name === 'run_moysklad_sql') return toolRunMoyskladSql(t.input);
           if (t.name === 'predict_sales')    return toolPredictSales(t.input);
           if (t.name === 'analyze')          return toolAnalytics(t.input);
           return Promise.resolve(JSON.stringify({ error: 'Unknown tool: ' + t.name }));

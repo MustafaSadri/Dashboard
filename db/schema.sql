@@ -240,3 +240,22 @@ CREATE TABLE IF NOT EXISTS ms_sync_meta (
   last_error                TEXT,
   last_rows                 INTEGER
 );
+
+-- Read-only role the chatbot's run_sql tool switches into (SET LOCAL ROLE,
+-- inside a READ ONLY transaction) so AI-written queries can only SELECT
+-- from MoySklad business tables — never app_users (password hashes), never
+-- writes. Skipped with a notice if this DB user can't create roles; the tool
+-- then reports itself unavailable instead of running unrestricted.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_readonly') THEN
+    CREATE ROLE chat_readonly NOLOGIN;
+  END IF;
+  EXECUTE format('GRANT chat_readonly TO %I', current_user);
+  EXECUTE 'GRANT USAGE ON SCHEMA public TO chat_readonly';
+  EXECUTE 'GRANT SELECT ON ms_counterparties, ms_employees, ms_stores, ms_states, ms_assortment,
+           ms_stock, ms_orders, ms_order_positions, ms_demands, ms_demand_positions,
+           ms_invoices_out, ms_payments_in, ms_sales_returns, customer_credit_limits TO chat_readonly';
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'chat_readonly role not set up (insufficient privilege)';
+END $$;
