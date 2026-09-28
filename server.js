@@ -982,8 +982,10 @@ app.get('/api/order-shipment-mismatch', async (req, res) => {
       // so these two housekeeping checks only look at current-account orders.
       const isCurrentAccount = (o.moment || '') >= ACCOUNT_CUTOVER_DATE;
 
-      // Fully (or over-) paid but status never moved to Closed
-      const paidNotClosed = isCurrentAccount && (o.payedSum || 0) > 0 && (o.payedSum || 0) >= (o.sum || 0) && !isClosed && !isDeclined
+      // Fully (or over-) paid, already dispatched/shipped, but never moved to
+      // Closed. A prepaid order that hasn't shipped yet is normal, not an alert.
+      const paidNotClosed = isCurrentAccount && (hasShipment || isDispatched) &&
+        (o.payedSum || 0) > 0 && (o.payedSum || 0) >= (o.sum || 0) && !isClosed && !isDeclined
         ? { paidSum: Math.round((o.payedSum || 0) / 100), orderSum: Math.round((o.sum || 0) / 100), state: stateLabel || 'No status' }
         : null;
 
