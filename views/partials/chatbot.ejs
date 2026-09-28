@@ -626,6 +626,20 @@ Ask me anything about your business! 🌐</div>
       body: JSON.stringify({ messages: history.slice(-20) })
     })
     .then(function(response) {
+      // Anything that isn't a chat stream (login redirect after the server
+      // restarted and dropped the session, an error page, a proxy timeout)
+      // would otherwise leave the typing dots spinning forever.
+      var ctype = response.headers.get('content-type') || '';
+      if (response.redirected || !response.ok || ctype.indexOf('text/event-stream') === -1) {
+        hideTyping();
+        var loggedOut = response.redirected || response.status === 401 || /\/login/.test(response.url);
+        appendBot(loggedOut
+          ? '⚠️ Your session has expired (the server was restarted). Please refresh the page and log in again.'
+          : '⚠️ The server returned an error (HTTP ' + response.status + '). Please try again in a moment.', true);
+        done_cleanup();
+        return;
+      }
+      var finished = false;
       var reader  = response.body.getReader();
       var decoder = new TextDecoder();
       var sseBuffer = '';
@@ -666,6 +680,7 @@ Ask me anything about your business! 🌐</div>
 
         } else if (evt.type === 'done') {
           // All done — render markdown and finalize
+          finished = true;
           hideTyping();
           if (accumulated) {
             ensureBotBubble();
@@ -692,6 +707,7 @@ Ask me anything about your business! 🌐</div>
           done_cleanup();
 
         } else if (evt.type === 'error') {
+          finished = true;
           hideTyping();
           if (botRow) {
             var bbl = getBubble();
@@ -705,7 +721,16 @@ Ask me anything about your business! 🌐</div>
 
       function pump() {
         return reader.read().then(function(result) {
-          if (result.done) { done_cleanup(); return; }
+          if (result.done) {
+            if (!finished) {
+              hideTyping();
+              var partial = getBubble();
+              if (partial) { partial.classList.remove('ws-streaming'); partial.removeAttribute('id'); }
+              appendBot('⚠️ The connection dropped before the answer finished. Please try again.', true);
+            }
+            done_cleanup();
+            return;
+          }
           sseBuffer += decoder.decode(result.value, { stream: true });
           var lines = sseBuffer.split('\n');
           sseBuffer = lines.pop(); // keep partial line in buffer

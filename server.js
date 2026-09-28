@@ -3786,6 +3786,13 @@ app.post('/api/chat', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     const sse = data => res.write(`data: ${JSON.stringify(data)}\n\n`);
+    // Send bytes right away and every 15s after, so a proxy in front of
+    // Render never sees an idle connection while context building or slow
+    // tools (forecasts, analytics) run. SSE comment lines are ignored by the client.
+    res.flushHeaders();
+    res.write(': connected\n\n');
+    const heartbeat = setInterval(() => { try { res.write(': ping\n\n'); } catch (_) {} }, 15000);
+    res.on('close', () => clearInterval(heartbeat));
 
     const systemPrompt = await buildChatContext();
     let msgHistory = [...messages.slice(-20)];
