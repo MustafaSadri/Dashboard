@@ -113,6 +113,18 @@
     <i class="fas fa-boxes-stacked os-ico" style="color:var(--warn)"></i>
   </div>
 
+  <% (typeof extraStatuses !== 'undefined' ? extraStatuses : []).forEach(function(st) {
+       var isStockIssue = /out of stock|нет в наличии|stock/i.test(st.name);
+       var col = isStockIssue ? 'var(--danger)' : 'var(--accent)'; %>
+  <div class="os-card <%= isStockIssue ? 'c-danger' : '' %>" data-status="<%= st.name %>"
+       onclick="openModal('status:' + this.dataset.status, this.dataset.status + ' Orders', '<%= isStockIssue ? 'fa-box-open' : 'fa-circle-dot' %>', '<%= col %>')">
+    <div class="os-lbl"><%= st.name %></div>
+    <div class="os-val" style="color:<%= col %>"><%= st.count %></div>
+    <div class="os-sub">Open orders in this status</div>
+    <i class="fas <%= isStockIssue ? 'fa-box-open' : 'fa-circle-dot' %> os-ico" style="color:<%= col %>"></i>
+  </div>
+  <% }) %>
+
   <div class="os-card c-success" onclick="openModal('dispatched','Dispatched Orders','fa-truck','#7dde90')">
     <div class="os-lbl">Dispatched</div>
     <div class="os-val" style="color:#7dde90"><%- dispCount %></div>
@@ -224,6 +236,7 @@ function openModal(filter, title, icon, color) {
   _modalRows = ORDERS.filter(function(o) {
     var isActive = o.createdDate >= ACCOUNT_CUTOVER_DATE;
     if (filter === 'all')       return true;
+    if (filter.indexOf('status:') === 0) return isActive && o.state === filter.slice(7);
     if (filter === 'new')       return isActive && /new|нов/i.test(o.stateL);
     if (filter === 'accepted')  return isActive && /accept|принят|подтверж/i.test(o.stateL);
     if (filter === 'ready')     return isActive && /ready|готов/i.test(o.stateL);
