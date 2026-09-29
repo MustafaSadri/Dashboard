@@ -16,20 +16,6 @@
       </button>
     </div>
 
-    <!-- CONTAINER STOCK LINK -->
-    <% if (typeof canViewContainerStock !== 'undefined' && canViewContainerStock) { %>
-    <div style="margin-bottom:14px">
-      <a href="<%- containerStockUrl %>" target="_blank" rel="noopener"
-        style="display:flex;align-items:center;gap:9px;width:100%;padding:10px 16px;background:rgba(79,174,138,.1);border:1.5px solid rgba(79,174,138,.4);border-radius:10px;color:var(--accent2);font-size:13px;font-weight:600;cursor:pointer;text-align:left;transition:all .15s;text-decoration:none"
-        onmouseover="this.style.background='rgba(79,174,138,.18)'"
-        onmouseout="this.style.background='rgba(79,174,138,.1)'">
-        <i class="fas fa-truck-ramp-box" style="font-size:15px"></i>
-        <span>Container-wise Stock — open the Container Stock app</span>
-        <i class="fas fa-arrow-up-right-from-square" style="margin-left:auto;font-size:11px;opacity:.6"></i>
-      </a>
-    </div>
-    <% } %>
-
     <!-- MISMATCH MODAL -->
     <div id="mismatchModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;overflow-y:auto;padding:20px" onclick="if(event.target===this)closeMismatchModal()">
       <div style="background:var(--bg2);border-radius:14px;max-width:820px;margin:40px auto;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.35)">
@@ -39,7 +25,7 @@
           <i class="fas fa-triangle-exclamation" style="color:#F0B429;font-size:16px"></i>
           <span style="font-weight:700;font-size:15px">Order Alerts</span>
           <span id="mismatchModalCount" style="background:rgba(240,180,41,.2);color:#F0B429;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-left:4px"></span>
-          <span style="font-size:11px;color:var(--text2);margin-left:6px">Value mismatches and dispatched-but-not-shipped orders</span>
+          <span style="font-size:11px;color:var(--text2);margin-left:6px">Value mismatches, dispatched-but-not-shipped, and paid orders to close</span>
           <button onclick="closeMismatchModal()" style="margin-left:auto;background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:4px 8px">
             <i class="fas fa-xmark"></i>
           </button>
@@ -472,7 +458,7 @@ async function loadMismatch() {
 
     document.getElementById('mismatchBar').style.display = 'block';
     document.getElementById('mismatchBtnText').textContent =
-      `${data.count} Order${data.count > 1 ? 's' : ''} need${data.count > 1 ? '' : 's'} attention — value mismatch or dispatched without shipment`;
+      `${data.count} Order${data.count > 1 ? 's' : ''} need${data.count > 1 ? '' : 's'} attention — value mismatch, no shipment, or paid but not closed`;
     document.getElementById('mismatchModalCount').textContent = data.count;
 
     // Build modal table — a shipment block and/or an invoice block per
@@ -515,6 +501,11 @@ async function loadMismatch() {
       }
 
       let tags = '';
+      if (m.paidNotClosed) {
+        tags += `<span style="display:inline-block;background:rgba(64,160,255,.15);color:#40A0FF;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:12px;margin-right:6px">
+            FULLY PAID &amp; SHIPPED · STILL "${(m.paidNotClosed.state || '').toUpperCase()}" — CHANGE STATUS TO CLOSED
+          </span>`;
+      }
       if (m.dispatchedNoShipment) {
         tags += `<span style="display:inline-block;background:rgba(255,80,80,.15);color:#ff5050;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:12px;margin-right:6px">
             "${(m.dispatchedNoShipment.state || '').toUpperCase()}" · NO SHIPMENT CREATED
@@ -529,7 +520,7 @@ async function loadMismatch() {
               <span style="font-weight:400;font-size:12px;color:var(--text2);margin-left:6px">${m.customer}</span>
             </div>
             <div style="font-size:11px;color:var(--text2);margin-top:2px">${m.date}</div>
-            <div style="font-size:12px;color:var(--text2);margin-top:6px">Order &nbsp;<strong style="color:var(--text)">${fmtRub(m.orderSum)}</strong></div>
+            <div style="font-size:12px;color:var(--text2);margin-top:6px">Order &nbsp;<strong style="color:var(--text)">${fmtRub(m.orderSum)}</strong>${m.paidNotClosed ? ` &nbsp;·&nbsp; Paid &nbsp;<strong style="color:var(--text)">${fmtRub(m.paidNotClosed.paidSum)}</strong>` : ''}</div>
             ${docs ? `<div style="margin-top:6px">${docs}</div>` : ''}
             ${invs ? `<div style="margin-top:6px">${invs}</div>` : ''}
           </div>

@@ -940,8 +940,8 @@ function isPendingOrder(r, stateMap) {
 //  1. Shipped/invoiced value ≠ order value (order edited after the
 //     shipment/invoice was already created).
 //  2. Status says Dispatched but no shipment document actually exists.
-// (Dispatched + shipped + paid is this business's normal final state —
-// orders aren't moved to Closed — so that is deliberately not flagged.)
+//  3. Fully paid, status Dispatched, shipment created — should now be
+//     moved to Closed.
 app.get('/api/order-shipment-mismatch', async (req, res) => {
   try {
     const filterStr = `moment>=2025-12-01 00:00:00`;
@@ -995,13 +995,19 @@ app.get('/api/order-shipment-mismatch', async (req, res) => {
         ? { state: stateLabel }
         : null;
 
+      // Fully paid, Dispatched, shipment exists → only step left is Closed
+      const paidNotClosed = isCurrentAccount && isDispatched && hasShipment &&
+        (o.payedSum || 0) > 0 && (o.payedSum || 0) >= (o.sum || 0)
+        ? { paidSum: Math.round((o.payedSum || 0) / 100), state: stateLabel }
+        : null;
+
       if (!hasShipment && !hasInvoice && !dispatchedNoShipment) return;  // nothing to flag
 
       const shipDiff = hasShipment ? (o.sum || 0) - shippedSum[o.id] : null;
       const invDiff  = hasInvoice  ? (o.sum || 0) - invoicedSum[o.id] : null;
       const shipMismatched = shipDiff !== null && Math.abs(shipDiff) >= 100;  // within ₹1 — ignore rounding
       const invMismatched  = invDiff  !== null && Math.abs(invDiff)  >= 100;
-      if (!shipMismatched && !invMismatched && !dispatchedNoShipment) return;
+      if (!shipMismatched && !invMismatched && !dispatchedNoShipment && !paidNotClosed) return;
 
       mismatches.push({
         id:              o.id,
@@ -1016,10 +1022,11 @@ app.get('/api/order-shipment-mismatch', async (req, res) => {
         invoiceDifference: invMismatched ? Math.round(invDiff / 100) : null,
         invoices:        invoicedList[o.id] || [],
         dispatchedNoShipment,
+        paidNotClosed,
       });
     });
 
-    const score = m => (m.dispatchedNoShipment ? 1e11 : 0) +
+    const score = m => (m.dispatchedNoShipment ? 1e11 : 0) + (m.paidNotClosed ? 1e10 : 0) +
       Math.max(Math.abs(m.difference || 0), Math.abs(m.invoiceDifference || 0));
     mismatches.sort((a, b) => score(b) - score(a));
     res.json({ ok: true, count: mismatches.length, mismatches });
