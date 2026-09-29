@@ -939,8 +939,9 @@ function isPendingOrder(r, stateMap) {
 // Flags sales orders that need a human look, independently, per order:
 //  1. Shipped/invoiced value ≠ order value (order edited after the
 //     shipment/invoice was already created).
-//  2. Fully paid but status was never moved to Closed (easy to forget).
-//  3. Status says Dispatched but no shipment document actually exists.
+//  2. Status says Dispatched but no shipment document actually exists.
+// (Dispatched + shipped + paid is this business's normal final state —
+// orders aren't moved to Closed — so that is deliberately not flagged.)
 app.get('/api/order-shipment-mismatch', async (req, res) => {
   try {
     const filterStr = `moment>=2025-12-01 00:00:00`;
@@ -984,34 +985,23 @@ app.get('/api/order-shipment-mismatch', async (req, res) => {
       const hasInvoice  = invoicedSum[o.id] != null;
 
       const stateLabel  = resolveState(o, stateMap);
-      const stateL      = stateLabel.toLowerCase();
-      const isClosed     = /closed|закрыт/i.test(stateL);
-      const isDeclined   = /declin|cancel|отмен|отклон|аннул/i.test(stateL);
-      const isDispatched = /dispatched|отгруж/i.test(stateL);
+      const isDispatched = /dispatched|отгруж/i.test(stateLabel);
       // Old-account orders (pre-cutover) are frozen history from a retired
-      // MoySklad account — flagging them as "never closed" isn't actionable,
-      // so these two housekeeping checks only look at current-account orders.
+      // MoySklad account, so this check only looks at current-account orders.
       const isCurrentAccount = (o.moment || '') >= ACCOUNT_CUTOVER_DATE;
-
-      // Fully (or over-) paid, already dispatched/shipped, but never moved to
-      // Closed. A prepaid order that hasn't shipped yet is normal, not an alert.
-      const paidNotClosed = isCurrentAccount && (hasShipment || isDispatched) &&
-        (o.payedSum || 0) > 0 && (o.payedSum || 0) >= (o.sum || 0) && !isClosed && !isDeclined
-        ? { paidSum: Math.round((o.payedSum || 0) / 100), orderSum: Math.round((o.sum || 0) / 100), state: stateLabel || 'No status' }
-        : null;
 
       // Status says Dispatched but no shipment document exists at all
       const dispatchedNoShipment = isCurrentAccount && isDispatched && !hasShipment
         ? { state: stateLabel }
         : null;
 
-      if (!hasShipment && !hasInvoice && !paidNotClosed && !dispatchedNoShipment) return;  // nothing to flag
+      if (!hasShipment && !hasInvoice && !dispatchedNoShipment) return;  // nothing to flag
 
       const shipDiff = hasShipment ? (o.sum || 0) - shippedSum[o.id] : null;
       const invDiff  = hasInvoice  ? (o.sum || 0) - invoicedSum[o.id] : null;
       const shipMismatched = shipDiff !== null && Math.abs(shipDiff) >= 100;  // within ₹1 — ignore rounding
       const invMismatched  = invDiff  !== null && Math.abs(invDiff)  >= 100;
-      if (!shipMismatched && !invMismatched && !paidNotClosed && !dispatchedNoShipment) return;
+      if (!shipMismatched && !invMismatched && !dispatchedNoShipment) return;
 
       mismatches.push({
         id:              o.id,
@@ -1025,12 +1015,11 @@ app.get('/api/order-shipment-mismatch', async (req, res) => {
         invoicedSum:     hasInvoice ? Math.round(invoicedSum[o.id] / 100) : null,
         invoiceDifference: invMismatched ? Math.round(invDiff / 100) : null,
         invoices:        invoicedList[o.id] || [],
-        paidNotClosed,
         dispatchedNoShipment,
       });
     });
 
-    const score = m => (m.paidNotClosed ? 1e12 : 0) + (m.dispatchedNoShipment ? 1e11 : 0) +
+    const score = m => (m.dispatchedNoShipment ? 1e11 : 0) +
       Math.max(Math.abs(m.difference || 0), Math.abs(m.invoiceDifference || 0));
     mismatches.sort((a, b) => score(b) - score(a));
     res.json({ ok: true, count: mismatches.length, mismatches });
