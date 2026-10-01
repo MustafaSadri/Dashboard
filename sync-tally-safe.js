@@ -2,8 +2,12 @@
 //  PLATINA  Safe Tally → MongoDB Sync  (accounts team laptops)
 //
 //  Syncs ledgers, stock, and a rolling last-3-months window of vouchers
-//  (recomputed fresh every run) — older voucher history already in
+//  (recomputed fresh every run: the window is replaced, so stale or wrong
+//  entries from earlier runs disappear) — older voucher history already in
 //  MongoDB from a prior full/6-month sync is left untouched.
+//
+//  TALLY_COMPANY in .env is required: with more than one company open in
+//  Tally, an empty value would sync whichever happens to be active.
 //
 //  Run:  node sync-tally-safe.js
 // ─────────────────────────────────────────────────────────────
@@ -70,6 +74,18 @@ function envelope(name, body) {
 <TDL><TDLMESSAGE>${body}</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>`;
 }
 
+// Names of the companies currently open in Tally ([] if Tally won't say).
+async function listOpenCompanies() {
+  try {
+    const xml = await tallyPost(`<ENVELOPE>
+<HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>OpenCompanies</ID></HEADER>
+<BODY><DESC><STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES>
+<TDL><TDLMESSAGE><COLLECTION NAME="OpenCompanies" ISMODIFY="No"><TYPE>Company</TYPE><FETCH>Name</FETCH></COLLECTION></TDLMESSAGE></TDL>
+</DESC></BODY></ENVELOPE>`);
+    return [...new Set(blocks(xml, 'COMPANY').map(b => attr(b, 'NAME') || stripXml(getTag(b, 'NAME'))).filter(Boolean))];
+  } catch (_) { return []; }
+}
+
 // ── Parse ledgers ─────────────────────────────────────────────
 function parseLedgers(xml) {
   const out = [];
@@ -118,6 +134,21 @@ async function main() {
     if (!e.message.includes('Could not find') && !e.message.includes('Tally XML')) throw e;
   }
   console.log('✓\n');
+
+  // ── Make sure exactly the intended company is synced ─────
+  const openCompanies = await listOpenCompanies();
+  if (!TALLY_COMPANY || (openCompanies.length && !openCompanies.includes(TALLY_COMPANY))) {
+    console.error(TALLY_COMPANY
+      ? `✗  Company "${TALLY_COMPANY}" (TALLY_COMPANY in .env) is not open in Tally.`
+      : '✗  TALLY_COMPANY is empty in .env — with more than one company open in Tally the sync would mix them up.');
+    if (openCompanies.length) {
+      console.error('   Companies open in Tally right now:');
+      openCompanies.forEach(n => console.error(`     • ${n}`));
+    }
+    console.error('   Open .env and set TALLY_COMPANY to the exact company name to sync (copy it from the list above), then run again.');
+    process.exit(1);
+  }
+  console.log(`Company: ${TALLY_COMPANY}\n`);
 
   // ── Connect MongoDB ───────────────────────────────────────
   process.stdout.write('Connecting to MongoDB ... ');
@@ -181,7 +212,7 @@ async function main() {
       if (type.toLowerCase() === 'journal') {
         const re = /<ALLLEDGERENTRIES\.LIST[\s\S]*?<\/ALLLEDGERENTRIES\.LIST>/gi;
         let jTotal = 0;
-        for (const m of vXml.matchAll(re)) {
+        for (const m of blk.matchAll(re)) {   // this voucher's own lines only
           const e = m[0];
           if (!/gurmeet/i.test(stripXml(getTag(e,'LEDGERNAME')))) continue;
           if (!/yes/i.test(stripXml(getTag(e,'ISDEEMEDPOSITIVE')))) continue;
@@ -196,9 +227,16 @@ async function main() {
 
     console.log(`${recentVouchers.length} vouchers`);
     if (recentVouchers.length > 0) {
+      // Tally is the source of truth for this window: replace it rather than
+      // only adding on top, so wrong entries from an earlier run (another
+      // company, old buggy amounts, vouchers since deleted in Tally) go away.
+      // Starts at the earliest date Tally actually returned, so a short reply
+      // from Tally can't wipe days it didn't send.
+      const windowStart = recentVouchers.reduce((m, v) => v.dateStr < m ? v.dateStr : m, today);
+      const del = await db.collection('tally_vouchers').deleteMany({ dateStr: { $gte: windowStart, $lte: today } });
       const ops = recentVouchers.map(v => ({ replaceOne: { filter: { _id: v._id }, replacement: v, upsert: true } }));
       await db.collection('tally_vouchers').bulkWrite(ops, { ordered: false });
-      console.log(`           ✓  ${recentVouchers.length} vouchers upserted (history untouched)\n`);
+      console.log(`           ✓  ${recentVouchers.length} vouchers saved for ${windowStart} → ${today} (${del.deletedCount} old copies replaced; earlier history untouched)\n`);
     } else {
       console.log('           ✓  No new vouchers in last 3 months\n');
     }
