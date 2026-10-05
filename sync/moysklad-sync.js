@@ -729,6 +729,24 @@ async function reconcileWindow(client, entity, windowDays, intervalHours) {
       removed += staleDemandIds.length;
     }
 
+    // Same check for every other synced document type: an invoice, payment
+    // or return created by mistake and then deleted in MoySklad must vanish
+    // here too, or it keeps inflating totals and raising false mismatch alerts.
+    const plainFilter = `&filter=${encodeURIComponent('moment>=' + sinceStr)}`;
+    for (const [endpoint, table] of [
+      ['/entity/invoiceout',  'ms_invoices_out'],
+      ['/entity/paymentin',   'ms_payments_in'],
+      ['/entity/salesreturn', 'ms_sales_returns'],
+    ]) {
+      const liveIds = new Set((await msAll(endpoint, plainFilter)).map(r => r.id));
+      const { rows: local } = await client.query(`SELECT id FROM ${table} WHERE moment >= $1::timestamp`, [sinceStr]);
+      const stale = local.map(r => r.id).filter(id => !liveIds.has(id));
+      if (stale.length) {
+        await client.query(`DELETE FROM ${table} WHERE id = ANY($1::text[])`, [stale]);
+        removed += stale.length;
+      }
+    }
+
     await upsertMeta(client, entity, {
       last_full_sync_at: new Date(), last_incremental_sync_at: new Date(),
       last_status: 'ok', last_error: null, last_rows: removed,
