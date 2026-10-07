@@ -2067,6 +2067,19 @@ app.get('/api/shipments-pcs', async (req, res) => {
 });
 
 // ── CUSTOMER ANALYTICS ───────────────────────────────────
+// The same customer has a different ID in the old (to 31 Aug 2026) and new
+// MoySklad accounts, so per-customer history would split in two. Returns
+// every ID carrying the same name (case/space-insensitive), this one first.
+async function getCustomerSiblingIds(cpId) {
+  if (MS_DATA_SOURCE !== 'postgres') return [cpId];
+  try {
+    const { rows } = await require('./db/pool').query(
+      `SELECT id FROM ms_counterparties
+       WHERE LOWER(TRIM(name)) = (SELECT LOWER(TRIM(name)) FROM ms_counterparties WHERE id = $1)`, [cpId]);
+    return [cpId, ...rows.map(r => r.id).filter(id => id !== cpId)];
+  } catch (_) { return [cpId]; }
+}
+
 app.get('/customer-analytics', async (req, res) => {
   try {
     const c = await common();
@@ -2074,27 +2087,30 @@ app.get('/customer-analytics', async (req, res) => {
     const cpName = req.query.name || 'Customer';
     if (!cpId) return res.redirect('/');
 
-    const cpHref      = `${MS_BASE}/entity/counterparty/${cpId}`;
-    const agentFilter = `agent=${cpHref}`;
-    const cpFilter    = `counterparty=${cpHref}`;
+    const cpIds = await getCustomerSiblingIds(cpId);
+    const cpHrefOf = id => `${MS_BASE}/entity/counterparty/${id}`;
 
     const [cpRes, ordRes, prodRes, stateRes, familyMapRes] = await Promise.allSettled([
       ms(`/entity/counterparty/${cpId}`),
-      msAll(`/entity/customerorder?filter=${enc(agentFilter)}&order=moment,desc&expand=state`),
-      ms(`/report/profit/byproduct?filter=${enc(cpFilter)}&limit=500`),
+      Promise.all(cpIds.map(id =>
+        msAll(`/entity/customerorder?filter=${enc(`agent=${cpHrefOf(id)}`)}&order=moment,desc&expand=state`).then(r => r.rows || [])
+      )).then(lists => lists.flat()),
+      Promise.all(cpIds.map(id =>
+        ms(`/report/profit/byproduct?filter=${enc(`counterparty=${cpHrefOf(id)}`)}&limit=500`).then(r => r.rows || [])
+      )).then(lists => lists.flat()),
       getOrderStateMap(),
       getFamilyMap(),
     ]);
 
     const cp        = cpRes.status==='fulfilled'       ? cpRes.value : {};
-    const orders    = ordRes.status==='fulfilled'      ? ordRes.value.rows : [];
-    const products  = prodRes.status==='fulfilled'     ? (prodRes.value.rows||[]).sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)) : [];
+    const orders    = ordRes.status==='fulfilled'      ? ordRes.value.sort((a,b)=>(b.moment||'').localeCompare(a.moment||'')) : [];
+    const products  = prodRes.status==='fulfilled'     ? prodRes.value.sort((a,b)=>(b.sellSum||0)-(a.sellSum||0)) : [];
     const stateMap  = stateRes.status==='fulfilled'    ? stateRes.value : {};
     const familyMap = familyMapRes.status==='fulfilled' ? familyMapRes.value : null;
 
     const totalRevenue   = orders.reduce((a,r)=>a+(r.sum||0),0)/100;
     const avgOrderValue  = orders.length>0 ? totalRevenue/orders.length : 0;
-    const pending        = orders.filter(r=>{ const s=resolveState(r,stateMap).toLowerCase(); return s&&s!=='dispatched'&&s!=='draft'; }).length;
+    const pending        = orders.filter(r => isPendingOrder(r, stateMap)).length;
 
     // Monthly trend for chart
     const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
