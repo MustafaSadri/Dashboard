@@ -225,11 +225,48 @@ CREATE TABLE IF NOT EXISTS app_users (
   username      TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   display_name  TEXT,
-  role          TEXT NOT NULL CHECK (role IN ('admin','partner','sales_director','associate')),
+  role          TEXT NOT NULL CHECK (role IN ('admin','partner','sales_director','associate','warehouse')),
   active        BOOLEAN NOT NULL DEFAULT true,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Existing databases were created with the shorter role list above; widen
+-- it to allow the warehouse (barcode scanning) role.
+ALTER TABLE app_users DROP CONSTRAINT IF EXISTS app_users_role_check;
+ALTER TABLE app_users ADD CONSTRAINT app_users_role_check
+  CHECK (role IN ('admin','partner','sales_director','associate','warehouse'));
+
+-- Barcode tracking (warehouse module). One row per physical barcode (e.g. a
+-- carton label), linked to the sales order/customer it was packed for.
+-- Product and price are optional (scanning doesn't require picking a
+-- product): when known, they're a frozen copy of the order line at save
+-- time, so later edits to the order in MoySklad never rewrite what a
+-- barcode was sold at. The unique index makes duplicate barcodes impossible
+-- even under concurrent saves.
+CREATE TABLE IF NOT EXISTS barcode_scans (
+  id                  BIGSERIAL PRIMARY KEY,
+  barcode             TEXT NOT NULL,
+  order_id            TEXT NOT NULL,
+  order_name          TEXT NOT NULL,
+  order_moment        TIMESTAMP,
+  customer_id         TEXT,
+  customer_name       TEXT,
+  assortment_href     TEXT,
+  product_name        TEXT,
+  base_name           TEXT,
+  price_kopecks       BIGINT,
+  discount            NUMERIC NOT NULL DEFAULT 0,
+  unit_price_kopecks  BIGINT,
+  scanned_by          TEXT NOT NULL,
+  scanned_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE barcode_scans ALTER COLUMN product_name DROP NOT NULL;
+ALTER TABLE barcode_scans ALTER COLUMN price_kopecks DROP NOT NULL;
+ALTER TABLE barcode_scans ALTER COLUMN unit_price_kopecks DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_barcode_scans_barcode ON barcode_scans(barcode);
+CREATE INDEX IF NOT EXISTS idx_barcode_scans_order ON barcode_scans(order_id);
+CREATE INDEX IF NOT EXISTS idx_barcode_scans_customer ON barcode_scans(customer_id);
+CREATE INDEX IF NOT EXISTS idx_barcode_scans_scanned_at ON barcode_scans(scanned_at);
 
 CREATE TABLE IF NOT EXISTS ms_sync_meta (
   entity                    TEXT PRIMARY KEY,

@@ -7,7 +7,7 @@
 const bcrypt = require('bcryptjs');
 const { query } = require('./pool');
 
-const VALID_ROLES = ['admin', 'partner', 'sales_director', 'associate'];
+const VALID_ROLES = ['admin', 'partner', 'sales_director', 'associate', 'warehouse'];
 
 function normalizeUsername(u) {
   return (u || '').trim().toLowerCase();

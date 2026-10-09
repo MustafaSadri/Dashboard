@@ -253,10 +253,48 @@ app.get('/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/login'));
 });
 
+// ── Warehouse (barcode tracking) login ────────────────────
+// Separate entry point for warehouse managers; same accounts table and
+// session as the main login. Admin may sign in here too (for setup/testing).
+const WAREHOUSE_ROLES = ['warehouse', 'admin'];
+app.get('/warehouse/login', (req, res) => {
+  if (req.session.loggedIn && WAREHOUSE_ROLES.includes(req.session.role)) return res.redirect('/warehouse');
+  res.render('warehouse-login', { error: null });
+});
+app.post('/warehouse/login', async (req, res) => {
+  try {
+    const user = await users.verifyLogin(req.body.username, req.body.password);
+    if (!user) return res.render('warehouse-login', { error: 'Incorrect username or password. Try again.' });
+    if (!WAREHOUSE_ROLES.includes(user.role)) return res.render('warehouse-login', { error: 'This login is for warehouse managers only.' });
+    req.session.loggedIn    = true;
+    req.session.role        = user.role;
+    req.session.userId      = user.id;
+    req.session.username    = user.username;
+    req.session.displayName = user.display_name || user.username;
+    return res.redirect('/warehouse');
+  } catch (e) {
+    console.error('[warehouse login] failed:', e.message);
+    res.render('warehouse-login', { error: 'Login is temporarily unavailable. Try again shortly.' });
+  }
+});
+app.use((req, res, next) => {
+  if (!req.session.loggedIn && (req.path === '/warehouse' || req.path.startsWith('/warehouse/'))) return res.redirect('/warehouse/login');
+  next();
+});
+
 // ── Auth guard — protects all routes below ────────────────
 app.use((req, res, next) => {
   if (req.session.loggedIn) return next();
   res.redirect('/login');
+});
+
+// Warehouse accounts can only use the warehouse module — never the CRM
+// pages or APIs (sales, prices, customers' finances).
+app.use((req, res, next) => {
+  if (req.session.role !== 'warehouse') return next();
+  if (req.path === '/warehouse' || req.path.startsWith('/warehouse/') || req.path.startsWith('/api/warehouse/')) return next();
+  if (req.path.startsWith('/api/')) return res.status(403).json({ ok: false, error: 'Not available for warehouse accounts.' });
+  res.redirect('/warehouse');
 });
 
 // Makes req.session.role available deep inside the MoySklad data layer
@@ -275,6 +313,7 @@ app.use((req, res, next) => {
   res.locals.canUseChat   = req.session.role === 'admin' || req.session.role === 'partner';
   res.locals.canViewOutstandings = ['admin', 'partner', 'associate'].includes(req.session.role);
   res.locals.canViewContainerStock = ['admin', 'partner'].includes(req.session.role);
+  res.locals.canUseBarcodeLookup = ['admin', 'partner', 'associate'].includes(req.session.role);
   res.locals.containerStockUrl = 'https://container-stock-app.onrender.com/';
   res.locals.displayName  = req.session.displayName || null;
   res.locals.empName   = 'Admin';
@@ -363,6 +402,107 @@ app.post('/admin/users/:id/toggle-active', requireAdmin, async (req, res) => {
 app.post('/admin/users/:id/delete', requireAdmin, async (req, res) => {
   await users.deleteUser(req.params.id);
   res.redirect('/admin/users');
+});
+
+// ── Barcode tracking: warehouse scanner + CRM lookup ──────
+// Self-contained module (db/barcodes.js, barcode_scans table). Reads the
+// MoySklad mirror, writes only barcode_scans.
+const barcodes = require('./db/barcodes');
+function requireWarehouse(req, res, next) {
+  if (!WAREHOUSE_ROLES.includes(req.session.role)) {
+    return req.path.startsWith('/api/') ? res.status(403).json({ ok: false, error: 'Access denied' }) : res.status(403).send('Access denied');
+  }
+  next();
+}
+const apiError = (res, e, where) => {
+  console.error(`[barcodes] ${where}:`, e.message);
+  res.status(500).json({ ok: false, error: 'Something went wrong. Please try again.' });
+};
+
+app.get('/warehouse', requireWarehouse, (req, res) => {
+  res.render('warehouse', { displayName: req.session.displayName, username: req.session.username, isAdmin: req.session.role === 'admin' });
+});
+
+app.get('/api/warehouse/orders', requireWarehouse, async (req, res) => {
+  try { res.json({ ok: true, orders: await barcodes.listOrders() }); }
+  catch (e) { apiError(res, e, 'orders'); }
+});
+
+app.get('/api/warehouse/orders/:id', requireWarehouse, async (req, res) => {
+  try {
+    const order = await barcodes.getOrderForScanning(req.params.id);
+    if (!order) return res.status(404).json({ ok: false, error: 'Order not found. Reload the order list.' });
+    res.json({ ok: true, order });
+  } catch (e) { apiError(res, e, 'order'); }
+});
+
+// While scanning (nothing saved yet): which codes are already in the
+// database, and which are a product's own EAN rather than a carton label.
+app.post('/api/warehouse/check', requireWarehouse, async (req, res) => {
+  try {
+    const { orderId, codes } = req.body || {};
+    if (!Array.isArray(codes)) return res.status(400).json({ ok: false, error: 'codes must be a list.' });
+    res.json({ ok: true, ...(await barcodes.checkCodes(orderId ? String(orderId) : null, codes)) });
+  } catch (e) { apiError(res, e, 'check'); }
+});
+
+// "Save all to database": one batch (or one chunk of a big batch).
+app.post('/api/warehouse/save', requireWarehouse, async (req, res) => {
+  try {
+    const { orderId, items } = req.body || {};
+    if (!orderId) return res.status(400).json({ ok: false, error: 'Choose an order first.' });
+    const r = await barcodes.saveBatch({ orderId: String(orderId), items, username: req.session.username });
+    res.json(r.error ? { ok: false, error: r.error } : r);
+  } catch (e) { apiError(res, e, 'save'); }
+});
+
+app.post('/api/warehouse/scan/:id/delete', requireWarehouse, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ ok: false, error: 'Invalid scan.' });
+    const removed = await barcodes.deleteScan(id, { username: req.session.username, isAdmin: req.session.role === 'admin' });
+    res.json(removed ? { ok: true } : { ok: false, error: 'Only your own scans from the last 24 hours can be removed.' });
+  } catch (e) { apiError(res, e, 'delete'); }
+});
+
+// Pull brand-new MoySklad orders in now instead of waiting for the next
+// scheduled sync. Concurrent clicks share one run.
+let _warehouseRefresh = null;
+app.post('/api/warehouse/refresh', requireWarehouse, async (req, res) => {
+  try {
+    if (process.env.MS_SYNC_ENABLED !== 'false' && process.env.DATABASE_URL) {
+      _warehouseRefresh = _warehouseRefresh || require('./sync/moysklad-sync').runQuickSync()
+        .finally(() => { _cache.clear(); _warehouseRefresh = null; });
+      await _warehouseRefresh;
+    }
+    res.json({ ok: true, orders: await barcodes.listOrders() });
+  } catch (e) { apiError(res, e, 'refresh'); }
+});
+
+app.get('/barcode-lookup', requireFullAccess, async (req, res) => {
+  try {
+    const c = await common();
+    res.render('barcode-lookup', { ...c, active: 'barcode-lookup', isAdmin: req.session.role === 'admin' });
+  } catch (e) { res.status(500).render('error', { message: e.message }); }
+});
+
+app.get('/api/barcode/lookup', requireFullAccess, async (req, res) => {
+  try {
+    const result = await barcodes.lookupBarcode(req.query.code);
+    res.json(result ? { ok: true, found: true, ...result } : { ok: true, found: false });
+  } catch (e) { apiError(res, e, 'lookup'); }
+});
+
+app.get('/api/barcode/recent', requireFullAccess, async (req, res) => {
+  try { res.json({ ok: true, scans: await barcodes.recentScans({ limit: 50 }) }); }
+  catch (e) { apiError(res, e, 'recent'); }
+});
+
+app.post('/api/barcode/:id/delete', requireAdmin, async (req, res) => {
+  try {
+    const removed = await barcodes.deleteScan(parseInt(req.params.id, 10), { isAdmin: true });
+    res.json({ ok: removed });
+  } catch (e) { apiError(res, e, 'admin delete'); }
 });
 
 // ── Moysklad API helper ──────────────────────────────────

@@ -1,0 +1,590 @@
+<%- include('partials/head') %>
+<style>
+  .wh-top { display:flex; align-items:center; gap:12px; padding:12px 24px; background:var(--bg2); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:50; flex-wrap:wrap; }
+  .wh-logo { width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,#D97757,#4FAE8A); color:#fff; font-weight:700; display:flex; align-items:center; justify-content:center; }
+  .wh-title { font-weight:700; font-size:16px; }
+  .wh-sub { font-size:11px; color:var(--text2); letter-spacing:.6px; text-transform:uppercase; }
+  .wh-btn { background:none; border:1px solid var(--border); color:var(--text2); border-radius:8px; padding:7px 11px; cursor:pointer; font-size:13px; text-decoration:none; display:inline-flex; align-items:center; gap:6px; }
+  .wh-btn:hover { color:var(--accent); border-color:var(--accent); }
+  .wh-btn:disabled { opacity:.5; cursor:default; }
+  .wh-page { max-width:1180px; margin:0 auto; padding:20px 24px 40px; width:100%; }
+  .wh-grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .wh-label { display:block; font-size:11px; font-weight:600; color:var(--text2); letter-spacing:.8px; text-transform:uppercase; margin-bottom:6px; }
+  .cb { position:relative; }
+  .cb input { width:100%; padding:11px 34px 11px 12px; background:var(--bg3); border:1.5px solid var(--border); border-radius:10px; color:var(--text); font-size:14px; outline:none; }
+  .cb input:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(217,119,87,.15); }
+  .cb .cb-clear { position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--text2); cursor:pointer; font-size:13px; display:none; }
+  .cb-list { position:absolute; left:0; right:0; top:calc(100% + 4px); background:var(--bg2); border:1px solid var(--border); border-radius:10px; box-shadow:var(--card-shadow); max-height:320px; overflow-y:auto; z-index:40; display:none; }
+  .cb-item { padding:9px 12px; cursor:pointer; border-bottom:1px solid rgba(217,119,87,.06); }
+  .cb-item:last-child { border-bottom:none; }
+  .cb-item.hl, .cb-item:hover { background:rgba(217,119,87,.09); }
+  .cb-item .t { font-size:13px; font-weight:600; }
+  .cb-item .s { font-size:11px; color:var(--text2); margin-top:1px; }
+  .cb-empty { padding:12px; font-size:12px; color:var(--text2); text-align:center; }
+  .wh-summary { display:flex; flex-wrap:wrap; gap:18px; margin-top:14px; padding:12px 14px; background:var(--bg3); border-radius:10px; font-size:12px; color:var(--text2); }
+  .wh-summary b { color:var(--text); font-size:13px; }
+  .scan-box { display:flex; gap:10px; }
+  .scan-box input { flex:1; padding:16px; font-size:20px; font-family:ui-monospace,Consolas,monospace; letter-spacing:1px; background:var(--bg3); border:2px solid var(--border); border-radius:12px; color:var(--text); outline:none; min-width:0; }
+  .scan-box input:focus { border-color:var(--accent); box-shadow:0 0 0 4px rgba(217,119,87,.15); }
+  .scan-box button { padding:0 22px; border:none; border-radius:12px; background:var(--bg3); border:1.5px solid var(--border); color:var(--text); font-weight:600; font-size:14px; cursor:pointer; }
+  .scan-box button:disabled { opacity:.5; cursor:default; }
+  .hint { margin:10px 0 0; font-size:12.5px; color:var(--text2); }
+  .fb { margin-top:12px; padding:11px 14px; border-radius:10px; font-size:13.5px; font-weight:600; display:none; align-items:flex-start; gap:10px; }
+  .fb.ok   { display:flex; background:rgba(79,174,138,.13); color:var(--accent2); border:1px solid rgba(79,174,138,.35); }
+  .fb.dup  { display:flex; background:rgba(240,180,41,.13); color:#c9930b; border:1px solid rgba(240,180,41,.4); }
+  .fb.info { display:flex; background:rgba(64,160,255,.12); color:#2f8de4; border:1px solid rgba(64,160,255,.35); }
+  .fb.err  { display:flex; background:rgba(229,72,77,.12); color:var(--danger); border:1px solid rgba(229,72,77,.35); }
+  .fb .small { font-weight:400; font-size:12px; margin-top:3px; color:var(--text2); }
+  .tbl { width:100%; border-collapse:collapse; }
+  .tbl th { text-align:left; font-size:10.5px; color:var(--text2); text-transform:uppercase; letter-spacing:.6px; padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  .tbl td { padding:8px 10px; border-bottom:1px solid rgba(217,119,87,.06); font-size:13px; vertical-align:middle; }
+  .tbl tr.bad td { background:rgba(229,72,77,.05); }
+  .tbl tr.warn td { background:rgba(240,180,41,.06); }
+  .mono { font-family:ui-monospace,Consolas,monospace; font-weight:600; word-break:break-all; }
+  .num { text-align:right; white-space:nowrap; }
+  .chip { display:inline-block; font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:10px; white-space:nowrap; }
+  .chip.ok { background:rgba(79,174,138,.14); color:var(--accent2); }
+  .chip.warn { background:rgba(240,180,41,.16); color:#c9930b; }
+  .chip.bad { background:rgba(229,72,77,.13); color:var(--danger); }
+  .chip.wait { background:var(--bg3); color:var(--text2); }
+  .sub { font-size:11px; color:var(--text2); margin-top:2px; font-weight:400; }
+  .ib { background:none; border:1px solid var(--border); color:var(--text2); border-radius:7px; padding:5px 8px; cursor:pointer; font-size:12px; }
+  .ib:hover { color:var(--accent); border-color:var(--accent); }
+  .ib.del:hover { color:var(--danger); border-color:var(--danger); }
+  .edit-in { width:100%; min-width:140px; padding:6px 8px; border:1.5px solid var(--accent); border-radius:7px; background:var(--bg3); color:var(--text); font-family:ui-monospace,Consolas,monospace; font-size:13px; outline:none; }
+  select.prod { max-width:240px; width:100%; padding:5px 6px; border:1px solid var(--border); border-radius:7px; background:var(--bg3); color:var(--text); font-size:12px; }
+  .bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .count { font-size:28px; font-weight:800; line-height:1; }
+  .btn-save { padding:11px 20px; border:none; border-radius:10px; background:linear-gradient(135deg,#D97757,#5a52e0); color:#fff; font-weight:700; font-size:14px; cursor:pointer; display:inline-flex; align-items:center; gap:8px; }
+  .btn-save:disabled { opacity:.45; cursor:default; }
+  .placeholder { text-align:center; padding:30px 20px; color:var(--text2); font-size:13px; }
+  .prog { height:6px; border-radius:4px; background:var(--bg3); overflow:hidden; min-width:60px; }
+  .prog > i { display:block; height:100%; background:var(--accent2); }
+  @media (max-width: 760px) {
+    .wh-top { padding:10px 12px; gap:8px; flex-wrap:nowrap; }
+    .wh-title { font-size:14px; white-space:nowrap; }
+    .wh-sub { display:none; }
+    .wh-btn { padding:7px 9px; }
+    .wh-page { padding:14px 12px 30px; }
+    .wh-grid2 { grid-template-columns:1fr; }
+    .scan-box input { font-size:17px; padding:14px; }
+    .scan-box button { padding:0 14px; }
+    .hide-sm { display:none; }
+    .btn-save { width:100%; justify-content:center; }
+  }
+</style>
+
+<div style="display:flex;flex-direction:column;min-height:100vh;width:100%">
+  <div class="wh-top">
+    <div class="wh-logo">P</div>
+    <div>
+      <div class="wh-title">PLATINA · Warehouse</div>
+      <div class="wh-sub">Barcode scanning</div>
+    </div>
+    <div style="flex:1"></div>
+    <span style="font-size:12px;color:var(--text2)" class="hide-sm"><i class="fas fa-user"></i> <%= displayName %></span>
+    <% if (isAdmin) { %><a class="wh-btn" href="/" title="Back to the main dashboard"><i class="fas fa-chart-pie"></i><span class="hide-sm">Dashboard</span></a><% } %>
+    <button class="wh-btn" id="refreshBtn" onclick="refreshOrders()" title="Fetch the newest orders from MoySklad"><i class="fas fa-rotate-right" id="refreshIcon"></i><span class="hide-sm">Refresh orders</span></button>
+    <button class="wh-btn" id="themeToggle" onclick="toggleTheme()" title="Toggle theme"><i class="fas fa-sun"></i></button>
+    <a class="wh-btn" href="/logout" title="Sign out" onclick="return confirmLeave()"><i class="fas fa-right-from-bracket"></i></a>
+  </div>
+
+  <div class="wh-page">
+    <div class="card">
+      <div class="card-title"><i class="fas fa-file-invoice"></i> Select order</div>
+      <div class="wh-grid2">
+        <div>
+          <label class="wh-label" for="custInput">Customer</label>
+          <div class="cb" id="custCb">
+            <input id="custInput" type="text" placeholder="Loading customers…" autocomplete="off" disabled>
+            <button class="cb-clear" type="button" title="Clear"><i class="fas fa-xmark"></i></button>
+            <div class="cb-list"></div>
+          </div>
+        </div>
+        <div>
+          <label class="wh-label" for="orderInput">Sales order / PO number</label>
+          <div class="cb" id="orderCb">
+            <input id="orderInput" type="text" placeholder="Loading orders…" autocomplete="off" disabled>
+            <button class="cb-clear" type="button" title="Clear"><i class="fas fa-xmark"></i></button>
+            <div class="cb-list"></div>
+          </div>
+        </div>
+      </div>
+      <div class="wh-summary" id="orderSummary" style="display:none"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fas fa-barcode"></i> Scan</div>
+      <form class="scan-box" id="scanForm" autocomplete="off">
+        <input id="scanInput" type="text" placeholder="Select an order first" disabled spellcheck="false">
+        <button type="submit" id="scanBtn" disabled title="Add to list"><i class="fas fa-plus"></i> <span class="hide-sm">Add</span></button>
+      </form>
+      <div class="hint"><i class="fas fa-circle-info"></i> Scan cartons one after another. They're collected in the list below — <b>nothing is saved until you press "Save all to database"</b>.</div>
+      <div class="fb" id="feedback"></div>
+    </div>
+
+    <div class="card">
+      <div class="bar">
+        <div>
+          <div class="card-title" style="margin-bottom:6px"><i class="fas fa-list-check"></i> Scanned — not saved yet</div>
+          <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+            <span class="count" id="batchCount">0</span><span style="font-size:13px;color:var(--text2)" id="batchStats">codes scanned</span>
+          </div>
+        </div>
+        <div style="flex:1"></div>
+        <button class="wh-btn" id="clearBtn" onclick="clearBatch()" disabled><i class="fas fa-trash-can"></i> Clear all</button>
+        <button class="btn-save" id="saveBtn" onclick="saveAll()" disabled><i class="fas fa-database" id="saveIcon"></i> <span id="saveText">Save all to database</span></button>
+      </div>
+      <div id="batchWrap" class="placeholder">Select an order, then start scanning.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fas fa-circle-check" style="color:var(--accent2)"></i> Saved to database for this order <span id="savedCount" style="margin-left:6px;font-weight:700;color:var(--text)"></span></div>
+      <div id="savedWrap" class="placeholder">No order selected.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fas fa-boxes-stacked"></i> Products in this order</div>
+      <div id="linesWrap" class="placeholder">Select an order to see its products.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var ME = <%- JSON.stringify(String(username || '')) %>;
+  var IS_ADMIN = <%- isAdmin ? 'true' : 'false' %>;
+  var STORE_KEY = 'wh_batch_v1_';
+  var ORDERS = [], ORDER = null, BATCH = [], saving = false;
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function rub(n) { return n == null ? '—' : '₽' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
+  function when(iso) { var d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+  // Same cleanup as the server: drop control characters some scanners add.
+  function norm(s) { return String(s || '').replace(/[\x00-\x1F\x7F]/g, '').trim(); }
+
+  // Every call goes through here so an expired session (the server answers
+  // with the login page) shows a clear message instead of failing silently.
+  function api(url, opts) {
+    return fetch(url, opts).then(function (r) {
+      var ct = r.headers.get('content-type') || '';
+      if (r.redirected || ct.indexOf('application/json') === -1) throw new Error('Your session has expired. Your scans are kept — reload the page, log in again, and press Save.');
+      return r.json().then(function (d) { if (!r.ok && !d.error) d.error = 'Request failed (' + r.status + ').'; return d; });
+    });
+  }
+  function post(url, body) { return api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }); }
+
+  // ── Sound feedback (scanners are used without looking at the screen) ──
+  var actx = null;
+  function beep(kind) {
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      var o = actx.createOscillator(), g = actx.createGain();
+      o.type = kind === 'ok' ? 'sine' : 'square';
+      o.frequency.value = kind === 'ok' ? 1200 : kind === 'info' ? 880 : 220;
+      g.gain.value = 0.08; o.connect(g); g.connect(actx.destination);
+      o.start(); o.stop(actx.currentTime + (kind === 'ok' ? 0.08 : kind === 'info' ? 0.12 : 0.3));
+    } catch (_) {}
+  }
+  function feedback(kind, title, small, silent) {
+    var el = document.getElementById('feedback');
+    var icon = { ok: 'fa-circle-check', dup: 'fa-triangle-exclamation', info: 'fa-circle-info', err: 'fa-circle-xmark' }[kind];
+    el.className = 'fb ' + kind;
+    el.innerHTML = '<i class="fas ' + icon + '" style="margin-top:2px"></i><div>' + esc(title) + (small ? '<div class="small">' + esc(small) + '</div>' : '') + '</div>';
+    if (!silent) beep(kind === 'dup' ? 'err' : kind);
+  }
+
+  // ── Searchable dropdown ──────────────────────────────────────────────────
+  function Combo(rootId, opts) {
+    var root = document.getElementById(rootId), input = root.querySelector('input'),
+        list = root.querySelector('.cb-list'), clear = root.querySelector('.cb-clear');
+    var items = [], shown = [], hl = -1, selected = null;
+    function render() {
+      var q = input.value.trim().toLowerCase();
+      shown = items.filter(function (it) { return !q || it.search.indexOf(q) !== -1; }).slice(0, 200);
+      hl = shown.length ? 0 : -1;
+      list.innerHTML = shown.length ? shown.map(function (it, i) {
+        return '<div class="cb-item' + (i === hl ? ' hl' : '') + '" data-i="' + i + '"><div class="t">' + esc(it.label) + '</div>' + (it.sub ? '<div class="s">' + esc(it.sub) + '</div>' : '') + '</div>';
+      }).join('') : '<div class="cb-empty">No matches</div>';
+      list.style.display = 'block';
+    }
+    function move(d) {
+      if (!shown.length) return;
+      hl = (hl + d + shown.length) % shown.length;
+      Array.prototype.forEach.call(list.children, function (c, i) { c.classList.toggle('hl', i === hl); });
+      var el = list.children[hl]; if (el) el.scrollIntoView({ block: 'nearest' });
+    }
+    function pick(it, silent) {
+      selected = it; input.value = it ? it.label : '';
+      clear.style.display = it ? 'block' : 'none';
+      list.style.display = 'none';
+      if (!silent) opts.onPick(it);
+    }
+    input.addEventListener('focus', function () { input.select(); render(); });
+    input.addEventListener('input', render);
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); if (hl >= 0 && shown[hl]) pick(shown[hl]); }
+      else if (e.key === 'Escape') { list.style.display = 'none'; input.value = selected ? selected.label : ''; }
+    });
+    input.addEventListener('blur', function () { setTimeout(function () { list.style.display = 'none'; input.value = selected ? selected.label : ''; }, 150); });
+    list.addEventListener('mousedown', function (e) {
+      var row = e.target.closest('.cb-item'); if (!row) return;
+      e.preventDefault(); pick(shown[+row.dataset.i]);
+    });
+    clear.addEventListener('click', function () { pick(null); input.focus(); });
+    return {
+      setItems: function (arr) { items = arr; },
+      set: function (it) { pick(it, true); },
+      get: function () { return selected; },
+      enable: function (placeholder) { input.disabled = false; input.placeholder = placeholder; },
+    };
+  }
+
+  var custCb = Combo('custCb', { onPick: function (c) {
+    rebuildOrderItems();
+    var o = orderCb.get();
+    if (c && o && o.order.customerId !== c.id) { orderCb.set(null); selectOrder(null); }
+    if (c) document.getElementById('orderInput').focus();
+  } });
+  var orderCb = Combo('orderCb', { onPick: function (it) {
+    if (!it) { selectOrder(null); return; }
+    var c = customerItems().find(function (x) { return x.id === it.order.customerId; });
+    custCb.set(c || null);   // the order decides the customer
+    selectOrder(it.order.id);
+  } });
+
+  function customerItems() {
+    var seen = {}, out = [];
+    ORDERS.forEach(function (o) {
+      if (!o.customerId) return;
+      if (!seen[o.customerId]) { seen[o.customerId] = { id: o.customerId, label: o.customerName, search: o.customerName.toLowerCase(), n: 0 }; out.push(seen[o.customerId]); }
+      seen[o.customerId].n++;
+    });
+    out.forEach(function (c) { c.sub = c.n + ' order' + (c.n === 1 ? '' : 's'); });
+    return out.sort(function (a, b) { return a.label.localeCompare(b.label); });
+  }
+  function rebuildOrderItems() {
+    var c = custCb.get();
+    orderCb.setItems(ORDERS.filter(function (o) { return !c || o.customerId === c.id; }).map(function (o) {
+      var pending = loadBatch(o.id).length;
+      return { order: o, label: o.name + ' · ' + o.customerName,
+               sub: o.date + ' · ' + o.state + ' · ' + rub(o.sum) + (o.scanned ? ' · ' + o.scanned + ' saved' : '') + (pending ? ' · ' + pending + ' NOT SAVED' : ''),
+               search: (o.name + ' ' + o.customerName + ' ' + o.state).toLowerCase() };
+    }));
+  }
+  function setOrders(orders) {
+    ORDERS = orders;
+    custCb.setItems(customerItems());
+    rebuildOrderItems();
+    custCb.enable('Search customer…');
+    orderCb.enable('Search order number or customer…');
+  }
+
+  // ── Batch: kept in this browser per order until saved ────────────────────
+  function loadBatch(orderId) { try { return JSON.parse(localStorage.getItem(STORE_KEY + orderId) || '[]'); } catch (_) { return []; } }
+  function storeBatch() {
+    if (!ORDER) return;
+    try { BATCH.length ? localStorage.setItem(STORE_KEY + ORDER.id, JSON.stringify(BATCH)) : localStorage.removeItem(STORE_KEY + ORDER.id); } catch (_) {}
+  }
+
+  // Status of each batch row: duplicates within the list (the earlier scan
+  // wins), and the server's verdict (already saved / product barcode).
+  function statusOf(it, firstIdx) {
+    if (it.error) return { cls: 'bad', chip: 'Error', text: it.error };
+    if (firstIdx[it.barcode] !== it.id) return { cls: 'warn', chip: 'Duplicate', text: 'Already in this list — will be skipped' };
+    if (it.existing) return { cls: 'bad', chip: 'Already saved', text: 'Saved earlier for order ' + (it.existing.orderName || '?') + ' · ' + (it.existing.customerName || '') + ' — by ' + (it.existing.scannedBy || '?') + ', ' + when(it.existing.scannedAt) };
+    if (it.productCode) return { cls: 'bad', chip: 'Product barcode', text: 'This is the product barcode of ' + it.productCode + ', not a carton label' };
+    if (!it.checked) return { cls: '', chip: 'Checking…', text: '' };
+    return { cls: '', chip: 'Ready', text: '' };
+  }
+  function firstIndexMap() { var m = {}; BATCH.forEach(function (it) { if (!(it.barcode in m)) m[it.barcode] = it.id; }); return m; }
+  function readyItems() {
+    var f = firstIndexMap();
+    return BATCH.filter(function (it) { return statusOf(it, f).chip === 'Ready'; });
+  }
+
+  function productOptions(it) {
+    if (!ORDER || !ORDER.lines.length) return '';
+    if (ORDER.lines.length === 1) return '<span class="sub">' + esc(ORDER.lines[0].productName) + '</span>';
+    var sel = it.lineIndex == null ? '' : String(it.lineIndex);
+    return '<select class="prod" data-id="' + it.id + '" title="Optional — which product is in this carton">' +
+      '<option value=""' + (sel === '' ? ' selected' : '') + '>Whole order (not specified)</option>' +
+      ORDER.lines.map(function (l, i) { return '<option value="' + i + '"' + (sel === String(i) ? ' selected' : '') + '>' + esc(l.productName) + '</option>'; }).join('') +
+      '</select>';
+  }
+
+  function renderBatch() {
+    var wrap = document.getElementById('batchWrap');
+    var f = firstIndexMap(), ready = 0, problems = 0;
+    BATCH.forEach(function (it) { var s = statusOf(it, f); if (s.chip === 'Ready') ready++; else if (s.chip !== 'Checking…') problems++; });
+    document.getElementById('batchCount').textContent = BATCH.length;
+    document.getElementById('batchStats').innerHTML = 'code' + (BATCH.length === 1 ? '' : 's') + ' scanned' +
+      (BATCH.length ? ' · <b style="color:var(--accent2)">' + ready + ' ready to save</b>' + (problems ? ' · <b style="color:var(--danger)">' + problems + ' need attention</b>' : '') : '');
+    document.getElementById('saveBtn').disabled = saving || !ready;
+    document.getElementById('clearBtn').disabled = saving || !BATCH.length;
+    document.getElementById('saveText').textContent = ready ? 'Save ' + ready + ' to database' : 'Save all to database';
+    if (!ORDER) { wrap.className = 'placeholder'; wrap.textContent = 'Select an order, then start scanning.'; return; }
+    if (!BATCH.length) { wrap.className = 'placeholder'; wrap.textContent = 'Nothing scanned yet. Scan the first carton.'; return; }
+    wrap.className = '';
+    var rows = BATCH.slice().reverse();   // newest first
+    wrap.innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>#</th><th>Barcode</th><th>Product <span class="sub" style="text-transform:none;letter-spacing:0">(optional)</span></th><th>Status</th><th></th></tr></thead><tbody>' +
+      rows.map(function (it) {
+        var s = statusOf(it, f), n = BATCH.indexOf(it) + 1;
+        var chipCls = s.chip === 'Ready' ? 'ok' : s.chip === 'Checking…' ? 'wait' : s.cls === 'warn' ? 'warn' : 'bad';
+        var codeCell = it.editing
+          ? '<input class="edit-in" data-id="' + it.id + '" value="' + esc(it.barcode) + '">'
+          : '<span class="mono">' + esc(it.barcode) + '</span>';
+        return '<tr class="' + s.cls + '">' +
+          '<td style="color:var(--text2);width:34px">' + n + '</td>' +
+          '<td>' + codeCell + '</td>' +
+          '<td>' + productOptions(it) + '</td>' +
+          '<td><span class="chip ' + chipCls + '">' + esc(s.chip) + '</span>' + (s.text ? '<div class="sub">' + esc(s.text) + '</div>' : '') + '</td>' +
+          '<td class="num">' + (it.editing
+            ? '<button class="ib" data-act="ok" data-id="' + it.id + '" title="Apply"><i class="fas fa-check"></i></button> <button class="ib" data-act="cancel" data-id="' + it.id + '" title="Cancel"><i class="fas fa-xmark"></i></button>'
+            : '<button class="ib" data-act="edit" data-id="' + it.id + '" title="Edit"><i class="fas fa-pen"></i></button> <button class="ib del" data-act="del" data-id="' + it.id + '" title="Delete"><i class="fas fa-trash-can"></i></button>') +
+          '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    var editIn = wrap.querySelector('.edit-in');
+    if (editIn) { editIn.focus(); editIn.select(); }
+  }
+  function byId(id) { return BATCH.find(function (it) { return it.id === id; }); }
+
+  document.getElementById('batchWrap').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-act]'); if (!b || saving) return;
+    var it = byId(+b.dataset.id); if (!it) return;
+    if (b.dataset.act === 'del') { BATCH.splice(BATCH.indexOf(it), 1); storeBatch(); renderBatch(); focusScan(); }
+    else if (b.dataset.act === 'edit') { BATCH.forEach(function (x) { x.editing = false; }); it.editing = true; renderBatch(); }
+    else if (b.dataset.act === 'cancel') { it.editing = false; renderBatch(); focusScan(); }
+    else if (b.dataset.act === 'ok') applyEdit(it);
+  });
+  document.getElementById('batchWrap').addEventListener('keydown', function (e) {
+    if (!e.target.classList.contains('edit-in')) return;
+    var it = byId(+e.target.dataset.id);
+    if (e.key === 'Enter') { e.preventDefault(); applyEdit(it); }
+    else if (e.key === 'Escape') { it.editing = false; renderBatch(); focusScan(); }
+  });
+  document.getElementById('batchWrap').addEventListener('change', function (e) {
+    if (!e.target.classList.contains('prod')) return;
+    var it = byId(+e.target.dataset.id); if (!it) return;
+    it.lineIndex = e.target.value === '' ? null : +e.target.value;
+    it.assortmentHref = it.lineIndex == null ? null : ORDER.lines[it.lineIndex].assortmentHref;
+    storeBatch(); focusScan();
+  });
+  function applyEdit(it) {
+    var inp = document.querySelector('.edit-in[data-id="' + it.id + '"]');
+    var code = norm(inp ? inp.value : it.barcode);
+    if (!code) { feedback('err', 'The barcode can\'t be empty — use Delete to remove the row.'); return; }
+    it.editing = false;
+    if (code !== it.barcode) { it.barcode = code; it.checked = false; it.existing = null; it.productCode = null; it.error = null; queueCheck(it); }
+    storeBatch(); renderBatch(); focusScan();
+  }
+
+  // Server check (already saved? product barcode?) — batched so a fast
+  // scanner doesn't fire one request per code.
+  var checkQueue = [], checkTimer = null, quietIds = {};
+  function queueCheck(it, quiet) {
+    if (quiet) quietIds[it.id] = true;   // re-checks after a save: mark rows, keep the save message on screen
+    checkQueue.push(it.id);
+    clearTimeout(checkTimer);
+    checkTimer = setTimeout(runChecks, 200);
+  }
+  function runChecks() {
+    var ids = checkQueue.splice(0), items = ids.map(byId).filter(Boolean);
+    if (!items.length || !ORDER) return;
+    var orderId = ORDER.id;
+    post('/api/warehouse/check', { orderId: orderId, codes: items.map(function (it) { return it.barcode; }) }).then(function (d) {
+      if (!d.ok) throw new Error(d.error);
+      if (!ORDER || ORDER.id !== orderId) return;
+      var bad = null;
+      items.forEach(function (it) {
+        it.checked = true;
+        it.existing = d.existing[it.barcode] || null;
+        it.productCode = d.productCodes[it.barcode] || null;
+        if ((it.existing || it.productCode) && !quietIds[it.id]) bad = it;
+        delete quietIds[it.id];
+      });
+      storeBatch(); renderBatch();
+      if (bad) feedback('dup', bad.existing ? 'Already saved: ' + bad.barcode : 'Product barcode: ' + bad.barcode,
+        bad.existing ? 'This code is already in the database (order ' + bad.existing.orderName + '). It won\'t be saved again.' : 'This is the product barcode of ' + bad.productCode + ', not a carton label. Delete it or scan the carton label.');
+    }).catch(function (e) { items.forEach(function (it) { it.checked = true; }); renderBatch(); feedback('err', 'Could not check codes: ' + e.message); });
+  }
+
+  // ── Scanning: add to the list, never straight to the database ────────────
+  function focusScan() { var i = document.getElementById('scanInput'); if (!i.disabled) i.focus(); }
+  document.getElementById('scanForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var inp = document.getElementById('scanInput'), code = norm(inp.value);
+    inp.value = '';
+    if (!code || !ORDER) return;
+    var dupe = BATCH.some(function (it) { return it.barcode === code; });
+    var it = { id: Date.now() * 1000 + Math.floor(Math.random() * 1000), barcode: code, lineIndex: null, assortmentHref: null, checked: false };
+    BATCH.push(it); storeBatch(); renderBatch();
+    if (dupe) feedback('dup', 'Scanned twice: ' + code, 'This code is already in the list — the second copy won\'t be saved.');
+    else feedback('ok', 'Added: ' + code, BATCH.length + ' scanned so far — press "Save all to database" when finished.');
+    queueCheck(it);
+  });
+
+  window.saveAll = function () {
+    var items = readyItems();
+    if (!items.length || saving || !ORDER) return;
+    saving = true; renderBatch();
+    var orderId = ORDER.id, icon = document.getElementById('saveIcon');
+    icon.className = 'fas fa-spinner fa-spin';
+    var chunks = [];
+    for (var i = 0; i < items.length; i += 200) chunks.push(items.slice(i, i + 200));
+    var saved = 0, problems = 0;
+    var run = chunks.reduce(function (p, chunk) {
+      return p.then(function () {
+        return post('/api/warehouse/save', { orderId: orderId, items: chunk.map(function (it) { return { barcode: it.barcode, lineIndex: it.lineIndex, assortmentHref: it.assortmentHref }; }) })
+          .then(function (d) {
+            if (!d.ok) throw new Error(d.error || 'Save failed.');
+            d.results.forEach(function (r) {
+              var it = chunk.find(function (x) { return x.barcode === r.barcode; }); if (!it) return;
+              if (r.status === 'saved') { BATCH.splice(BATCH.indexOf(it), 1); saved++; }
+              else {
+                problems++;
+                if (r.status === 'already_saved') it.existing = r.existing || { orderName: '?' };
+                else if (r.status === 'product_code') it.productCode = r.productName;
+                else it.error = r.error || 'Not saved.';
+              }
+            });
+            storeBatch(); renderBatch();
+          });
+      });
+    }, Promise.resolve());
+    run.then(function () {
+      if (problems) feedback('dup', 'Saved ' + saved + ' code' + (saved === 1 ? '' : 's') + '. ' + problems + ' could not be saved', 'They are still in the list, marked in red — fix or delete them.');
+      else feedback('ok', 'Saved ' + saved + ' code' + (saved === 1 ? '' : 's') + ' to the database.', 'Order ' + ORDER.name + ' · ' + ORDER.customerName);
+    }).catch(function (e) {
+      feedback('err', (saved ? 'Saved ' + saved + ' before an error: ' : 'Not saved: ') + e.message, 'Everything not yet saved is still in the list. Try again.');
+    }).then(function () {
+      saving = false; icon.className = 'fas fa-database';
+      // What's left may now clash with codes that were just saved (e.g. the
+      // second copy of a code scanned twice) — check it all again.
+      BATCH.forEach(function (it) { it.checked = false; queueCheck(it, true); });
+      renderBatch();
+      return reloadOrder();
+    });
+  };
+
+  window.clearBatch = function () {
+    if (!BATCH.length || !confirm('Remove all ' + BATCH.length + ' scanned codes from the list? (Nothing has been saved yet.)')) return;
+    BATCH = []; storeBatch(); renderBatch(); focusScan();
+  };
+
+  // ── Order details: saved list + products ──────────────────────────────────
+  function selectOrder(id) {
+    ORDER = null; BATCH = [];
+    document.getElementById('feedback').className = 'fb';
+    if (!id) { renderAll(); setScanEnabled(false); return; }
+    document.getElementById('linesWrap').className = 'placeholder';
+    document.getElementById('linesWrap').innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading order…';
+    api('/api/warehouse/orders/' + encodeURIComponent(id)).then(function (d) {
+      if (!d.ok) throw new Error(d.error);
+      ORDER = d.order;
+      BATCH = loadBatch(ORDER.id).map(function (it) { it.editing = false; return it; });
+      renderAll(); setScanEnabled(true); focusScan();
+      if (BATCH.length) {
+        feedback('info', BATCH.length + ' unsaved code' + (BATCH.length === 1 ? '' : 's') + ' restored for this order', 'They were scanned earlier on this device and not saved yet.');
+        BATCH.forEach(function (it) { it.checked = false; queueCheck(it); });
+      }
+    }).catch(function (e) { feedback('err', e.message); renderAll(); setScanEnabled(false); });
+  }
+  function reloadOrder() {
+    if (!ORDER) return;
+    return api('/api/warehouse/orders/' + encodeURIComponent(ORDER.id)).then(function (d) {
+      if (d.ok) { ORDER = d.order; renderAll(); var o = ORDERS.find(function (x) { return x.id === ORDER.id; }); if (o) { o.scanned = ORDER.savedCount; rebuildOrderItems(); } }
+    }).catch(function () {});
+  }
+  function setScanEnabled(on) {
+    var inp = document.getElementById('scanInput');
+    inp.disabled = !on; document.getElementById('scanBtn').disabled = !on;
+    inp.placeholder = on ? 'Scan carton barcode (or type it and press Enter)' : 'Select an order first';
+  }
+  function renderAll() { renderSummary(); renderBatch(); renderSaved(); renderLines(); }
+  function renderSummary() {
+    var s = document.getElementById('orderSummary');
+    if (!ORDER) { s.style.display = 'none'; return; }
+    s.style.display = 'flex';
+    s.innerHTML =
+      '<div>Order<br><b>' + esc(ORDER.name) + '</b></div>' +
+      '<div>Customer<br><b>' + esc(ORDER.customerName) + '</b></div>' +
+      '<div>Date<br><b>' + esc(ORDER.date) + '</b></div>' +
+      '<div>Status<br><b>' + esc(ORDER.state) + '</b></div>' +
+      '<div>Order total<br><b>' + rub(ORDER.sum) + '</b></div>' +
+      '<div>Saved codes<br><b>' + ORDER.savedCount + '</b></div>';
+  }
+  function renderSaved() {
+    var wrap = document.getElementById('savedWrap'), cnt = document.getElementById('savedCount');
+    if (!ORDER) { cnt.textContent = ''; wrap.className = 'placeholder'; wrap.textContent = 'No order selected.'; return; }
+    cnt.textContent = '(' + ORDER.savedCount + ')';
+    var rows = ORDER.savedScans || [];
+    if (!rows.length) { wrap.className = 'placeholder'; wrap.textContent = 'Nothing saved for this order yet.'; return; }
+    wrap.className = '';
+    var dayAgo = Date.now() - 24 * 3600 * 1000;
+    wrap.innerHTML = '<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table class="tbl"><thead><tr><th>Barcode</th><th>Product</th><th class="hide-sm">Saved</th><th></th></tr></thead><tbody>' +
+      rows.map(function (s) {
+        var canUndo = IS_ADMIN || (s.scannedBy === ME && new Date(s.scannedAt).getTime() > dayAgo);
+        return '<tr><td class="mono">' + esc(s.barcode) + '</td><td>' + (s.productName ? esc(s.productName) + '<div class="sub">' + rub(s.unitPrice) + '</div>' : '<span class="sub">Whole order</span>') + '</td>' +
+          '<td class="hide-sm sub">' + esc(when(s.scannedAt)) + ' · ' + esc(s.scannedBy) + '</td>' +
+          '<td class="num">' + (canUndo ? '<button class="ib del" data-undo="' + s.id + '" title="Remove from database"><i class="fas fa-rotate-left"></i> Undo</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      (ORDER.savedCount > rows.length ? '<div class="sub" style="margin-top:6px">Showing the latest ' + rows.length + ' of ' + ORDER.savedCount + '.</div>' : '');
+  }
+  document.getElementById('savedWrap').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-undo]'); if (!b) return;
+    if (!confirm('Remove this saved barcode from the database?')) return;
+    post('/api/warehouse/scan/' + b.dataset.undo + '/delete').then(function (d) {
+      if (!d.ok) throw new Error(d.error || 'Could not remove it.');
+      feedback('info', 'Removed from the database.', '', true);
+      return reloadOrder();
+    }).catch(function (e) { feedback('err', e.message); });
+  });
+  function renderLines() {
+    var wrap = document.getElementById('linesWrap');
+    if (!ORDER) { wrap.className = 'placeholder'; wrap.textContent = 'Select an order to see its products.'; return; }
+    if (!ORDER.lines.length) { wrap.className = 'placeholder'; wrap.textContent = 'This order has no products.'; return; }
+    wrap.className = '';
+    var linked = ORDER.lines.reduce(function (a, l) { return a + l.scanned; }, 0), whole = ORDER.savedCount - linked;
+    wrap.innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Product</th><th class="num">Qty</th><th class="num">Price</th><th class="hide-sm">Saved for this product</th></tr></thead><tbody>' +
+      ORDER.lines.map(function (l) {
+        var pct = l.quantity > 0 ? Math.min(100, Math.round(l.scanned / l.quantity * 100)) : 0;
+        return '<tr><td><div style="font-weight:600">' + esc(l.productName) + '</div>' + (l.codes.length ? '<div class="sub">EAN ' + esc(l.codes.join(', ')) + '</div>' : '') + '</td>' +
+          '<td class="num">' + l.quantity + '</td><td class="num">' + rub(l.unitPrice) + (l.discount ? '<div class="sub">−' + l.discount + '%</div>' : '') + '</td>' +
+          '<td class="hide-sm" style="min-width:110px"><div style="font-size:12px;margin-bottom:4px"><b>' + l.scanned + '</b> / ' + l.quantity + '</div><div class="prog"><i style="width:' + pct + '%"></i></div></td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      (whole > 0 ? '<div class="sub" style="margin-top:8px">+ ' + whole + ' saved code' + (whole === 1 ? '' : 's') + ' for the whole order (product not specified).</div>' : '');
+  }
+
+  // Keep the scan box focused so a physical scanner always types into it.
+  document.addEventListener('keydown', function (e) {
+    var inp = document.getElementById('scanInput'), a = document.activeElement;
+    if (inp.disabled || a === inp || (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT'))) return;
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) inp.focus();
+  });
+  window.addEventListener('beforeunload', function (e) { if (BATCH.length) { e.preventDefault(); e.returnValue = ''; } });
+  window.confirmLeave = function () { return !BATCH.length || confirm(BATCH.length + ' scanned codes are not saved yet. They will stay on this device for later. Sign out anyway?'); };
+
+  window.refreshOrders = function () {
+    var btn = document.getElementById('refreshBtn'), icon = document.getElementById('refreshIcon');
+    btn.disabled = true; icon.classList.add('fa-spin');
+    post('/api/warehouse/refresh').then(function (d) {
+      if (!d.ok) throw new Error(d.error);
+      setOrders(d.orders);
+      feedback('info', 'Orders updated from MoySklad (' + d.orders.length + ' orders).', '', true);
+      return reloadOrder();
+    }).catch(function (e) { feedback('err', e.message); })
+      .then(function () { btn.disabled = false; icon.classList.remove('fa-spin'); });
+  };
+
+  api('/api/warehouse/orders').then(function (d) {
+    if (!d.ok) throw new Error(d.error);
+    setOrders(d.orders);
+    document.getElementById('orderInput').focus();
+  }).catch(function (e) { feedback('err', e.message); });
+})();
+</script>
+</body>
+</html>
