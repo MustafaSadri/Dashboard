@@ -1,0 +1,153 @@
+<%- include('partials/head') %>
+<%- include('partials/sidebar') %>
+<div class="main">
+  <%- include('partials/header', {pageTitle: 'Commission'}) %>
+  <div class="page">
+    <%
+      var R = report, T = report.totals, RU = report.rules;
+      var rub = function (n, d) { return n == null ? '—' : (n < 0 ? '−₽' : '₽') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }); };
+      var monthLabel = (months.find(function (m) { return m.key === R.month; }) || { label: R.month }).label;
+    %>
+    <style>
+      .cm-tabs { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+      .cm-tab { padding:9px 16px; border-radius:10px; border:1px solid var(--border); font-size:13px; font-weight:600; color:var(--text2); background:var(--bg2); }
+      .cm-tab.on { background:linear-gradient(135deg,#D97757,#5a52e0); color:#fff; border-color:transparent; }
+      .cm-tab.off { opacity:.55; cursor:not-allowed; }
+      .cm-month { margin-left:auto; padding:9px 12px; border-radius:10px; border:1.5px solid var(--border); background:var(--bg2); color:var(--text); font-size:14px; font-weight:600; outline:none; }
+      .cm-tbl { width:100%; border-collapse:collapse; }
+      .cm-tbl th { text-align:right; font-size:10.5px; color:var(--text2); text-transform:uppercase; letter-spacing:.5px; padding:9px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+      .cm-tbl th:first-child, .cm-tbl td:first-child { text-align:left; }
+      .cm-tbl td { text-align:right; padding:10px; border-bottom:1px solid rgba(217,119,87,.06); font-size:13px; white-space:nowrap; }
+      .cm-tbl tfoot td { font-weight:800; border-top:2px solid var(--border); border-bottom:none; font-size:14px; }
+      .cm-sub { font-size:10.5px; color:var(--text2); margin-top:2px; font-weight:400; }
+      .cm-type { font-size:10px; font-weight:700; padding:2px 7px; border-radius:8px; }
+      .cm-type.imp { background:rgba(64,160,255,.13); color:#2f8de4; }
+      .cm-type.loc { background:rgba(79,174,138,.14); color:var(--accent2); }
+      .neg { color:var(--danger) !important; }
+      .cm-model { cursor:pointer; }
+      .cm-model:hover td { background:rgba(217,119,87,.05); }
+      .cm-model.open td { background:rgba(217,119,87,.08); }
+      .cm-chev { color:var(--text2); font-size:11px; margin-right:6px; transition:transform .15s; display:inline-block; }
+      .cm-model.open .cm-chev { transform:rotate(90deg); }
+      .cm-detail > td { padding:4px 10px 16px 30px !important; background:rgba(217,119,87,.04); white-space:normal !important; text-align:left !important; }
+      .cm-po { width:100%; border-collapse:collapse; background:var(--bg2); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+      .cm-po th { font-size:10px; color:var(--text2); text-transform:uppercase; letter-spacing:.5px; padding:7px 10px; text-align:right; background:var(--bg3); white-space:nowrap; }
+      .cm-po td { padding:7px 10px; font-size:12.5px; text-align:right; border-top:1px solid rgba(217,119,87,.08); white-space:nowrap; }
+      .cm-po th:nth-child(-n+3), .cm-po td:nth-child(-n+3) { text-align:left; }
+      .cm-po tr.dim td { opacity:.55; }
+      .cm-st { font-size:10px; font-weight:700; padding:2px 7px; border-radius:8px; }
+      .cm-st.ok { background:rgba(79,174,138,.14); color:var(--accent2); }
+      .cm-st.later { background:var(--bg3); color:var(--text2); }
+      .cm-st.zero { background:rgba(240,180,41,.15); color:#c9930b; }
+      .cm-note { margin-top:12px; padding:10px 13px; border-radius:9px; font-size:12.5px; background:var(--bg3); color:var(--text2); line-height:1.6; }
+      @media (max-width: 760px) { .cm-month { margin-left:0; width:100%; } .cm-hide-sm { display:none; } }
+    </style>
+
+    <div class="cm-tabs">
+      <span class="cm-tab on"><i class="fas fa-handshake"></i> Babylon — Partner</span>
+      <span class="cm-tab off" title="Coming later"><i class="fas fa-user-tie"></i> Salesman Manager — coming soon</span>
+      <select class="cm-month" onchange="location.href='/admin/commission?month='+this.value" aria-label="Month">
+        <% months.forEach(function (m) { %><option value="<%= m.key %>" <%= m.key === R.month ? 'selected' : '' %>><%= m.label %></option><% }) %>
+      </select>
+    </div>
+
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
+      <div class="stat-card"><div class="stat-label">Total sales</div><div class="stat-value"><%- rub(T.revenue) %></div><div class="stat-sub"><%= monthLabel %></div><i class="fas fa-sack-dollar stat-icon"></i></div>
+      <div class="stat-card"><div class="stat-label">Total pcs shipped</div><div class="stat-value"><%= T.qty.toLocaleString('en-US') %></div><div class="stat-sub">from <%= T.shipments %> shipment<%= T.shipments === 1 ? '' : 's' %> in MoySklad</div><i class="fas fa-truck stat-icon"></i></div>
+      <div class="stat-card success"><div class="stat-label">Babylon commission</div><div class="stat-value <%= T.commission < 0 ? 'neg' : '' %>" style="color:var(--accent2)"><%- rub(T.commission) %></div><div class="stat-sub">from <%- rub(T.profit) %> profit</div><i class="fas fa-handshake stat-icon"></i></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fas fa-calculator"></i> Commission by model — <%= monthLabel %></div>
+      <% if (!R.models.length && !R.unpriced.length) { %>
+        <div style="text-align:center;padding:30px;color:var(--text2);font-size:13px">No sales in <%= monthLabel %>.</div>
+      <% } else { %>
+      <div style="overflow-x:auto">
+        <table class="cm-tbl">
+          <thead><tr><th>Model</th><th>Pcs sold</th><th>Sales</th><th>Purchase price / pc</th><th>Profit</th><th>Share</th><th>Commission</th></tr></thead>
+          <tbody>
+          <% R.models.forEach(function (m, i) { %>
+            <tr class="cm-model" data-i="<%= i %>" title="Click to see this model's purchase orders">
+              <td style="white-space:normal;min-width:200px"><i class="fas fa-chevron-right cm-chev"></i><span style="font-weight:600"><%= m.model %></span> <span class="cm-type <%= m.type === 'Imported' ? 'imp' : 'loc' %>"><%= m.type %></span></td>
+              <td><%= m.qty.toLocaleString('en-US') %></td>
+              <td><%- rub(m.revenue) %></td>
+              <td><%- rub(m.unitCost, 2) %><div class="cm-sub"><%= m.costNote %></div></td>
+              <td class="<%= m.profit < 0 ? 'neg' : '' %>"><%- rub(m.profit) %></td>
+              <td><%= m.share %>%</td>
+              <td style="font-weight:700;color:var(--accent2)" class="<%= m.commission < 0 ? 'neg' : '' %>"><%- rub(m.commission) %></td>
+            </tr>
+            <tr class="cm-detail" id="cmd-<%= i %>" style="display:none"><td colspan="7">
+              <div style="font-size:12px;color:var(--text2);margin:6px 0 8px">
+                <% if (m.type === 'Imported') { %>
+                  <i class="fas fa-ship"></i> Imported — purchase price is the fixed <b><%= m.costNote %> = <%- rub(m.unitCost, 2) %></b> per pc.<%= m.purchaseOrders.length ? ' Purchase orders below are for reference only.' : '' %>
+                <% } else { %>
+                  <i class="fas fa-calculator"></i> Purchase price used: <b><%- rub(m.unitCost, 2) %></b> per pc = weighted average of the orders marked <span class="cm-st ok">Counted</span> (total value ÷ total pcs).
+                <% } %>
+              </div>
+              <% if (!m.purchaseOrders.length) { %>
+                <div style="font-size:12.5px;color:var(--text2)">No purchase orders for this model in MoySklad.</div>
+              <% } else { %>
+              <div style="overflow-x:auto"><table class="cm-po">
+                <thead><tr><th>Purchase order</th><th>Date</th><th>Supplier</th><th>Pcs</th><th>Price / pc</th><th>Total</th><th style="text-align:center">In average</th></tr></thead>
+                <tbody>
+                <% m.purchaseOrders.forEach(function (p) { %>
+                  <tr class="<%= p.status === 'counted' || m.type === 'Imported' ? '' : 'dim' %>">
+                    <td style="font-weight:600"><%= p.po %></td><td><%= p.date %></td><td><%= p.supplier %></td>
+                    <td><%= p.qty.toLocaleString('en-US') %></td>
+                    <td><%- p.price == null ? '₽0' : rub(p.price, 2) %></td>
+                    <td><%- rub(p.total) %></td>
+                    <td style="text-align:center">
+                      <% if (m.type === 'Imported') { %><span class="cm-st later">Fixed $ price</span>
+                      <% } else if (p.status === 'counted') { %><span class="cm-st ok">Counted</span>
+                      <% } else if (p.status === 'after_month') { %><span class="cm-st later">After <%= monthLabel %></span>
+                      <% } else { %><span class="cm-st zero">No price — skipped</span><% } %>
+                    </td>
+                  </tr>
+                <% }) %>
+                </tbody>
+              </table></div>
+              <% } %>
+            </td></tr>
+          <% }) %>
+          </tbody>
+          <tfoot><tr>
+            <td>Total<% if (R.unpriced.length) { %><div class="cm-sub">models in the commission</div><% } %></td>
+            <td><%= R.models.reduce(function (a, m) { return a + m.qty; }, 0).toLocaleString('en-US') %></td>
+            <td><%- rub(R.models.reduce(function (a, m) { return a + m.revenue; }, 0)) %></td>
+            <td></td>
+            <td class="<%= T.profit < 0 ? 'neg' : '' %>"><%- rub(T.profit) %></td>
+            <td></td>
+            <td style="color:var(--accent2)" class="<%= T.commission < 0 ? 'neg' : '' %>"><%- rub(T.commission) %></td>
+          </tr></tfoot>
+        </table>
+      </div>
+      <% } %>
+
+      <% if (R.unpriced.length) { %>
+        <div class="cm-note" style="background:rgba(240,180,41,.12);color:#c9930b">
+          <b><i class="fas fa-triangle-exclamation"></i> Not in the commission — no purchase order found:</b>
+          <% R.unpriced.forEach(function (u, i) { %><%= i ? ' · ' : ' ' %><%= u.model %> (<%= u.qty.toLocaleString('en-US') %> pcs, <%- rub(u.revenue) %><%= u.purchaseOrders.length ? '; ' + u.purchaseOrders.length + ' purchase order' + (u.purchaseOrders.length === 1 ? '' : 's') + ' without a price' : '' %>)<% }) %>.
+          Create a purchase order for these in MoySklad and they'll be included automatically.
+        </div>
+      <% } %>
+
+      <div class="cm-note"><i class="fas fa-circle-info"></i>
+        <b>How it's calculated:</b> profit = sales − purchase price × pcs sold; commission = profit × share.
+        Imported models — <% Object.keys(RU.imported).forEach(function (k, i) { %><%= i ? ', ' : '' %><%= k %> $<%= RU.imported[k].usd %><% }) %> × <%= RU.rubPerUsd %> ₽/$ — Babylon gets <b><%= RU.shareImported %>%</b> of profit.
+        All other models use the average purchase price from MoySklad purchase orders up to the end of the month — Babylon gets <b><%= RU.shareLocal %>%</b> of profit.
+        Sales are MoySklad shipments (same as the Dashboard).
+      </div>
+    </div>
+  </div>
+
+<script>
+document.querySelectorAll('.cm-model').forEach(function (row) {
+  row.addEventListener('click', function () {
+    var d = document.getElementById('cmd-' + row.dataset.i), open = d.style.display === 'none';
+    d.style.display = open ? '' : 'none';
+    row.classList.toggle('open', open);
+  });
+});
+</script>
+
+<%- include('partials/foot') %>

@@ -404,6 +404,27 @@ app.post('/admin/users/:id/delete', requireAdmin, async (req, res) => {
   res.redirect('/admin/users');
 });
 
+// ── Commission (Admin only) ───────────────────────────────
+// Babylon (partner) for now; a salesman-manager commission comes later as
+// its own tab. See db/commission.js.
+const commission = require('./db/commission');
+app.get('/admin/commission', requireAdmin, async (req, res) => {
+  try {
+    const c = await common();
+    const now = new Date();
+    const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const month = commission.isMonth(req.query.month) ? req.query.month : curMonth;
+    const months = [];
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+                    label: d.toLocaleString('en', { month: 'long', year: 'numeric' }) });
+    }
+    const report = await commission.getReport(month);
+    res.render('commission', { ...c, active: 'admin-commission', report, months });
+  } catch (e) { res.status(500).render('error', { message: e.message }); }
+});
+
 // ── Barcode tracking: warehouse scanner + CRM lookup ──────
 // Self-contained module (db/barcodes.js, barcode_scans table). Reads the
 // MoySklad mirror, writes only barcode_scans.
