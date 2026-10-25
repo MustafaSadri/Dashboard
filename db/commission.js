@@ -174,4 +174,27 @@ async function getReport(month) {
   };
 }
 
-module.exports = { isMonth, getReport };
+// The shipments (with their sales order) that make up one model's pcs and
+// sales for the month — what the "Shipped sales" button lists.
+async function getShippedSales(month, model) {
+  const [from, to] = monthBounds(month);
+  const { rows } = await query(`
+    SELECT d.name AS shipment, to_char(d.moment, 'YYYY-MM-DD') AS date,
+           COALESCE(cp.name, d.customer_name, '—') AS customer, o.name AS order_name,
+           SUM(p.quantity) AS qty, SUM(p.amount_kopecks) AS amount
+    FROM ms_demand_positions p
+    JOIN ms_demands d ON d.id = p.demand_id
+    LEFT JOIN ms_counterparties cp ON cp.id = d.customer_id
+    LEFT JOIN ms_orders o ON o.id = d.order_id
+    WHERE d.moment >= $1 AND d.moment < $2
+      AND COALESCE(NULLIF(p.base_name, ''), p.product_name, '—') = $3
+    GROUP BY d.id, d.name, d.moment, cp.name, d.customer_name, o.name
+    ORDER BY d.moment DESC`, [from, to, model]);
+  return rows.map(r => {
+    const qty = Number(r.qty) || 0, amount = Number(r.amount) || 0;
+    return { shipment: r.shipment, date: r.date, customer: r.customer, order: r.order_name || null,
+             qty, price: qty ? amount / qty / 100 : null, amount: amount / 100 };
+  });
+}
+
+module.exports = { isMonth, getReport, getShippedSales };

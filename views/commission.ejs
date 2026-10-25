@@ -24,11 +24,22 @@
       .cm-type.imp { background:rgba(64,160,255,.13); color:#2f8de4; }
       .cm-type.loc { background:rgba(79,174,138,.14); color:var(--accent2); }
       .neg { color:var(--danger) !important; }
-      .cm-model { cursor:pointer; }
-      .cm-model:hover td { background:rgba(217,119,87,.05); }
-      .cm-model.open td { background:rgba(217,119,87,.08); }
-      .cm-chev { color:var(--text2); font-size:11px; margin-right:6px; transition:transform .15s; display:inline-block; }
-      .cm-model.open .cm-chev { transform:rotate(90deg); }
+      .cm-model.open td { background:rgba(217,119,87,.07); }
+      .cm-btns { display:flex; gap:8px; justify-content:flex-end; }
+      .cm-btn2 { display:inline-flex; align-items:center; gap:7px; padding:7px 12px 7px 11px; border-radius:999px; border:1.5px solid; font-size:12px; font-weight:700; cursor:pointer; white-space:nowrap; transition:background .15s, color .15s, box-shadow .15s, transform .1s; }
+      .cm-btn2:active { transform:scale(.97); }
+      .cm-btn2 .cm-arr { font-size:9px; opacity:.75; transition:transform .2s; }
+      .cm-btn2.on .cm-arr { transform:rotate(180deg); }
+      .cm-btn2 .cm-count { min-width:20px; height:18px; padding:0 6px; border-radius:9px; display:inline-flex; align-items:center; justify-content:center; font-size:10.5px; font-weight:800; }
+      .cm-btn2.po { color:#2f8de4; background:rgba(64,160,255,.09); border-color:rgba(64,160,255,.35); }
+      .cm-btn2.po .cm-count { background:rgba(64,160,255,.18); color:#2f8de4; }
+      .cm-btn2.po:hover { background:rgba(64,160,255,.17); box-shadow:0 2px 10px rgba(64,160,255,.18); }
+      .cm-btn2.po.on { background:#2f8de4; border-color:#2f8de4; color:#fff; box-shadow:0 3px 12px rgba(47,141,228,.35); }
+      .cm-btn2.po.on .cm-count { background:rgba(255,255,255,.25); color:#fff; }
+      .cm-btn2.sales { color:#2f9a72; background:rgba(79,174,138,.09); border-color:rgba(79,174,138,.4); }
+      .cm-btn2.sales:hover { background:rgba(79,174,138,.17); box-shadow:0 2px 10px rgba(79,174,138,.2); }
+      .cm-btn2.sales.on { background:#3fa37d; border-color:#3fa37d; color:#fff; box-shadow:0 3px 12px rgba(63,163,125,.35); }
+      .cm-btn2:disabled { color:var(--text2); background:transparent; border-color:var(--border); border-style:dashed; cursor:not-allowed; opacity:.6; box-shadow:none; transform:none; }
       .cm-detail > td { padding:4px 10px 16px 30px !important; background:rgba(217,119,87,.04); white-space:normal !important; text-align:left !important; }
       .cm-po { width:100%; border-collapse:collapse; background:var(--bg2); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
       .cm-po th { font-size:10px; color:var(--text2); text-transform:uppercase; letter-spacing:.5px; padding:7px 10px; text-align:right; background:var(--bg3); white-space:nowrap; }
@@ -64,19 +75,28 @@
       <% } else { %>
       <div style="overflow-x:auto">
         <table class="cm-tbl">
-          <thead><tr><th>Model</th><th>Pcs sold</th><th>Sales</th><th>Purchase price / pc</th><th>Profit</th><th>Share</th><th>Commission</th></tr></thead>
+          <thead><tr><th>Model</th><th>Pcs sold</th><th>Sales</th><th>Purchase price / pc</th><th>Profit</th><th>Share</th><th>Commission</th><th>Details</th></tr></thead>
           <tbody>
           <% R.models.forEach(function (m, i) { %>
-            <tr class="cm-model" data-i="<%= i %>" title="Click to see this model's purchase orders">
-              <td style="white-space:normal;min-width:200px"><i class="fas fa-chevron-right cm-chev"></i><span style="font-weight:600"><%= m.model %></span> <span class="cm-type <%= m.type === 'Imported' ? 'imp' : 'loc' %>"><%= m.type %></span></td>
+            <tr class="cm-model" id="cmr-<%= i %>">
+              <td style="white-space:normal;min-width:200px"><span style="font-weight:600"><%= m.model %></span> <span class="cm-type <%= m.type === 'Imported' ? 'imp' : 'loc' %>"><%= m.type %></span></td>
               <td><%= m.qty.toLocaleString('en-US') %></td>
               <td><%- rub(m.revenue) %></td>
               <td><%- rub(m.unitCost, 2) %><div class="cm-sub"><%= m.costNote %></div></td>
               <td class="<%= m.profit < 0 ? 'neg' : '' %>"><%- rub(m.profit) %></td>
               <td><%= m.share %>%</td>
               <td style="font-weight:700;color:var(--accent2)" class="<%= m.commission < 0 ? 'neg' : '' %>"><%- rub(m.commission) %></td>
+              <td><div class="cm-btns">
+                <% if (m.purchaseOrders.length) { %>
+                <button class="cm-btn2 po" data-act="po" data-i="<%= i %>" title="Show this model's purchase orders"><i class="fas fa-file-invoice-dollar"></i> Purchase orders <span class="cm-count"><%= m.purchaseOrders.length %></span> <i class="fas fa-chevron-down cm-arr"></i></button>
+                <% } else { %>
+                <button class="cm-btn2 po" disabled title="<%= m.type === 'Imported' ? 'Imported — uses the fixed $ price' : 'No purchase orders in MoySklad' %>"><i class="fas fa-file-invoice-dollar"></i> No purchase orders</button>
+                <% } %>
+                <button class="cm-btn2 sales" data-act="sales" data-i="<%= i %>" data-model="<%= m.model %>" title="Show every shipment of this model this month"><i class="fas fa-truck"></i> Shipped sales <i class="fas fa-chevron-down cm-arr"></i></button>
+              </div></td>
             </tr>
-            <tr class="cm-detail" id="cmd-<%= i %>" style="display:none"><td colspan="7">
+            <tr class="cm-detail" id="cms-<%= i %>" style="display:none"><td colspan="8"><div class="cm-sales-body"></div></td></tr>
+            <tr class="cm-detail" id="cmd-<%= i %>" style="display:none"><td colspan="8">
               <div style="font-size:12px;color:var(--text2);margin:6px 0 8px">
                 <% if (m.type === 'Imported') { %>
                   <i class="fas fa-ship"></i> Imported — purchase price is the fixed <b><%= m.costNote %> = <%- rub(m.unitCost, 2) %></b> per pc.<%= m.purchaseOrders.length ? ' Purchase orders below are for reference only.' : '' %>
@@ -118,6 +138,7 @@
             <td class="<%= T.profit < 0 ? 'neg' : '' %>"><%- rub(T.profit) %></td>
             <td></td>
             <td style="color:var(--accent2)" class="<%= T.commission < 0 ? 'neg' : '' %>"><%- rub(T.commission) %></td>
+            <td></td>
           </tr></tfoot>
         </table>
       </div>
@@ -141,13 +162,49 @@
   </div>
 
 <script>
-document.querySelectorAll('.cm-model').forEach(function (row) {
-  row.addEventListener('click', function () {
-    var d = document.getElementById('cmd-' + row.dataset.i), open = d.style.display === 'none';
-    d.style.display = open ? '' : 'none';
-    row.classList.toggle('open', open);
+(function () {
+  var MONTH = <%- JSON.stringify(R.month) %>;
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function rub(n, d) { return n == null ? '—' : '₽' + Number(n).toLocaleString('en-US', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }); }
+
+  // Shipped sales load on first open — big models (GH23000) span most shipments.
+  function loadSales(btn, panel) {
+    var body = panel.querySelector('.cm-sales-body');
+    if (body.dataset.loaded) return;
+    body.innerHTML = '<div style="padding:10px 0;color:var(--text2);font-size:12.5px"><i class="fas fa-spinner fa-spin"></i> Loading shipments…</div>';
+    fetch('/api/admin/commission/sales?month=' + encodeURIComponent(MONTH) + '&model=' + encodeURIComponent(btn.dataset.model))
+      .then(function (r) {
+        if (r.redirected || (r.headers.get('content-type') || '').indexOf('application/json') === -1) throw new Error('Your session has expired — reload and log in again.');
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d.ok) throw new Error(d.error || 'Could not load shipments.');
+        body.dataset.loaded = '1';
+        var pcs = d.rows.reduce(function (a, x) { return a + x.qty; }, 0), amt = d.rows.reduce(function (a, x) { return a + x.amount; }, 0);
+        body.innerHTML = '<div style="font-size:12px;color:var(--text2);margin:6px 0 8px"><i class="fas fa-truck"></i> ' + d.rows.length + ' shipment' + (d.rows.length === 1 ? '' : 's') +
+          ' in this month · <b>' + pcs.toLocaleString('en-US') + ' pcs</b> · <b>' + rub(amt) + '</b></div>' +
+          (d.rows.length ? '<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table class="cm-po"><thead><tr><th>Shipment</th><th>Date</th><th>Customer</th><th>Sales order</th><th>Pcs</th><th>Price / pc</th><th>Amount</th></tr></thead><tbody>' +
+            d.rows.map(function (x) {
+              return '<tr><td style="font-weight:600">' + esc(x.shipment) + '</td><td>' + esc(x.date) + '</td><td>' + esc(x.customer) + '</td>' +
+                '<td style="text-align:right">' + (x.order ? esc(x.order) : '<span style="color:var(--text2)">—</span>') + '</td>' +
+                '<td>' + x.qty.toLocaleString('en-US') + '</td><td>' + rub(x.price, 2) + '</td><td>' + rub(x.amount) + '</td></tr>';
+            }).join('') + '</tbody></table></div>' : '');
+      })
+      .catch(function (e) { body.innerHTML = '<div style="padding:10px 0;color:var(--danger);font-size:12.5px">' + esc(e.message) + '</div>'; });
+  }
+
+  document.querySelectorAll('.cm-btn2[data-act]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var i = btn.dataset.i, panel = document.getElementById((btn.dataset.act === 'po' ? 'cmd-' : 'cms-') + i);
+      var open = panel.style.display === 'none';
+      panel.style.display = open ? '' : 'none';
+      btn.classList.toggle('on', open);
+      var row = document.getElementById('cmr-' + i);
+      row.classList.toggle('open', !!row.querySelector('.cm-btn2.on'));
+      if (open && btn.dataset.act === 'sales') loadSales(btn, panel);
+    });
   });
-});
+})();
 </script>
 
 <%- include('partials/foot') %>

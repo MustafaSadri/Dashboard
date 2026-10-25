@@ -424,6 +424,12 @@ app.get('/admin/commission', requireAdmin, async (req, res) => {
     res.render('commission', { ...c, active: 'admin-commission', report, months });
   } catch (e) { res.status(500).render('error', { message: e.message }); }
 });
+app.get('/api/admin/commission/sales', requireAdmin, async (req, res) => {
+  try {
+    if (!commission.isMonth(req.query.month) || !req.query.model) return res.status(400).json({ ok: false, error: 'month and model are required' });
+    res.json({ ok: true, rows: await commission.getShippedSales(req.query.month, String(req.query.model)) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 
 // ── Barcode tracking: warehouse scanner + CRM lookup ──────
 // Self-contained module (db/barcodes.js, barcode_scans table). Reads the
