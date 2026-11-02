@@ -57,9 +57,8 @@
               <th>Day</th>
               <th style="text-align:right">Shipments</th>
               <th style="text-align:right">Total Value</th>
-              <th style="text-align:right">Avg per Shipment</th>
               <th style="text-align:right">PCS Sold</th>
-              <th>Warehouse-wise Breakdown</th>
+              <th style="text-align:center">Summary</th>
             </tr>
           </thead>
           <tbody id="shipmentsBody"></tbody>
@@ -68,7 +67,6 @@
               <td colspan="2"><strong>Total</strong></td>
               <td style="text-align:right;font-weight:700" id="footCount"><%- totalCount %></td>
               <td style="text-align:right;font-weight:700;color:var(--accent2)" id="footVal"></td>
-              <td></td>
               <td style="text-align:right;font-weight:700" id="footPcs">—</td>
               <td></td>
             </tr>
@@ -85,6 +83,64 @@
 
   </div>
 </div>
+
+<!-- DAY SUMMARY MODAL -->
+<div id="sumModal" class="sum-overlay" hidden onclick="if(event.target===this)closeSummary()">
+  <div class="sum-box">
+    <div class="sum-head">
+      <div>
+        <div class="sum-title" id="sumTitle">Summary</div>
+        <div class="sum-sub" id="sumSub"></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="sum-btn sum-btn-pdf" id="sumPdfBtn" onclick="downloadSummaryPdf()" disabled>
+          <i class="fas fa-file-pdf"></i> Download PDF
+        </button>
+        <button class="sum-btn" onclick="closeSummary()" title="Close"><i class="fas fa-xmark"></i></button>
+      </div>
+    </div>
+    <div class="sum-body" id="sumBody"></div>
+  </div>
+</div>
+
+<style>
+.sum-open-btn{background:rgba(217,119,87,.12);border:1px solid rgba(217,119,87,.35);color:var(--accent2);
+  padding:5px 12px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.sum-open-btn:hover{background:rgba(217,119,87,.22)}
+.sum-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:flex;
+  align-items:flex-start;justify-content:center;padding:32px 16px;overflow-y:auto}
+.sum-overlay[hidden]{display:none}
+.sum-box{background:var(--bg2);border:1px solid var(--border);border-radius:14px;width:100%;max-width:980px;
+  box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.sum-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:18px 20px;
+  border-bottom:1px solid var(--border);flex-wrap:wrap}
+.sum-title{font-size:18px;font-weight:700}
+.sum-sub{font-size:12px;color:var(--text2);margin-top:4px}
+.sum-btn{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;
+  font-size:13px;cursor:pointer}
+.sum-btn:disabled{opacity:.5;cursor:default}
+.sum-btn-pdf{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.sum-body{padding:16px 20px 22px}
+.sum-wh{margin-top:18px}
+.sum-wh:first-child{margin-top:0}
+.sum-wh-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;
+  background:var(--bg3);border:1px solid var(--border);border-radius:9px;padding:10px 14px;font-weight:700}
+.sum-wh-head span{font-size:12px;font-weight:600;color:var(--text2)}
+.sum-order{border:1px solid var(--border);border-radius:9px;margin-top:10px;overflow:hidden}
+.sum-order-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:9px 12px;
+  font-size:13px;border-bottom:1px solid var(--border)}
+.sum-order table, .sum-models table{width:100%;border-collapse:collapse;font-size:12.5px}
+.sum-order th, .sum-order td, .sum-models th, .sum-models td{padding:6px 12px;text-align:left}
+.sum-order th, .sum-models th{color:var(--text2);font-weight:600;font-size:11.5px}
+.sum-order .r, .sum-models .r{text-align:right;width:15%}
+.sum-order tfoot td{border-top:1px solid var(--border);font-weight:700}
+.sum-models{margin-top:22px;border:1px solid var(--border);border-radius:9px;overflow:hidden}
+.sum-models tfoot td{border-top:2px solid var(--border);font-weight:700}
+.sum-section-title{font-size:14px;font-weight:700;padding:10px 12px;border-bottom:1px solid var(--border)}
+</style>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <%- include('partials/foot') %>
 
 <script>
@@ -115,17 +171,6 @@ function dayName(dateStr) {
   return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
 }
 
-// Renders shipment-count badges per warehouse (available immediately, no fetch needed)
-function whBadges(row) {
-  if (!row.warehouses || !row.warehouses.length) return '<span class="muted">—</span>';
-  return row.warehouses.map(w =>
-    '<span class="badge badge-default" style="margin:1px 3px 1px 0;display:inline-block">' +
-      w.name + ': ' + w.shipments + ' ship' + (w.shipments !== 1 ? 's' : '') +
-      ' (' + fmtShort(w.value/100) + ')' +
-    '</span>'
-  ).join('');
-}
-
 // PCS sold per day (warehouse-wise) — loaded per-month asynchronously from /api/shipments-pcs
 const _pcsByMonth = {};   // month (YYYY-MM) -> { date: {total, warehouses} } | 'loading'
 const CURRENT_MONTH = TODAY.slice(0, 7);
@@ -142,7 +187,29 @@ function loadShipmentsPcs(month) {
     .catch(() => { _pcsByMonth[month] = {}; });
 }
 
+// Postgres mode: PCS for every day in one request; otherwise per-month above.
+let _pcsDaily = null;   // null = not requested, 'loading', false = unavailable, else { date: info }
+function loadPcsDaily() {
+  if (_pcsDaily !== null) return;
+  _pcsDaily = 'loading';
+  fetch('/api/shipments-pcs-daily')
+    .then(r => r.json())
+    .then(data => { _pcsDaily = data.ok ? (data.data || {}) : false; applyFilter(); })
+    .catch(() => { _pcsDaily = false; applyFilter(); });
+}
+function pcsInfo(date) {   // undefined = not available (yet)
+  if (_pcsDaily && _pcsDaily !== 'loading') return _pcsDaily[date] || { total: 0 };
+  const m = _pcsByMonth[date.slice(0, 7)];
+  if (!m || m === 'loading') return undefined;
+  return m[date] || { total: 0 };
+}
+
 function pcsCellHtml(date) {
+  if (_pcsDaily === 'loading') return '<i class="fas fa-spinner fa-spin" style="font-size:10px;opacity:.35"></i>';
+  if (_pcsDaily) {
+    const t = (_pcsDaily[date] && _pcsDaily[date].total) || 0;
+    return t ? '<strong>' + t.toLocaleString() + '</strong>' : '<span class="muted">0</span>';
+  }
   const month = date.slice(0, 7);
   const m = _pcsByMonth[month];
   if (m === 'loading') return '<i class="fas fa-spinner fa-spin" style="font-size:10px;opacity:.35"></i>';
@@ -150,20 +217,6 @@ function pcsCellHtml(date) {
   const info = m[date];
   if (!info || !info.total) return '<span class="muted">0</span>';
   return '<strong>' + info.total + '</strong>';
-}
-
-function pcsBreakdownHtml(date) {
-  const month = date.slice(0, 7);
-  const m = _pcsByMonth[month];
-  if (!m || m === 'loading') return '';
-  const info = m[date];
-  if (!info || !info.warehouses) return '';
-  return '<div style="margin-top:4px;font-size:11px;color:var(--text2)">' +
-    Object.entries(info.warehouses)
-      .sort((a,b) => b[1]-a[1])
-      .map(([name, pcs]) => name + ': ' + pcs + ' pcs')
-      .join(' &nbsp;|&nbsp; ') +
-    '</div>';
 }
 
 function applyFilter() {
@@ -228,13 +281,13 @@ function applyFilter() {
 
   // Load PCS data for the relevant month(s) — for "All Records" just load the
   // current month (most relevant); switching to a specific month loads that one.
-  const pcsMonth = month || CURRENT_MONTH;
-  loadShipmentsPcs(pcsMonth);
+  loadPcsDaily();
+  if (_pcsDaily === false) loadShipmentsPcs(month || CURRENT_MONTH);
 
   // Rebuild table body
   const tbody = document.getElementById('shipmentsBody');
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text2)">No shipments for this period</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6"style="text-align:center;padding:40px;color:var(--text2)">No shipments for this period</td></tr>';
     document.getElementById('footCount').textContent = 0;
     document.getElementById('footVal').textContent = '—';
     document.getElementById('footPcs').textContent = '—';
@@ -243,7 +296,6 @@ function applyFilter() {
 
   tbody.innerHTML = filtered.map(row => {
     const isToday = row.date === TODAY;
-    const avg = row.count > 0 ? row.total / 100 / row.count : 0;
     const todayBadge = isToday
       ? ' <span class="badge badge-accepted" style="font-size:9px;padding:2px 6px">Today</span>'
       : '';
@@ -252,9 +304,8 @@ function applyFilter() {
       <td class="muted">${dayName(row.date)}</td>
       <td style="text-align:right;font-weight:700;font-size:15px">${row.count}</td>
       <td style="text-align:right;color:var(--accent2);font-weight:600">${fmtFull(row.total/100)}</td>
-      <td style="text-align:right" class="muted">${avg > 0 ? fmtFull(avg) : '—'}</td>
       <td style="text-align:right">${pcsCellHtml(row.date)}</td>
-      <td>${whBadges(row)}${pcsBreakdownHtml(row.date)}</td>
+      <td style="text-align:center"><button class="sum-open-btn" onclick="openSummary('${row.date}')"><i class="fas fa-list-check"></i> Summary</button></td>
     </tr>`;
   }).join('');
 
@@ -263,11 +314,164 @@ function applyFilter() {
   document.getElementById('footVal').textContent = fmtFull(totalVal);
   let totalPcs = 0, anyMissing = false;
   filtered.forEach(d => {
-    const m = _pcsByMonth[d.date.slice(0, 7)];
-    if (m && m !== 'loading') totalPcs += (m[d.date] && m[d.date].total) || 0;
+    const info = pcsInfo(d.date);
+    if (info) totalPcs += info.total || 0;
     else anyMissing = true;
   });
-  document.getElementById('footPcs').textContent = anyMissing ? totalPcs + '+' : totalPcs;
+  document.getElementById('footPcs').textContent = totalPcs.toLocaleString() + (anyMissing ? '+' : '');
+}
+
+// ── Day summary (Summary button) ──────────────────────────
+let _summary = null;
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ESC_MAP[c]);
+const rub = n => '₽' + Math.round(n || 0).toLocaleString();
+const rate = n => '₽' + (Math.round((n || 0) * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+function closeSummary() { document.getElementById('sumModal').hidden = true; }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSummary(); });
+
+function openSummary(date) {
+  _summary = null;
+  document.getElementById('sumModal').hidden = false;
+  document.getElementById('sumPdfBtn').disabled = true;
+  document.getElementById('sumTitle').textContent = 'Shipments Summary — ' + date;
+  document.getElementById('sumSub').textContent = dayName(date);
+  document.getElementById('sumBody').innerHTML =
+    '<div style="text-align:center;padding:50px;color:var(--text2)"><i class="fas fa-spinner fa-spin"></i> Loading shipments…</div>';
+  fetch('/api/shipments/day-summary?date=' + date)
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) throw new Error(data.error || 'Failed to load');
+      _summary = data;
+      renderSummary(data);
+      document.getElementById('sumPdfBtn').disabled = !data.shipments;
+    })
+    .catch(err => {
+      document.getElementById('sumBody').innerHTML =
+        '<div style="text-align:center;padding:40px;color:var(--danger,#e5534b)">' + esc(err.message) + '</div>';
+    });
+}
+
+function modelRowsHtml(models) {
+  return models.map(m => `<tr><td>${esc(m.model)}</td><td class="r">${m.pcs.toLocaleString()}</td>
+    <td class="r">${rate(m.rate)}</td><td class="r">${rub(m.amount)}</td></tr>`).join('');
+}
+
+function renderSummary(d) {
+  document.getElementById('sumSub').textContent = dayName(d.date) + ' · ' + d.shipments + ' shipment' +
+    (d.shipments === 1 ? '' : 's') + ' · ' + d.pcs.toLocaleString() + ' pcs · ' + rub(d.total);
+  if (!d.shipments) {
+    document.getElementById('sumBody').innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No shipments on this day</div>';
+    return;
+  }
+  const head = '<thead><tr><th>Model</th><th class="r">PCS</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead>';
+  let html = '';
+  d.warehouses.forEach(w => {
+    html += `<div class="sum-wh"><div class="sum-wh-head"><div><i class="fas fa-warehouse"></i> ${esc(w.name)}</div>
+      <span>${w.shipments.length} shipment${w.shipments.length === 1 ? '' : 's'} · ${w.pcs.toLocaleString()} pcs · ${rub(w.total)}</span></div>`;
+    w.shipments.forEach(s => {
+      html += `<div class="sum-order"><div class="sum-order-head">
+          <div><strong>Order ${esc(s.order || '—')}</strong> <span class="muted">· Shipment ${esc(s.shipment)}${s.time ? ' · ' + esc(s.time) : ''}</span></div>
+          <div><i class="fas fa-user" style="opacity:.6"></i> ${esc(s.customer)}</div></div>
+        <div class="table-wrap"><table>${head}<tbody>${modelRowsHtml(s.models)}</tbody>
+        <tfoot><tr><td>Order total</td><td class="r">${s.pcs.toLocaleString()}</td><td></td><td class="r" style="color:var(--accent2)">${rub(s.total)}</td></tr></tfoot>
+        </table></div></div>`;
+    });
+    html += '</div>';
+  });
+  html += `<div class="sum-models"><div class="sum-section-title"><i class="fas fa-boxes-stacked"></i> Model-wise total — ${esc(d.date)}</div>
+    <div class="table-wrap"><table>${head.replace('>Rate<', '>Avg Rate<')}<tbody>${modelRowsHtml(d.models)}</tbody>
+    <tfoot><tr><td>Total sales of the day</td><td class="r">${d.pcs.toLocaleString()}</td><td></td><td class="r" style="color:var(--accent2)">${rub(d.total)}</td></tr></tfoot>
+    </table></div></div>`;
+  document.getElementById('sumBody').innerHTML = html;
+}
+
+// PDF: jsPDF's built-in fonts have no Cyrillic (or ₽), so embed DejaVu Sans —
+// downloaded once, on the first PDF.
+let _pdfFonts = null;
+function loadPdfFonts() {
+  if (_pdfFonts) return _pdfFonts;
+  const get = url => fetch(url)
+    .then(r => { if (!r.ok) throw new Error('font download failed'); return r.arrayBuffer(); })
+    .then(buf => {
+      const b = new Uint8Array(buf); let bin = '';
+      for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+      return btoa(bin);
+    });
+  const base = 'https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/';
+  _pdfFonts = Promise.all([get(base + 'DejaVuSans.ttf'), get(base + 'DejaVuSans-Bold.ttf')])
+    .catch(e => { _pdfFonts = null; throw e; });
+  return _pdfFonts;
+}
+
+async function downloadSummaryPdf() {
+  const d = _summary; if (!d) return;
+  const btn = document.getElementById('sumPdfBtn');
+  const label = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing…';
+  try {
+    const [regular, bold] = await loadPdfFonts();
+    const doc = new window.jspdf.jsPDF({ unit: 'pt', format: 'a4' });
+    doc.addFileToVFS('DejaVuSans.ttf', regular); doc.addFont('DejaVuSans.ttf', 'DejaVu', 'normal');
+    doc.addFileToVFS('DejaVuSans-Bold.ttf', bold); doc.addFont('DejaVuSans-Bold.ttf', 'DejaVu', 'bold');
+    doc.setFont('DejaVu', 'normal');
+    const pRub = n => Math.round(n || 0).toLocaleString('en-US') + ' ₽';
+    const pRate = n => (Math.round((n || 0) * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ₽';
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 36;
+    const styles = { font: 'DejaVu', fontSize: 8.5, cellPadding: 4 };
+    const headStyles = { font: 'DejaVu', fontStyle: 'bold', fillColor: [60, 60, 70], textColor: 255 };
+    const footStyles = { font: 'DejaVu', fontStyle: 'bold', fillColor: [238, 238, 242], textColor: 20 };
+    const columnStyles = { 1: { halign: 'right', cellWidth: 60 }, 2: { halign: 'right', cellWidth: 80 }, 3: { halign: 'right', cellWidth: 95 } };
+    const rowsOf = list => list.map(m => [m.model, m.pcs.toLocaleString('en-US'), pRate(m.rate), pRub(m.amount)]);
+    const right = (v, i) => (i ? { content: v, styles: { halign: 'right' } } : v);   // numeric columns
+    const table = (rateLabel, body, foot) => doc.autoTable({
+      startY: y, margin: { left: M, right: M }, theme: 'grid',
+      body, showFoot: 'lastPage',
+      head: [['Model', 'PCS', rateLabel, 'Amount'].map(right)], foot: [foot.map(right)],
+      styles, headStyles, footStyles, columnStyles,
+    });
+    let y = 44;
+    const ensure = h => { if (y + h > H - 40) { doc.addPage(); y = 44; } };
+
+    doc.setFont('DejaVu', 'bold'); doc.setFontSize(16);
+    doc.text('Shipments Summary — ' + d.date, M, y); y += 18;
+    doc.setFont('DejaVu', 'normal'); doc.setFontSize(10); doc.setTextColor(90);
+    doc.text(dayName(d.date) + '  ·  ' + d.shipments + ' shipments  ·  ' + d.pcs.toLocaleString('en-US') + ' pcs  ·  ' + pRub(d.total), M, y);
+    doc.setTextColor(0); y += 20;
+
+    d.warehouses.forEach(w => {
+      ensure(70);
+      doc.setFillColor(217, 119, 87); doc.rect(M, y, W - 2 * M, 22, 'F');
+      doc.setTextColor(255); doc.setFont('DejaVu', 'bold'); doc.setFontSize(11.5);
+      doc.text(w.name, M + 8, y + 15);
+      doc.setFontSize(9);
+      doc.text(w.shipments.length + ' shipments · ' + w.pcs.toLocaleString('en-US') + ' pcs · ' + pRub(w.total), W - M - 8, y + 15, { align: 'right' });
+      doc.setTextColor(0); y += 36;
+      w.shipments.forEach(s => {
+        ensure(70);
+        doc.setFont('DejaVu', 'bold'); doc.setFontSize(10);
+        doc.text('Order ' + (s.order || '—') + '   ·   ' + s.customer, M, y);
+        doc.setFont('DejaVu', 'normal'); doc.setFontSize(8); doc.setTextColor(110);
+        doc.text('Shipment ' + s.shipment + (s.time ? ' · ' + s.time : ''), W - M, y, { align: 'right' });
+        doc.setTextColor(0); y += 6;
+        table('Rate', rowsOf(s.models), ['Order total', s.pcs.toLocaleString('en-US'), '', pRub(s.total)]);
+        y = doc.lastAutoTable.finalY + 18;
+      });
+      y += 6;
+    });
+
+    ensure(90);
+    doc.setFont('DejaVu', 'bold'); doc.setFontSize(13);
+    doc.text('Model-wise total — ' + d.date, M, y); y += 8;
+    table('Avg Rate', rowsOf(d.models), ['Total sales of the day', d.pcs.toLocaleString('en-US'), '', pRub(d.total)]);
+
+    doc.save(d.date + '--summary.pdf');
+  } catch (e) {
+    alert('Could not create the PDF: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.innerHTML = label;
+  }
 }
 
 // Initial render

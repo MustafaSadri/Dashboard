@@ -2233,6 +2233,123 @@ app.get('/api/shipments-pcs', async (req, res) => {
   }
 });
 
+// ── SHIPMENTS PAGE: PCS sold for EVERY day in one query (postgres mode) ──
+// Same shape as /api/shipments-pcs's data, but for all days at once. Live-API
+// mode has no cheap way to do this, so it answers ok:false and the page falls
+// back to the per-month loader above.
+app.get('/api/shipments-pcs-daily', async (req, res) => {
+  try {
+    if (MS_DATA_SOURCE !== 'postgres') return res.json({ ok: false, data: {} });
+    const minDate = getMinDate();
+    const data = await cached('shipments_pcs_daily', 2*60*1000, async () => {
+      const { rows } = await require('./db/pool').query(`
+        SELECT to_char(d.moment, 'YYYY-MM-DD') AS day, COALESCE(s.name, 'Unknown') AS wh, SUM(p.quantity) AS pcs
+        FROM ms_demands d
+        JOIN ms_demand_positions p ON p.demand_id = d.id
+        LEFT JOIN ms_stores s ON s.id = d.store_id
+        WHERE ($1::timestamp IS NULL OR d.moment >= $1::timestamp)
+        GROUP BY 1, 2`, [minDate || null]);
+      const result = {};
+      rows.forEach(r => {
+        const pcs = Math.round(Number(r.pcs) || 0);
+        if (!result[r.day]) result[r.day] = { total: 0, warehouses: {} };
+        result[r.day].total += pcs;
+        result[r.day].warehouses[r.wh] = (result[r.day].warehouses[r.wh] || 0) + pcs;
+      });
+      return result;
+    });
+    res.json({ ok: true, data });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message, data: {} });
+  }
+});
+
+// ── SHIPMENTS PAGE: one day's full summary (the "Summary" button / PDF) ──
+// Shipments only (not sales orders): per warehouse — Yuzhnie Varota first,
+// then Lublino, Vladivostok, anything else — each shipment with its sales
+// order no., customer and model-wise pcs / rate / amount; then the day's
+// model totals. Goes through ms() so role date floors and price overrides
+// apply exactly as on every other page.
+function whRank(name) {
+  const n = (name || '').toLowerCase();
+  if (/южн|yuzh|yuzn/.test(n)) return 0;
+  if (/люблин|lublin/.test(n)) return 1;
+  if (/владивост|vladivost/.test(n)) return 2;
+  return 3;
+}
+// The old and new MoySklad accounts spell the same warehouse differently
+// ("Yuzhnie  Varota" / "yuzhnie Varota") — one section per real warehouse.
+const WH_CANON = ['Yuzhnie Varota', 'Lublino Shop', 'Vladivostok'];
+const canonWh = name => WH_CANON[whRank(name)] || name;
+app.get('/api/shipments/day-summary', async (req, res) => {
+  try {
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ ok: false, error: 'Invalid date' });
+
+    const [{ rows: allRows }, storeMap] = await Promise.all([getAllDemands(), getStoreMap()]);
+    const demands = allRows.filter(d => (d.moment || '').slice(0, 10) === date)
+      .sort((a, b) => (a.moment || '').localeCompare(b.moment || ''));
+
+    // Positions + sales-order names, a few at a time (rate-limit friendly in live mode)
+    const idOf = href => (href || '').split('/').pop().split('?')[0];
+    const orderIds = [...new Set(demands.map(d => idOf(d.customerOrder?.meta?.href)).filter(Boolean))];
+    const orderNames = {};
+    const positionsOf = {};
+    const BATCH = 8;
+    for (let i = 0; i < demands.length; i += BATCH) {
+      await Promise.all(demands.slice(i, i + BATCH).map(async d => {
+        const r = await ms(`/entity/demand/${d.id}/positions?limit=1000`);
+        positionsOf[d.id] = r.rows || [];
+      }));
+    }
+    for (let i = 0; i < orderIds.length; i += BATCH) {
+      await Promise.all(orderIds.slice(i, i + BATCH).map(async id => {
+        try { orderNames[id] = (await ms(`/entity/customerorder/${id}`)).name || null; } catch (_) {}
+      }));
+    }
+
+    const whMap = {}, modelTotals = {};
+    let dayPcs = 0, dayTotal = 0;
+    demands.forEach(d => {
+      const wh = canonWh(storeName(d, storeMap));
+      if (!whMap[wh]) whMap[wh] = { name: wh, shipments: [], pcs: 0, total: 0 };
+      const models = {};
+      (positionsOf[d.id] || []).forEach(p => {
+        const model = baseNameOf(p.assortment?.name) || '—';
+        if (!models[model]) models[model] = { model, pcs: 0, amount: 0 };
+        models[model].pcs += Number(p.quantity) || 0;
+        models[model].amount += (Number(p.sum) || 0) / 100;
+        if (!modelTotals[model]) modelTotals[model] = { model, pcs: 0, amount: 0 };
+        modelTotals[model].pcs += Number(p.quantity) || 0;
+        modelTotals[model].amount += (Number(p.sum) || 0) / 100;
+      });
+      const lines = Object.values(models)
+        .map(m => ({ ...m, rate: m.pcs ? m.amount / m.pcs : 0 }))
+        .sort((a, b) => b.pcs - a.pcs);
+      const pcs = lines.reduce((a, m) => a + m.pcs, 0);
+      const total = (d.sum || 0) / 100;
+      const oid = idOf(d.customerOrder?.meta?.href);
+      whMap[wh].shipments.push({
+        shipment: d.name || '—', time: (d.moment || '').slice(11, 16),
+        order: (oid && orderNames[oid]) || null, customer: d.agent?.name || '—',
+        models: lines, pcs, total,
+      });
+      whMap[wh].pcs += pcs; whMap[wh].total += total;
+      dayPcs += pcs; dayTotal += total;
+    });
+
+    const warehouses = Object.values(whMap)
+      .sort((a, b) => whRank(a.name) - whRank(b.name) || a.name.localeCompare(b.name));
+    const models = Object.values(modelTotals)
+      .map(m => ({ ...m, rate: m.pcs ? m.amount / m.pcs : 0 }))
+      .sort((a, b) => b.pcs - a.pcs);
+
+    res.json({ ok: true, date, shipments: demands.length, pcs: dayPcs, total: dayTotal, warehouses, models });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── CUSTOMER ANALYTICS ───────────────────────────────────
 // The same customer has a different ID in the old (to 31 Aug 2026) and new
 // MoySklad accounts, so per-customer history would split in two. Returns
