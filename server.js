@@ -421,7 +421,28 @@ app.get('/admin/commission', requireAdmin, async (req, res) => {
                     label: d.toLocaleString('en', { month: 'long', year: 'numeric' }) });
     }
     const report = await commission.getReport(month);
-    res.render('commission', { ...c, active: 'admin-commission', report, months });
+    res.render('commission', { ...c, active: 'admin-commission', report, months, staff: commission.STAFF });
+  } catch (e) { res.status(500).render('error', { message: e.message }); }
+});
+// Sales-manager tab: commission on payments received (see getStaffReport)
+app.get('/admin/commission/staff/:key', requireAdmin, async (req, res) => {
+  try {
+    const s = commission.STAFF[req.params.key];
+    if (!s) return res.status(404).render('error', { message: 'Unknown employee' });
+    const c = await common();
+    const now = new Date();
+    const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const months = [];
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (key < s.fromMonth) break;
+      months.push({ key, label: d.toLocaleString('en', { month: 'long', year: 'numeric' }) });
+    }
+    const month = commission.isMonth(req.query.month) && req.query.month >= s.fromMonth && req.query.month <= curMonth
+      ? req.query.month : curMonth;
+    const report = await commission.getStaffReport(req.params.key, month);
+    res.render('commission-staff', { ...c, active: 'admin-commission', report, months, staff: commission.STAFF });
   } catch (e) { res.status(500).render('error', { message: e.message }); }
 });
 app.get('/api/admin/commission/sales', requireAdmin, async (req, res) => {

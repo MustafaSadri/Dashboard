@@ -56,7 +56,9 @@
 
     <div class="cm-tabs">
       <span class="cm-tab on"><i class="fas fa-handshake"></i> Babylon — Partner</span>
-      <span class="cm-tab off" title="Coming later"><i class="fas fa-user-tie"></i> Salesman Manager — coming soon</span>
+      <% Object.keys(staff).forEach(function (k) { %>
+        <a class="cm-tab" href="/admin/commission/staff/<%= k %>" style="text-decoration:none"><i class="fas fa-user-tie"></i> <%= staff[k].title %> — <%= staff[k].name %></a>
+      <% }) %>
       <select class="cm-month" onchange="location.href='/admin/commission?month='+this.value" aria-label="Month">
         <% months.forEach(function (m) { %><option value="<%= m.key %>" <%= m.key === R.month ? 'selected' : '' %>><%= m.label %></option><% }) %>
       </select>
