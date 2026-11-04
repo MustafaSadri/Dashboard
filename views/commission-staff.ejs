@@ -4,8 +4,8 @@
   <%- include('partials/header', {pageTitle: 'Commission'}) %>
   <div class="page">
     <%
-      var R = report, T = report.totals, E = report.employee, ORD = E.basis === 'orders', PCS = E.basis === 'model_pcs', PP = E.perPcs;
-      var unit = ORD ? 'sales order' : 'payment';
+      var R = report, T = report.totals, E = report.employee, ORD = E.basis === 'order_payments', PCS = E.basis === 'model_pcs', PP = E.perPcs;
+      var pcsFmt = function (n) { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); };
       var plural = function (n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); };
       var rub = function (n, d) { return n == null ? '—' : (n < 0 ? '−₽' : '₽') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }); };
       var monthLabel = (months.find(function (m) { return m.key === R.month; }) || { label: R.month }).label;
@@ -20,9 +20,13 @@
       .cm-tbl td { text-align:right; padding:10px; border-bottom:1px solid rgba(217,119,87,.06); font-size:13px; white-space:nowrap; }
       .cm-tbl .l { text-align:left; }
       .cm-tbl tfoot td { font-weight:800; border-top:2px solid var(--border); border-bottom:none; font-size:14px; }
+      .cm-emps { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
+      .cm-emp { padding:8px 16px; border-radius:999px; border:1.5px solid var(--border); background:transparent; color:var(--text2); font-size:13px; font-weight:700; text-decoration:none; }
+      .cm-emp.on { background:var(--accent); border-color:var(--accent); color:#fff; }
       .cm-rate { font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:8px; background:rgba(79,174,138,.14); color:var(--accent2); }
       .cm-rate.sp { background:rgba(64,160,255,.13); color:#2f8de4; }
       .cm-chips { display:flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
+      .cm-chips[hidden] { display:none; }
       .cm-chip { padding:6px 12px; border-radius:999px; border:1.5px solid var(--border); background:transparent; color:var(--text2); font-size:12px; font-weight:700; cursor:pointer; }
       .cm-chip.on { background:var(--accent); border-color:var(--accent); color:#fff; }
       .cm-cmt { max-width:260px; overflow:hidden; text-overflow:ellipsis; color:var(--text2); font-size:12px; }
@@ -31,25 +35,29 @@
     </style>
 
     <div class="cm-tabs">
-      <a class="cm-tab" href="/admin/commission?month=<%= R.month %>"><i class="fas fa-handshake"></i> Babylon — Partner</a>
-      <% Object.keys(staff).forEach(function (k) { %>
-        <a class="cm-tab <%= k === R.key ? 'on' : '' %>" href="/admin/commission/staff/<%= k %>?month=<%= R.month %>"><i class="fas fa-user-tie"></i> <%= staff[k].title %> — <%= staff[k].name %></a>
-      <% }) %>
+      <a class="cm-tab" href="/admin/commission?month=<%= R.month %>"><i class="fas fa-handshake"></i> Babylon Commission</a>
+      <span class="cm-tab on"><i class="fas fa-users"></i> Managers Commission</span>
       <select class="cm-month" onchange="location.href='/admin/commission/staff/<%= R.key %>?month='+this.value" aria-label="Month">
         <% months.forEach(function (m) { %><option value="<%= m.key %>" <%= m.key === R.month ? 'selected' : '' %>><%= m.label %></option><% }) %>
       </select>
     </div>
 
-    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
+    <div class="cm-emps">
+      <% Object.keys(staff).forEach(function (k) { %>
+        <a class="cm-emp <%= k === R.key ? 'on' : '' %>" href="/admin/commission/staff/<%= k %>?month=<%= R.month %>"><%= staff[k].name %><%= staff[k].ownerName ? ' (' + staff[k].ownerName + ')' : '' %></a>
+      <% }) %>
+    </div>
+
+    <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:20px">
       <% if (PCS) { %>
         <div class="stat-card"><div class="stat-label"><%= PP.label %> pcs sold</div><div class="stat-value"><%= T.pcs.toLocaleString('en-US') %></div><div class="stat-sub">in <%= plural(T.count, 'sales order') %> (all owners) · <%= monthLabel %></div><i class="fas fa-box stat-icon"></i></div>
         <div class="stat-card"><div class="stat-label"><%= PP.label %> sales</div><div class="stat-value"><%- rub(T.amount) %></div><div class="stat-sub"><%= monthLabel %></div><i class="fas fa-file-invoice stat-icon"></i></div>
       <% } else if (ORD) { %>
-        <div class="stat-card"><div class="stat-label">Sales orders</div><div class="stat-value"><%- rub(T.amount) %></div><div class="stat-sub"><%= plural(T.count, 'order') %> · owner <%= E.ownerName %> · <%= monthLabel %></div><i class="fas fa-file-invoice stat-icon"></i></div>
-        <% if (PP) { %><div class="stat-card"><div class="stat-label"><%= PP.label %> bonus</div><div class="stat-value"><%- rub(T.bonus) %></div><div class="stat-sub"><%= T.pcs.toLocaleString('en-US') %> pcs × ₽<%= PP.rub %></div><i class="fas fa-box stat-icon"></i></div><% } %>
+        <div class="stat-card"><div class="stat-label">Payments received</div><div class="stat-value"><%- rub(T.amount) %></div><div class="stat-sub">on <%= E.ownerName %>'s sales orders · <%= monthLabel %></div><i class="fas fa-file-invoice stat-icon"></i></div>
+        <% if (PP) { %><div class="stat-card"><div class="stat-label"><%= PP.label %> bonus</div><div class="stat-value"><%- rub(T.bonus) %></div><div class="stat-sub"><%= pcsFmt(T.pcs) %> pcs × ₽<%= PP.rub %></div><i class="fas fa-box stat-icon"></i></div><% } %>
       <% } else { %>
         <div class="stat-card"><div class="stat-label">Payments received</div><div class="stat-value"><%- rub(T.amount) %></div><div class="stat-sub"><%= plural(T.count, 'payment') %> · <%= E.office %> · <%= monthLabel %></div><i class="fas fa-money-bill-transfer stat-icon"></i></div>
-        <% R.groups.forEach(function (g) { if (g.group === 'Other customers') return; %>
+        <% R.groups.forEach(function (g) { if (!(E.special || {})[g.group]) return; %>
           <div class="stat-card"><div class="stat-label"><%= g.group %> payments</div><div class="stat-value"><%- rub(g.amount) %></div><div class="stat-sub"><%= plural(g.count, 'payment') %> × <%= g.rate %>%</div><i class="fas fa-user stat-icon"></i></div>
         <% }) %>
       <% } %>
@@ -60,17 +68,17 @@
       <div class="card-title"><i class="fas fa-calculator"></i> Commission — <%= E.name %>, <%= monthLabel %></div>
       <div style="overflow-x:auto">
         <table class="cm-tbl">
-          <% if (!PCS) { %><thead><tr><th class="l">Customers</th><th><%= ORD ? 'Orders' : 'Payments' %></th><th><%= ORD ? 'Order amount' : 'Amount received' %></th><th>Rate</th><th>Commission</th></tr></thead><% } else { %><thead><tr><th class="l">Model</th><th>Orders</th><th>PCS</th><th>Rate</th><th>Commission</th></tr></thead><% } %>
+          <% if (!PCS) { %><thead><tr><th class="l">Customers</th><th>Payments</th><th>Amount received</th><th>Rate</th><th>Commission</th></tr></thead><% } else { %><thead><tr><th class="l">Model</th><th>Orders</th><th>PCS</th><th>Rate</th><th>Commission</th></tr></thead><% } %>
           <tbody>
             <% if (!R.groups.length) { %>
-              <tr><td colspan="5" style="text-align:center;padding:26px;color:var(--text2)">No <%= PCS ? PP.label + ' sales orders' : ORD ? 'sales orders by ' + E.ownerName : E.office + ' payments' %> in <%= monthLabel %>.</td></tr>
+              <tr><td colspan="5" style="text-align:center;padding:26px;color:var(--text2)">No <%= PCS ? PP.label + ' sales orders' : ORD ? 'payments on ' + E.ownerName + ' sales orders' : E.office + ' payments' %> in <%= monthLabel %>.</td></tr>
             <% } %>
             <% if (!PCS) R.groups.forEach(function (g) { %>
               <tr>
                 <td class="l"><b><%= g.group %></b></td>
                 <td><%= g.count %></td>
                 <td><%- rub(g.amount, 2) %></td>
-                <td><span class="cm-rate <%= g.group !== 'Other customers' ? 'sp' : '' %>"><%= g.rate %>%</span></td>
+                <td><span class="cm-rate <%= (E.special || {})[g.group] ? 'sp' : '' %>"><%= g.rate %>%</span></td>
                 <td style="color:var(--accent2);font-weight:700"><%- rub(g.commission, 2) %></td>
               </tr>
             <% }) %>
@@ -78,7 +86,7 @@
               <tr>
                 <td class="l"><b><%= PP.label %> pcs</b></td>
                 <td><%= PCS ? T.count : '' %></td>
-                <td><%= T.pcs.toLocaleString('en-US') %> pcs</td>
+                <td><%= pcsFmt(T.pcs) %> pcs</td>
                 <td><span class="cm-rate sp">₽<%= PP.rub %>/pc</span></td>
                 <td style="color:var(--accent2);font-weight:700"><%- rub(T.bonus, 2) %></td>
               </tr>
@@ -91,31 +99,32 @@
 
     <div class="card" style="margin-top:20px">
       <div class="card-title" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span><i class="fas fa-list"></i> <%= ORD || PCS ? 'Sales orders' : 'Payments' %> — <%= monthLabel %></span>
-        <div class="cm-chips">
+        <span><i class="fas fa-list"></i> <%= PCS ? 'Sales orders' : 'Payments' %> — <%= monthLabel %></span>
+        <div class="cm-chips" <%= R.groups.length < 2 ? "hidden" : "" %>>
           <button class="cm-chip on" data-g="">All (<%= T.count %>)</button>
-          <% if (!PCS) R.groups.forEach(function (g) { %><button class="cm-chip" data-g="<%= g.group %>"><%= g.group %> (<%= g.count %>)</button><% }) %>
+          <% R.groups.forEach(function (g) { %><button class="cm-chip" data-g="<%= g.group %>"><%= g.group %> (<%= g.count %>)</button><% }) %>
         </div>
       </div>
       <div style="overflow-x:auto">
         <table class="cm-tbl" id="cmPay">
-          <thead><tr><th class="l">No.</th><th class="l">Date</th><th class="l">Counterparty</th><th class="l cm-hide-sm"><%= ORD || PCS ? 'Status' : 'Comment' %></th><% if (PCS) { %><th class="l cm-hide-sm">Owner</th><% } %><th><%= PCS ? PP.label + ' amount' : 'Amount' %></th><% if (!PCS) { %><th>Rate</th><th>Commission</th><% } %><% if (PP) { %><th><%= PP.label %> pcs</th><th><%= PCS ? 'Commission' : 'Bonus' %></th><% if (!PCS) { %><th>Total</th><% } %><% } %></tr></thead>
+          <thead><tr><th class="l">No.</th><th class="l">Date</th><% if (ORD) { %><th class="l">Order</th><% } %><th class="l">Counterparty</th><th class="l cm-hide-sm"><%= ORD ? 'Linked via' : PCS ? 'Status' : 'Comment' %></th><% if (PCS) { %><th class="l cm-hide-sm">Owner</th><% } %><th><%= PCS ? PP.label + ' amount' : 'Amount' %></th><% if (!PCS) { %><th>Rate</th><th>Commission</th><% } %><% if (PP) { %><th><%= PP.label %> pcs</th><th><%= PCS ? 'Commission' : 'Bonus' %></th><% if (!PCS) { %><th>Total</th><% } %><% } %></tr></thead>
           <tbody>
             <% R.payments.slice().reverse().forEach(function (p) { %>
               <tr data-g="<%= p.group %>">
                 <td class="l"><%= p.no %><% if (p.type === 'Cash') { %> <span class="cm-rate">cash</span><% } %></td>
                 <td class="l"><%= p.date.replace('T', ' ') %></td>
+                <% if (ORD) { %><td class="l"><%= p.order %></td><% } %>
                 <td class="l"><%= p.customer %></td>
                 <td class="l cm-hide-sm"><div class="cm-cmt" title="<%= p.comment %>"><%= p.comment %></div></td>
                 <% if (PCS) { %><td class="l cm-hide-sm"><%= p.owner %></td><% } %>
                 <td><%- rub(p.amount, 2) %></td>
-                <% if (!PCS) { %><td><span class="cm-rate <%= p.group !== 'Other customers' ? 'sp' : '' %>"><%= p.rate %>%</span></td>
+                <% if (!PCS) { %><td><span class="cm-rate <%= (E.special || {})[p.group] ? 'sp' : '' %>"><%= p.rate %>%</span></td>
                 <td style="color:var(--accent2);font-weight:700"><%- rub(p.commission, 2) %></td><% } %>
-                <% if (PP) { %><td><%= p.pcs ? p.pcs.toLocaleString('en-US') : '—' %></td><td <%- PCS ? 'style="color:var(--accent2);font-weight:700"' : '' %>><%- p.bonus ? rub(p.bonus) : '—' %></td><% if (!PCS) { %><td style="color:var(--accent2);font-weight:700"><%- rub(p.total, 2) %></td><% } %><% } %>
+                <% if (PP) { %><td><%= p.pcs ? pcsFmt(p.pcs) : '—' %></td><td <%- PCS ? 'style="color:var(--accent2);font-weight:700"' : '' %>><%- p.bonus ? rub(p.bonus, ORD ? 2 : 0) : '—' %></td><% if (!PCS) { %><td style="color:var(--accent2);font-weight:700"><%- rub(p.total, 2) %></td><% } %><% } %>
               </tr>
             <% }) %>
           </tbody>
-          <tfoot><tr><td class="l" colspan="<%= PCS ? 5 : 4 %>" id="cmPayLbl">Total</td><td id="cmPayAmt"><%- rub(T.amount, 2) %></td><% if (!PCS) { %><td></td><td id="cmPayCom" style="color:var(--accent2)"><%- rub(T.commission, 2) %></td><% } %><% if (PP) { %><td id="cmPayPcs"><%= T.pcs.toLocaleString('en-US') %></td><td id="cmPayBonus" <%- PCS ? 'style="color:var(--accent2)"' : '' %>><%- rub(T.bonus) %></td><% if (!PCS) { %><td id="cmPayTot" style="color:var(--accent2)"><%- rub(T.total, 2) %></td><% } %><% } %></tr></tfoot>
+          <tfoot><tr><td class="l" colspan="<%= PCS || ORD ? 5 : 4 %>" id="cmPayLbl">Total</td><td id="cmPayAmt"><%- rub(T.amount, 2) %></td><% if (!PCS) { %><td></td><td id="cmPayCom" style="color:var(--accent2)"><%- rub(T.commission, 2) %></td><% } %><% if (PP) { %><td id="cmPayPcs"><%= pcsFmt(T.pcs) %></td><td id="cmPayBonus" <%- PCS ? 'style="color:var(--accent2)"' : '' %>><%- rub(T.bonus, ORD ? 2 : 0) %></td><% if (!PCS) { %><td id="cmPayTot" style="color:var(--accent2)"><%- rub(T.total, 2) %></td><% } %><% } %></tr></tfoot>
         </table>
       </div>
     </div>
@@ -136,7 +145,7 @@
       document.getElementById('cmPayAmt').textContent = rub(rows.reduce(function (a, p) { return a + p.a; }, 0));
       var set = function (id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
       set('cmPayCom', rub(rows.reduce(function (a, p) { return a + p.c; }, 0)));
-      set('cmPayPcs', rows.reduce(function (a, p) { return a + p.n; }, 0).toLocaleString('en-US'));
+      set('cmPayPcs', rows.reduce(function (a, p) { return a + p.n; }, 0).toLocaleString('en-US', { maximumFractionDigits: 2 }));
       set('cmPayBonus', rub(rows.reduce(function (a, p) { return a + p.b; }, 0)));
       set('cmPayTot', rub(rows.reduce(function (a, p) { return a + p.t; }, 0)));
     });

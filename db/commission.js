@@ -201,27 +201,24 @@ async function getShippedSales(month, model) {
 // basis 'payments': payments RECEIVED in the month (MoySklad Financials →
 //   Payments: incoming payments + cash receipts) whose "Select Office" field
 //   is `office`; rates are % of the payment amount.
-// basis 'orders': sales orders dated in the month whose owner is `ownerUid`
-//   (declined/cancelled orders don't count); rates are % of the order sum,
-//   plus `perPcs.rub` for every pc of a product in the `perPcs.folder`
-//   inventory folder.
+// basis 'order_payments': payments received in the month that are linked to a
+//   sales order owned by `ownerUid` — directly, or through the order's
+//   shipment or invoice; rates are % of the linked amount, plus `perPcs.rub`
+//   per pc of a product in the `perPcs.folder` inventory folder, in proportion
+//   to how much of the order that payment covers.
 // Customers listed in `special` get their own rate, everyone else `rate`.
 const STAFF = {
   alex: {
     name: 'Alex', title: 'Sales Manager', basis: 'payments', office: 'Berlin Office', fromMonth: '2026-10',
-    rate: 0.5, special: { KHAN: 1 },
+    rate: 0.35,
   },
   pasha: {
-    name: 'Pasha', title: 'Sales Manager', basis: 'orders', ownerUid: 'ss1@mustafa7', ownerName: 'SS1 B.', fromMonth: '2026-10',
-    rate: 1.5, special: { KHAN: 0.375, 'MT OPT': 0.375 },
+    name: 'Pasha', title: 'Sales Manager', basis: 'order_payments', ownerUid: 'ss1@mustafa7', ownerName: 'SS1 B.', fromMonth: '2026-10',
+    rate: 1.5, special: { KHAN: 0.35, 'MT OPT': 0.35, 'BHOLA (Sky Seven)': 0.35, BHOLA: 0.35 },
     perPcs: { folder: '3. CHEWING TOBACCO', label: 'Chewing tobacco', rub: 4 },
   },
   // basis 'model_pcs': every sales order in the month (anyone's), paid per pc
-  // of the model only — no % commission.
-  evgeny: {
-    name: 'Evgeny', title: 'Employee', basis: 'model_pcs', fromMonth: '2026-10',
-    rate: 0, perPcs: { model: 'GH23000', label: 'GH23000', rub: 2 },
-  },
+  // of perPcs.model only — no % commission.
 };
 // Draft and declined/cancelled sales orders aren't sales.
 const NOT_SOLD_STATE = '(draft|declin|cancel|черновик|отмен)';
@@ -249,6 +246,9 @@ async function fetchPaymentsIn(month) {
           no: p.name || '—', date: (p.moment || '').slice(0, 16), type: entity === 'cashin' ? 'Cash' : 'Bank',
           customer: (p.agent && p.agent.name) || '—', office: (office && office.value && office.value.name) || null,
           amount: (Number(p.sum) || 0) / 100, comment: p.description || '',
+          links: (p.operations || []).map(o => ({
+            type: o.meta.type, id: o.meta.href.split('/').pop().split('?')[0], sum: (Number(o.linkedSum) || 0) / 100,
+          })),
         });
       }
       if ((d.rows || []).length < 100) break;
@@ -281,35 +281,64 @@ async function folderProductNames(folder) {
   return names;
 }
 
-async function fetchOwnerOrders(s, month) {
-  const [from, to] = monthBounds(month);
-  const [orders, pcsNames] = await Promise.all([
-    query(`
-      SELECT o.id, o.name, to_char(o.moment, 'YYYY-MM-DD HH24:MI') AS date, o.sum_kopecks,
-             COALESCE(cp.name, o.customer_name, '—') AS customer, COALESCE(st.name, o.state_name, '—') AS state
-      FROM ms_orders o
-      JOIN ms_employees e ON e.id = o.owner_id
-      LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
-      LEFT JOIN ms_states st ON st.id = o.state_id
-      WHERE e.uid = $1 AND o.moment >= $2 AND o.moment < $3
-        AND COALESCE(st.name, o.state_name, '') !~* '${NOT_SOLD_STATE}'
-      ORDER BY o.moment`, [s.ownerUid, from, to]),
+// The month's payments split by the owner's sales orders they're linked to:
+// one row per payment + order, for the linked amount only (one payment often
+// covers several orders of a customer).
+async function fetchOwnerPayments(s, month) {
+  const [payments, pcsNames] = await Promise.all([
+    fetchPaymentsIn(month),
     s.perPcs ? folderProductNames(s.perPcs.folder) : Promise.resolve(new Set()),
   ]);
+  const idsOf = type => [...new Set(payments.flatMap(p => p.links.filter(l => l.type === type).map(l => l.id)))];
+  const [demands, invoices] = await Promise.all([
+    query('SELECT id, order_id FROM ms_demands WHERE id = ANY($1)', [idsOf('demand')]),
+    query('SELECT id, order_id FROM ms_invoices_out WHERE id = ANY($1)', [idsOf('invoiceout')]),
+  ]);
+  const orderOfDoc = {};
+  [...demands.rows, ...invoices.rows].forEach(r => { orderOfDoc[r.id] = r.order_id; });
+  const VIA = { customerorder: 'Direct', demand: 'Shipment', invoiceout: 'Invoice' };
+  const orderIdOf = l => (l.type === 'customerorder' ? l.id : orderOfDoc[l.id] || null);
+
+  const linked = [...new Set(payments.flatMap(p => p.links.map(orderIdOf)).filter(Boolean))];
+  const { rows: orders } = await query(`
+    SELECT o.id, o.name, o.sum_kopecks, COALESCE(cp.name, o.customer_name, '—') AS customer
+    FROM ms_orders o
+    JOIN ms_employees e ON e.id = o.owner_id
+    LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
+    WHERE e.uid = $1 AND o.id = ANY($2)`, [s.ownerUid, linked]);
+  const orderById = Object.fromEntries(orders.map(o => [o.id, o]));
+
   const pcsByOrder = {};
-  if (s.perPcs && orders.rows.length) {
+  if (s.perPcs && orders.length) {
     const { rows } = await query(`
       SELECT order_id, COALESCE(NULLIF(base_name, ''), product_name) AS base, product_name, SUM(quantity) AS qty
-      FROM ms_order_positions WHERE order_id = ANY($1) GROUP BY 1, 2, 3`, [orders.rows.map(o => o.id)]);
+      FROM ms_order_positions WHERE order_id = ANY($1) GROUP BY 1, 2, 3`, [orders.map(o => o.id)]);
     rows.forEach(r => {
       if (pcsNames.has(custKey(r.base)) || pcsNames.has(custKey(r.product_name)))
         pcsByOrder[r.order_id] = (pcsByOrder[r.order_id] || 0) + (Number(r.qty) || 0);
     });
   }
-  return orders.rows.map(o => ({
-    no: o.name || '—', date: o.date, type: 'Order', customer: o.customer, comment: o.state,
-    amount: (Number(o.sum_kopecks) || 0) / 100, pcs: pcsByOrder[o.id] || 0,
-  }));
+
+  const out = [];
+  payments.forEach(p => {
+    const perOrder = {};
+    p.links.forEach(l => {
+      const id = orderIdOf(l);
+      if (!orderById[id]) return;
+      const e = (perOrder[id] = perOrder[id] || { amount: 0, via: new Set() });
+      e.amount += l.sum; e.via.add(VIA[l.type] || l.type);
+    });
+    Object.entries(perOrder).forEach(([id, e]) => {
+      const o = orderById[id];
+      const orderSum = (Number(o.sum_kopecks) || 0) / 100;
+      const share = orderSum > 0 ? Math.min(e.amount / orderSum, 1) : 0;
+      out.push({
+        no: p.no, date: p.date, type: p.type, order: o.name, customer: o.customer, comment: [...e.via].join(' + '),
+        amount: e.amount, pcs: (pcsByOrder[id] || 0) * share,
+      });
+    });
+  });
+  return out;
 }
 
 // Every sales order in the month (anyone's) with pcs of the model; `amount`
@@ -339,22 +368,23 @@ async function fetchModelOrders(s, month) {
 async function getStaffReport(key, month) {
   const s = STAFF[key];
   if (!s) throw new Error('Unknown employee');
-  const rows = s.basis === 'orders' ? await fetchOwnerOrders(s, month)
+  const rows = s.basis === 'order_payments' ? await fetchOwnerPayments(s, month)
     : s.basis === 'model_pcs' ? await fetchModelOrders(s, month)
     : (await fetchPaymentsIn(month)).filter(p => p.office === s.office);
   const perPcs = s.perPcs ? s.perPcs.rub : 0;
+  const restGroup = Object.keys(s.special || {}).length ? 'Other customers' : 'All customers';
   const groups = {};   // 'KHAN' / 'Other customers' → totals
   const payments = rows.map(p => {
     const special = Object.keys(s.special || {}).find(k => custKey(k) === custKey(p.customer));
     const rate = special ? s.special[special] : s.rate;
-    const group = special || 'Other customers';
+    const group = special || restGroup;
     const pcs = p.pcs || 0, bonus = pcs * perPcs;
     const commission = p.amount * rate / 100;
     const g = (groups[group] = groups[group] || { group, rate, count: 0, amount: 0, commission: 0 });
     g.count++; g.amount += p.amount; g.commission += commission;
     return { ...p, group, rate, commission, pcs, bonus, total: commission + bonus };
   });
-  const order = [...Object.keys(s.special || {}), 'Other customers'];
+  const order = [...Object.keys(s.special || {}), restGroup];
   const sum = f => payments.reduce((a, p) => a + p[f], 0);
   return {
     key, month, employee: s,
