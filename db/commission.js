@@ -227,6 +227,12 @@ async function getShippedSales(month, model) {
 // without it counts as `networkDefault`.
 // `newCustomer`: customers ticked on the page get this rate instead, for
 // `months` months from the month they were ticked in.
+// Tata, Alex2 and Danial share the same rules.
+const networkManager = (name, ownerUid, ownerName) => ({
+  name, title: 'Sales Manager', basis: 'order_payments', ownerUid, ownerName, fromMonth: '2026-11',
+  rate: 1, networkRates: { Distro: 1, Retail: 1.5 }, networkDefault: 'Distro',
+  newCustomer: { rate: 2, months: 3, group: 'New customers' },
+});
 const STAFF = {
   alex: {
     name: 'Alex', title: 'Sales Manager', basis: 'payments', office: 'Berlin Office', fromMonth: '2026-10',
@@ -237,11 +243,9 @@ const STAFF = {
     rate: 1.5, special: { KHAN: 0.35, 'MT OPT': 0.35, 'BHOLA (Sky Seven)': 0.35, BHOLA: 0.35 },
     perPcs: { folder: '3. CHEWING TOBACCO', label: 'Chewing tobacco', rub: 4 },
   },
-  tata: {
-    name: 'Tata', title: 'Sales Manager', basis: 'order_payments', ownerUid: 'tata@mustafa7', ownerName: 'Tata B.', fromMonth: '2026-11',
-    rate: 1, networkRates: { Distro: 1, Retail: 1.5 }, networkDefault: 'Distro',
-    newCustomer: { rate: 2, months: 3, group: 'New customers' },
-  },
+  tata: networkManager('Tata', 'tata@mustafa7', 'Tata B.'),
+  alex2: networkManager('Alex2', 'alexyar@mustafa7', 'alexyar B.'),
+  danial: networkManager('Danial', 'dan@mustafa7', 'Dan Balan B.'),
   // basis 'model_pcs': every sales order in the month (anyone's), paid per pc
   // of perPcs.model only — no % commission.
 };
@@ -489,7 +493,7 @@ async function getStaffReport(key, month) {
       group = s.networkRates[p.network] != null ? p.network : s.networkDefault;
       rate = s.networkRates[group];
       comment = `${p.comment} · ${p.network || group + ' (not selected)'}`;
-      if (isNewCustomer(p.customer)) { group = s.newCustomer.group; rate = s.newCustomer.rate; }
+      if (isNewCustomer(p.customer)) { group = s.newCustomer.group; rate = s.newCustomer.rate; comment = `${p.comment} · New customer`; }
     }
     const pcs = p.pcs || 0, bonus = pcs * perPcs;
     const commission = p.amount * rate / 100;
