@@ -424,6 +424,14 @@ app.get('/admin/commission', requireAdmin, async (req, res) => {
     res.render('commission', { ...c, active: 'admin-commission', report, months, staff: commission.STAFF });
   } catch (e) { res.status(500).render('error', { message: e.message }); }
 });
+app.post('/api/admin/commission/new-customer', requireAdmin, async (req, res) => {
+  try {
+    const { key, customer, month, on } = req.body || {};
+    if (!commission.isMonth(month) || !customer) return res.status(400).json({ ok: false, error: 'customer and month are required' });
+    await commission.setNewCustomer(String(key), String(customer), month, !!on);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 // Sales-manager tab: commission on payments received (see getStaffReport)
 app.get('/admin/commission/staff/:key', requireAdmin, async (req, res) => {
   try {

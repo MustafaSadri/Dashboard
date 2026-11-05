@@ -223,6 +223,10 @@ async function getShippedSales(month, model) {
 //   per pc of a product in the `perPcs.folder` inventory folder, in proportion
 //   to how much of the order that payment covers.
 // Customers listed in `special` get their own rate, everyone else `rate`.
+// `networkRates`: rate by the sales order's "Sales Network" field; an order
+// without it counts as `networkDefault`.
+// `newCustomer`: customers ticked on the page get this rate instead, for
+// `months` months from the month they were ticked in.
 const STAFF = {
   alex: {
     name: 'Alex', title: 'Sales Manager', basis: 'payments', office: 'Berlin Office', fromMonth: '2026-10',
@@ -232,6 +236,11 @@ const STAFF = {
     name: 'Pasha', title: 'Sales Manager', basis: 'order_payments', ownerUid: 'ss1@mustafa7', ownerName: 'SS1 B.', fromMonth: '2026-10',
     rate: 1.5, special: { KHAN: 0.35, 'MT OPT': 0.35, 'BHOLA (Sky Seven)': 0.35, BHOLA: 0.35 },
     perPcs: { folder: '3. CHEWING TOBACCO', label: 'Chewing tobacco', rub: 4 },
+  },
+  tata: {
+    name: 'Tata', title: 'Sales Manager', basis: 'order_payments', ownerUid: 'tata@mustafa7', ownerName: 'Tata B.', fromMonth: '2026-11',
+    rate: 1, networkRates: { Distro: 1, Retail: 1.5 }, networkDefault: 'Distro',
+    newCustomer: { rate: 2, months: 3, group: 'New customers' },
   },
   // basis 'model_pcs': every sales order in the month (anyone's), paid per pc
   // of perPcs.model only — no % commission.
@@ -296,13 +305,89 @@ async function loadFolderProductNames(folder) {
   return names;
 }
 
+// "Sales Network" of the owner's sales orders (order id → value) — a custom
+// field that isn't part of the synced data, so it comes from the MoySklad API.
+function ownerOrderNetworks(s) {
+  return swr('networks_' + s.ownerUid, 3 * 60 * 1000, 20 * 60 * 1000, () => loadOwnerOrderNetworks(s));
+}
+async function loadOwnerOrderNetworks(s) {
+  const { rows } = await query('SELECT id FROM ms_employees WHERE uid = $1', [s.ownerUid]);
+  if (!rows.length) return {};
+  const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
+  const filter = encodeURIComponent(`owner=${MS_BASE}/entity/employee/${rows[0].id}`);
+  const map = {};
+  for (let offset = 0; ; offset += 100) {
+    const r = await fetch(`${MS_BASE}/entity/customerorder?limit=100&offset=${offset}&filter=${filter}`,
+      { headers, signal: AbortSignal.timeout(20000) });
+    if (!r.ok) throw new Error(`MoySklad sales orders: HTTP ${r.status}`);
+    const d = await r.json();
+    for (const o of d.rows || []) {
+      const a = (o.attributes || []).find(x => x.name === 'Sales Network');
+      if (a && a.value && a.value.name) map[o.id] = a.value.name;
+    }
+    if ((d.rows || []).length < 100) break;
+  }
+  return map;
+}
+
+// Customers ticked as new, per employee. Created here so it needs no separate
+// migration step on deploy.
+let _newCustTable = null;
+function ensureNewCustomerTable() {
+  return _newCustTable || (_newCustTable = query(`
+    CREATE TABLE IF NOT EXISTS commission_new_customers (
+      employee_key  TEXT NOT NULL,
+      customer_key  TEXT NOT NULL,
+      customer_name TEXT NOT NULL,
+      start_month   TEXT NOT NULL,
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (employee_key, customer_key)
+    )`).catch(e => { _newCustTable = null; throw e; }));
+}
+const addMonths = (month, n) => {
+  const [y, m] = month.split('-').map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+};
+async function getNewCustomers(key) {
+  await ensureNewCustomerTable();
+  const { rows } = await query('SELECT customer_key, start_month FROM commission_new_customers WHERE employee_key = $1', [key]);
+  return Object.fromEntries(rows.map(r => [r.customer_key, r.start_month]));
+}
+async function setNewCustomer(key, customer, month, on) {
+  const s = STAFF[key];
+  if (!s || !s.newCustomer) throw new Error('Unknown employee');
+  await ensureNewCustomerTable();
+  if (!on) {
+    await query('DELETE FROM commission_new_customers WHERE employee_key = $1 AND customer_key = $2', [key, custKey(customer)]);
+    return;
+  }
+  await query(`
+    INSERT INTO commission_new_customers (employee_key, customer_key, customer_name, start_month)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (employee_key, customer_key)
+    DO UPDATE SET customer_name = EXCLUDED.customer_name, start_month = EXCLUDED.start_month, updated_at = now()`,
+    [key, custKey(customer), customer, month]);
+}
+async function ownerCustomers(s) {
+  const { rows } = await query(`
+    SELECT DISTINCT COALESCE(cp.name, o.customer_name) AS name
+    FROM ms_orders o
+    JOIN ms_employees e ON e.id = o.owner_id
+    LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
+    WHERE e.uid = $1 AND COALESCE(cp.name, o.customer_name) IS NOT NULL
+    ORDER BY 1`, [s.ownerUid]);
+  return rows.map(r => r.name);
+}
+
 // The month's payments split by the owner's sales orders they're linked to:
 // one row per payment + order, for the linked amount only (one payment often
 // covers several orders of a customer).
 async function fetchOwnerPayments(s, month) {
-  const [payments, pcsNames] = await Promise.all([
+  const [payments, pcsNames, networks] = await Promise.all([
     fetchPaymentsIn(month),
     s.perPcs ? folderProductNames(s.perPcs.folder) : Promise.resolve(new Set()),
+    s.networkRates ? ownerOrderNetworks(s) : Promise.resolve({}),
   ]);
   const idsOf = type => [...new Set(payments.flatMap(p => p.links.filter(l => l.type === type).map(l => l.id)))];
   const [demands, invoices] = await Promise.all([
@@ -352,7 +437,7 @@ async function fetchOwnerPayments(s, month) {
       const share = orderSum > 0 ? Math.min(e.amount / orderSum, 1) : 0;
       out.push({
         no: p.no, date: p.date, type: p.type, order: o.name, customer: o.customer, comment: [...e.via].join(' + '),
-        amount: e.amount, pcs: (pcsByOrder[id] || 0) * share,
+        network: networks[id] || null, amount: e.amount, pcs: (pcsByOrder[id] || 0) * share,
       });
     });
   });
@@ -390,22 +475,36 @@ async function getStaffReport(key, month) {
     : s.basis === 'model_pcs' ? await fetchModelOrders(s, month)
     : (await fetchPaymentsIn(month)).filter(p => p.office === s.office);
   const perPcs = s.perPcs ? s.perPcs.rub : 0;
+  const newCustomers = s.newCustomer ? await getNewCustomers(key) : {};
+  const isNewCustomer = name => {
+    const start = newCustomers[custKey(name)];
+    return !!start && month >= start && month < addMonths(start, s.newCustomer.months);
+  };
   const restGroup = Object.keys(s.special || {}).length ? 'Other customers' : 'All customers';
   const groups = {};   // 'KHAN' / 'Other customers' → totals
   const payments = rows.map(p => {
     const special = Object.keys(s.special || {}).find(k => custKey(k) === custKey(p.customer));
-    const rate = special ? s.special[special] : s.rate;
-    const group = special || restGroup;
+    let rate = special ? s.special[special] : s.rate, group = special || restGroup, comment = p.comment;
+    if (s.networkRates) {
+      group = s.networkRates[p.network] != null ? p.network : s.networkDefault;
+      rate = s.networkRates[group];
+      comment = `${p.comment} · ${p.network || group + ' (not selected)'}`;
+      if (isNewCustomer(p.customer)) { group = s.newCustomer.group; rate = s.newCustomer.rate; }
+    }
     const pcs = p.pcs || 0, bonus = pcs * perPcs;
     const commission = p.amount * rate / 100;
     const g = (groups[group] = groups[group] || { group, rate, count: 0, amount: 0, commission: 0 });
     g.count++; g.amount += p.amount; g.commission += commission;
-    return { ...p, group, rate, commission, pcs, bonus, total: commission + bonus };
+    return { ...p, comment, group, rate, commission, pcs, bonus, total: commission + bonus };
   });
-  const order = [...Object.keys(s.special || {}), restGroup];
+  const order = s.networkRates ? [...Object.keys(s.networkRates), s.newCustomer.group] : [...Object.keys(s.special || {}), restGroup];
   const sum = f => payments.reduce((a, p) => a + p[f], 0);
+  const customers = s.newCustomer ? (await ownerCustomers(s)).map(name => {
+    const start = newCustomers[custKey(name)] || null;
+    return { name, start, until: start && addMonths(start, s.newCustomer.months - 1), active: isNewCustomer(name) };
+  }) : null;
   return {
-    key, month, employee: s,
+    key, month, employee: s, customers,
     groups: order.filter(g => groups[g]).map(g => groups[g]),
     payments,
     totals: {
@@ -426,8 +525,9 @@ function warmCaches() {
     fetchPaymentsIn(ym(now)),
     fetchPaymentsIn(ym(new Date(now.getFullYear(), now.getMonth() - 1, 1))),
     ...Object.values(STAFF).filter(s => s.perPcs && s.perPcs.folder).map(s => folderProductNames(s.perPcs.folder)),
+    ...Object.values(STAFF).filter(s => s.networkRates).map(ownerOrderNetworks),
   ];
   return Promise.allSettled(jobs);
 }
 
-module.exports = { isMonth, getReport, getShippedSales, STAFF, getStaffReport, warmCaches };
+module.exports = { isMonth, getReport, getShippedSales, STAFF, getStaffReport, setNewCustomer, warmCaches };

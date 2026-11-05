@@ -6,6 +6,7 @@
     <%
       var R = report, T = report.totals, E = report.employee, ORD = E.basis === 'order_payments', PCS = E.basis === 'model_pcs', PP = E.perPcs;
       var pcsFmt = function (n) { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); };
+      var monthName = function (m) { var p = m.split('-'); return new Date(+p[0], +p[1] - 1, 1).toLocaleString('en', { month: 'short', year: 'numeric' }); };
       var plural = function (n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); };
       var rub = function (n, d) { return n == null ? '—' : (n < 0 ? '−₽' : '₽') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }); };
       var monthLabel = (months.find(function (m) { return m.key === R.month; }) || { label: R.month }).label;
@@ -23,6 +24,11 @@
       .cm-emps { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
       .cm-emp { padding:8px 16px; border-radius:999px; border:1.5px solid var(--border); background:transparent; color:var(--text2); font-size:13px; font-weight:700; text-decoration:none; }
       .cm-emp.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+      .cm-custs { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:8px; }
+      .cm-cust { display:flex; align-items:center; gap:10px; padding:9px 12px; border:1px solid var(--border); border-radius:9px; font-size:13px; cursor:pointer; }
+      .cm-cust.on { border-color:var(--accent); background:rgba(217,119,87,.08); }
+      .cm-cust input { width:16px; height:16px; accent-color:var(--accent); flex:none; }
+      .cm-cust small { display:block; font-size:10.5px; color:var(--text2); margin-top:1px; }
       .cm-rate { font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:8px; background:rgba(79,174,138,.14); color:var(--accent2); }
       .cm-rate.sp { background:rgba(64,160,255,.13); color:#2f8de4; }
       .cm-chips { display:flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
@@ -44,7 +50,7 @@
 
     <div class="cm-emps">
       <% Object.keys(staff).forEach(function (k) { %>
-        <a class="cm-emp <%= k === R.key ? 'on' : '' %>" href="/admin/commission/staff/<%= k %>?month=<%= R.month %>"><%= staff[k].name %><%= staff[k].ownerName ? ' (' + staff[k].ownerName + ')' : '' %></a>
+        <a class="cm-emp <%= k === R.key ? 'on' : '' %>" href="/admin/commission/staff/<%= k %>?month=<%= R.month %>"><%= staff[k].name %><%= staff[k].ownerName && staff[k].ownerName.indexOf(staff[k].name) !== 0 ? ' (' + staff[k].ownerName + ')' : '' %></a>
       <% }) %>
     </div>
 
@@ -97,6 +103,20 @@
       </div>
     </div>
 
+    <% if (R.customers) { %>
+    <div class="card" style="margin-top:20px">
+      <div class="card-title"><i class="fas fa-user-plus"></i> New customers — <%= E.newCustomer.rate %>% for <%= E.newCustomer.months %> months</div>
+      <div class="cm-custs" id="cmCusts" data-key="<%= R.key %>" data-month="<%= R.month %>">
+        <% R.customers.forEach(function (c) { %>
+          <label class="cm-cust <%= c.active ? 'on' : '' %>">
+            <input type="checkbox" data-name="<%= c.name %>" <%= c.start ? 'checked' : '' %>>
+            <span><%= c.name %><% if (c.start) { %><small><%= E.newCustomer.rate %>%: <%= monthName(c.start) %> – <%= monthName(c.until) %></small><% } %></span>
+          </label>
+        <% }) %>
+      </div>
+    </div>
+    <% } %>
+
     <div class="card" style="margin-top:20px">
       <div class="card-title" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span><i class="fas fa-list"></i> <%= PCS ? 'Sales orders' : 'Payments' %> — <%= monthLabel %></span>
@@ -133,6 +153,22 @@
 <%- include('partials/foot') %>
 <script>
 (function () {
+  var box = document.getElementById('cmCusts');
+  if (box) box.addEventListener('change', function (e) {
+    var cb = e.target;
+    box.querySelectorAll('input').forEach(function (i) { i.disabled = true; });
+    fetch('/api/admin/commission/new-customer', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: box.dataset.key, month: box.dataset.month, customer: cb.dataset.name, on: cb.checked }),
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) throw new Error(d.error || 'Failed');
+      location.reload();
+    }).catch(function (err) {
+      cb.checked = !cb.checked;
+      box.querySelectorAll('input').forEach(function (i) { i.disabled = false; });
+      window.alert('Could not save: ' + err.message);
+    });
+  });
   var P = <%- JSON.stringify(R.payments.map(function (p) { return { g: p.group, a: p.amount, c: p.commission, n: p.pcs, b: p.bonus, t: p.total }; })) %>;
   function rub(n) { return '₽' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   document.querySelectorAll('.cm-chip').forEach(function (chip) {
