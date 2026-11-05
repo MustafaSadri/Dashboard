@@ -36,7 +36,35 @@ function swr(key, freshMs, staleMs, load) {
     .finally(() => { e.pending = null; }));
   if (age < freshMs) return Promise.resolve(e.value);
   if (age < staleMs) { refresh().catch(() => {}); return Promise.resolve(e.value); }
-  return refresh();
+  return refresh().catch(err => { if (e.at) return e.value; throw err; });   // older copy beats an error page
+}
+
+// Every MoySklad call here goes through this: at most MS_PARALLEL at a time
+// (the app shares the token with the sync, and MoySklad answers 429 to too
+// many parallel requests), retrying a 429 or 5xx after a short wait.
+const MS_PARALLEL = 2;
+const MS_RETRIES = 6;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let _msActive = 0;
+const _msQueue = [];
+async function msSlot(fn) {
+  if (_msActive >= MS_PARALLEL) await new Promise(r => _msQueue.push(r));
+  else _msActive++;
+  try { return await fn(); }
+  finally { const next = _msQueue.shift(); if (next) next(); else _msActive--; }
+}
+async function msGet(path, what) {
+  const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
+  for (let attempt = 0; ; attempt++) {
+    const r = await msSlot(() => fetch(MS_BASE + path, { headers, signal: AbortSignal.timeout(20000) }));
+    if (r.ok) return r.json();
+    if ((r.status === 429 || r.status >= 500) && attempt < MS_RETRIES) {
+      const asked = Number(r.headers.get('x-lognex-retry-after')) || 0;
+      await sleep(Math.min(Math.max(asked, 500 * 2 ** attempt), 8000));
+      continue;
+    }
+    throw new Error(`MoySklad ${what}: HTTP ${r.status}`);
+  }
 }
 
 const isMonth = m => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(m || ''));
@@ -70,12 +98,7 @@ function fetchPurchaseLines() {
   return swr('purchase_lines', 10 * 60 * 1000, 6 * 60 * 60 * 1000, loadPurchaseLines);
 }
 async function loadPurchaseLines() {
-  const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
-  const get = async path => {
-    const r = await fetch(MS_BASE + path, { headers, signal: AbortSignal.timeout(20000) });
-    if (!r.ok) throw new Error(`MoySklad purchase orders: HTTP ${r.status}`);
-    return r.json();
-  };
+  const get = path => msGet(path, 'purchase orders');
   const orders = [];
   for (let offset = 0; ; offset += 100) {
     const d = await get(`/entity/purchaseorder?limit=100&offset=${offset}&expand=agent`);
@@ -261,15 +284,11 @@ function fetchPaymentsIn(month) {
 }
 async function loadPaymentsIn(month) {
   const [from, to] = monthBounds(month);
-  const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
   const filter = encodeURIComponent(`moment>=${from};moment<${to}`);
   const rows = [];
   for (const entity of ['paymentin', 'cashin']) {
     for (let offset = 0; ; offset += 100) {
-      const r = await fetch(`${MS_BASE}/entity/${entity}?limit=100&offset=${offset}&filter=${filter}&expand=agent&order=moment,asc`,
-        { headers, signal: AbortSignal.timeout(20000) });
-      if (!r.ok) throw new Error(`MoySklad payments: HTTP ${r.status}`);
-      const d = await r.json();
+      const d = await msGet(`/entity/${entity}?limit=100&offset=${offset}&filter=${filter}&expand=agent&order=moment,asc`, 'payments');
       for (const p of d.rows || []) {
         const office = (p.attributes || []).find(a => a.name === 'Select Office');
         rows.push({
@@ -296,13 +315,9 @@ function folderProductNames(folder) {
   return swr('folder_' + folder, 30 * 60 * 1000, 24 * 60 * 60 * 1000, () => loadFolderProductNames(folder));
 }
 async function loadFolderProductNames(folder) {
-  const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
   const names = new Set();
   for (let offset = 0; ; offset += 1000) {
-    const r = await fetch(`${MS_BASE}/entity/product?limit=1000&offset=${offset}&filter=${encodeURIComponent('pathName~' + folder)}`,
-      { headers, signal: AbortSignal.timeout(20000) });
-    if (!r.ok) throw new Error(`MoySklad products: HTTP ${r.status}`);
-    const d = await r.json();
+    const d = await msGet(`/entity/product?limit=1000&offset=${offset}&filter=${encodeURIComponent('pathName~' + folder)}`, 'products');
     (d.rows || []).forEach(p => names.add(custKey(p.name)));
     if ((d.rows || []).length < 1000) break;
   }
@@ -317,14 +332,10 @@ function ownerOrderNetworks(s) {
 async function loadOwnerOrderNetworks(s) {
   const { rows } = await query('SELECT id FROM ms_employees WHERE uid = $1', [s.ownerUid]);
   if (!rows.length) return {};
-  const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
   const filter = encodeURIComponent(`owner=${MS_BASE}/entity/employee/${rows[0].id}`);
   const map = {};
   for (let offset = 0; ; offset += 100) {
-    const r = await fetch(`${MS_BASE}/entity/customerorder?limit=100&offset=${offset}&filter=${filter}`,
-      { headers, signal: AbortSignal.timeout(20000) });
-    if (!r.ok) throw new Error(`MoySklad sales orders: HTTP ${r.status}`);
-    const d = await r.json();
+    const d = await msGet(`/entity/customerorder?limit=100&offset=${offset}&filter=${filter}`, 'sales orders');
     for (const o of d.rows || []) {
       const a = (o.attributes || []).find(x => x.name === 'Sales Network');
       if (a && a.value && a.value.name) map[o.id] = a.value.name;
@@ -521,17 +532,20 @@ async function getStaffReport(key, month) {
 // Keeps the MoySklad data behind the commission pages loaded, so opening them
 // doesn't wait on the API: purchase orders, the per-pc product folders, and
 // this and last month's payments. Each call only reloads what's out of date.
-function warmCaches() {
+async function warmCaches() {
   const now = new Date();
   const ym = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const staff = Object.values(STAFF);
   const jobs = [
-    fetchPurchaseLines(),
-    fetchPaymentsIn(ym(now)),
-    fetchPaymentsIn(ym(new Date(now.getFullYear(), now.getMonth() - 1, 1))),
-    ...Object.values(STAFF).filter(s => s.perPcs && s.perPcs.folder).map(s => folderProductNames(s.perPcs.folder)),
-    ...Object.values(STAFF).filter(s => s.networkRates).map(ownerOrderNetworks),
+    () => fetchPaymentsIn(ym(now)),
+    () => fetchPaymentsIn(ym(new Date(now.getFullYear(), now.getMonth() - 1, 1))),
+    ...staff.filter(s => s.networkRates).map(s => () => ownerOrderNetworks(s)),
+    ...staff.filter(s => s.perPcs && s.perPcs.folder).map(s => () => folderProductNames(s.perPcs.folder)),
+    () => fetchPurchaseLines(),
   ];
-  return Promise.allSettled(jobs);
+  for (const job of jobs) {   // one at a time, so this never crowds out the sync
+    try { await job(); } catch (e) { console.error('[commission] warm-up:', e.message); }
+  }
 }
 
 module.exports = { isMonth, getReport, getShippedSales, STAFF, getStaffReport, setNewCustomer, warmCaches };
