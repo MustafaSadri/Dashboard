@@ -5119,3 +5119,10 @@ startServer(Number(PORT));
 
 // Background MoySklad → Postgres sync (no-op if DATABASE_URL isn't set)
 require('./sync/scheduler').start();
+
+// Keep the Commission pages' MoySklad data loaded (first run shortly after
+// start, then every 3 min — each run only reloads what's out of date).
+if (process.env.TOKEN) {
+  setTimeout(() => commission.warmCaches(), 15 * 1000).unref();
+  setInterval(() => commission.warmCaches(), 3 * 60 * 1000).unref();
+}

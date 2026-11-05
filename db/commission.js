@@ -23,6 +23,22 @@ const SHARE_IMPORTED = 25.5;
 const SHARE_LOCAL = 40;
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
 
+// MoySklad API data cache: within `freshMs` it's used as is; up to `staleMs`
+// the last copy is returned at once and refreshed in the background (so the
+// page never waits on MoySklad); older than that, the request waits for a
+// fresh load. Concurrent loads of the same key share one request.
+const _swr = {};
+function swr(key, freshMs, staleMs, load) {
+  const e = (_swr[key] = _swr[key] || {});
+  const age = e.at ? Date.now() - e.at : Infinity;
+  const refresh = () => e.pending || (e.pending = load()
+    .then(v => { e.value = v; e.at = Date.now(); return v; })
+    .finally(() => { e.pending = null; }));
+  if (age < freshMs) return Promise.resolve(e.value);
+  if (age < staleMs) { refresh().catch(() => {}); return Promise.resolve(e.value); }
+  return refresh();
+}
+
 const isMonth = m => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(m || ''));
 function monthBounds(month) {
   const [y, m] = month.split('-').map(Number);
@@ -47,12 +63,13 @@ function baseNameOf(name) {
 // Every purchase-order line (model, unit price after discount, qty, PO
 // number/date/supplier) straight from the MoySklad API. Purchase orders
 // aren't part of the dashboard's synced data, so they're fetched here and
-// cached for 10 min. Zero-price lines (e.g. an import order entered without
+// cached (see swr: fresh 10 min, then refreshed in the background). Zero-price lines (e.g. an import order entered without
 // prices) are kept for the per-model detail but excluded from averages —
 // they'd drag the average towards zero.
-let _poCache = null;
-async function fetchPurchaseLines() {
-  if (_poCache && Date.now() - _poCache.at < 10 * 60 * 1000) return _poCache.lines;
+function fetchPurchaseLines() {
+  return swr('purchase_lines', 10 * 60 * 1000, 6 * 60 * 60 * 1000, loadPurchaseLines);
+}
+async function loadPurchaseLines() {
   const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
   const get = async path => {
     const r = await fetch(MS_BASE + path, { headers, signal: AbortSignal.timeout(20000) });
@@ -81,7 +98,6 @@ async function fetchPurchaseLines() {
       }
     }));
   }
-  _poCache = { lines, at: Date.now() };
   return lines;
 }
 
@@ -225,11 +241,12 @@ const NOT_SOLD_STATE = '(draft|declin|cancel|черновик|отмен)';
 const custKey = n => String(n || '').trim().toUpperCase();
 
 // "Select Office" is a custom field that isn't part of the synced data, so the
-// month's payments come straight from the MoySklad API (cached 5 min).
-const _payCache = {};
-async function fetchPaymentsIn(month) {
-  const hit = _payCache[month];
-  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.rows;
+// month's payments come straight from the MoySklad API (fresh 3 min, then
+// refreshed in the background — warmCaches keeps the current month warm).
+function fetchPaymentsIn(month) {
+  return swr('payments_' + month, 3 * 60 * 1000, 20 * 60 * 1000, () => loadPaymentsIn(month));
+}
+async function loadPaymentsIn(month) {
   const [from, to] = monthBounds(month);
   const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
   const filter = encodeURIComponent(`moment>=${from};moment<${to}`);
@@ -255,18 +272,17 @@ async function fetchPaymentsIn(month) {
     }
   }
   rows.sort((a, b) => a.date.localeCompare(b.date));
-  _payCache[month] = { rows, at: Date.now() };
   return rows;
 }
 
 // Names of the products in an inventory folder (and its subfolders), from the
 // MoySklad API — product folders aren't part of the synced data. Order lines
 // are flavour variants ("ODEN'S TAR (16 гр.) (Cola, 20 pouches)"), so they're
-// matched on their base name. Cached 30 min.
-const _folderCache = {};
-async function folderProductNames(folder) {
-  const hit = _folderCache[folder];
-  if (hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.names;
+// matched on their base name. Fresh 30 min, then refreshed in the background.
+function folderProductNames(folder) {
+  return swr('folder_' + folder, 30 * 60 * 1000, 24 * 60 * 60 * 1000, () => loadFolderProductNames(folder));
+}
+async function loadFolderProductNames(folder) {
   const headers = { Authorization: 'Bearer ' + process.env.TOKEN, Accept: 'application/json;charset=utf-8' };
   const names = new Set();
   for (let offset = 0; ; offset += 1000) {
@@ -277,7 +293,6 @@ async function folderProductNames(folder) {
     (d.rows || []).forEach(p => names.add(custKey(p.name)));
     if ((d.rows || []).length < 1000) break;
   }
-  _folderCache[folder] = { names, at: Date.now() };
   return names;
 }
 
@@ -300,24 +315,27 @@ async function fetchOwnerPayments(s, month) {
   const orderIdOf = l => (l.type === 'customerorder' ? l.id : orderOfDoc[l.id] || null);
 
   const linked = [...new Set(payments.flatMap(p => p.links.map(orderIdOf)).filter(Boolean))];
-  const { rows: orders } = await query(`
-    SELECT o.id, o.name, o.sum_kopecks, COALESCE(cp.name, o.customer_name, '—') AS customer
-    FROM ms_orders o
-    JOIN ms_employees e ON e.id = o.owner_id
-    LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
-    WHERE e.uid = $1 AND o.id = ANY($2)`, [s.ownerUid, linked]);
+  const [{ rows: orders }, positions] = await Promise.all([
+    query(`
+      SELECT o.id, o.name, o.sum_kopecks, COALESCE(cp.name, o.customer_name, '—') AS customer
+      FROM ms_orders o
+      JOIN ms_employees e ON e.id = o.owner_id
+      LEFT JOIN ms_counterparties cp ON cp.id = o.customer_id
+      WHERE e.uid = $1 AND o.id = ANY($2)`, [s.ownerUid, linked]),
+    s.perPcs && linked.length ? query(`
+      SELECT p.order_id, COALESCE(NULLIF(p.base_name, ''), p.product_name) AS base, p.product_name, SUM(p.quantity) AS qty
+      FROM ms_order_positions p
+      JOIN ms_orders o ON o.id = p.order_id
+      JOIN ms_employees e ON e.id = o.owner_id
+      WHERE e.uid = $1 AND p.order_id = ANY($2) GROUP BY 1, 2, 3`, [s.ownerUid, linked]) : Promise.resolve({ rows: [] }),
+  ]);
   const orderById = Object.fromEntries(orders.map(o => [o.id, o]));
 
   const pcsByOrder = {};
-  if (s.perPcs && orders.length) {
-    const { rows } = await query(`
-      SELECT order_id, COALESCE(NULLIF(base_name, ''), product_name) AS base, product_name, SUM(quantity) AS qty
-      FROM ms_order_positions WHERE order_id = ANY($1) GROUP BY 1, 2, 3`, [orders.map(o => o.id)]);
-    rows.forEach(r => {
-      if (pcsNames.has(custKey(r.base)) || pcsNames.has(custKey(r.product_name)))
-        pcsByOrder[r.order_id] = (pcsByOrder[r.order_id] || 0) + (Number(r.qty) || 0);
-    });
-  }
+  positions.rows.forEach(r => {
+    if (pcsNames.has(custKey(r.base)) || pcsNames.has(custKey(r.product_name)))
+      pcsByOrder[r.order_id] = (pcsByOrder[r.order_id] || 0) + (Number(r.qty) || 0);
+  });
 
   const out = [];
   payments.forEach(p => {
@@ -397,4 +415,19 @@ async function getStaffReport(key, month) {
   };
 }
 
-module.exports = { isMonth, getReport, getShippedSales, STAFF, getStaffReport };
+// Keeps the MoySklad data behind the commission pages loaded, so opening them
+// doesn't wait on the API: purchase orders, the per-pc product folders, and
+// this and last month's payments. Each call only reloads what's out of date.
+function warmCaches() {
+  const now = new Date();
+  const ym = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const jobs = [
+    fetchPurchaseLines(),
+    fetchPaymentsIn(ym(now)),
+    fetchPaymentsIn(ym(new Date(now.getFullYear(), now.getMonth() - 1, 1))),
+    ...Object.values(STAFF).filter(s => s.perPcs && s.perPcs.folder).map(s => folderProductNames(s.perPcs.folder)),
+  ];
+  return Promise.allSettled(jobs);
+}
+
+module.exports = { isMonth, getReport, getShippedSales, STAFF, getStaffReport, warmCaches };
