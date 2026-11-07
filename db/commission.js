@@ -269,6 +269,13 @@ const STAFF = {
   tata: networkManager('Tata', 'tata@mustafa7', 'Tata B.'),
   alex2: networkManager('Alex2', 'alexyar@mustafa7', 'alexyar B.'),
   danial: networkManager('Danial', 'dan@mustafa7', 'Dan Balan B.'),
+  // basis 'shipment_growth': `rub` per pc of everything shipped in the month;
+  // pcs of the growth models and folder above baseline + pct% earn `overRub`
+  // instead. STAR 30000 is VOZOL 30000's old name: earlier shipments keep it.
+  evgeny: {
+    name: 'Evgeny', title: 'Sales Director', basis: 'shipment_growth', fromMonth: '2026-10',
+    rub: 2, growth: { models: ['GH23000', 'STAR 30000'], folder: 'VOZOL', label: 'GH + VOZOL', baseline: 163000, pct: 20, overRub: 3.5 },
+  },
   // basis 'model_pcs': every sales order in the month (anyone's), paid per pc
   // of perPcs.model only — no % commission.
 };
@@ -483,9 +490,39 @@ async function fetchModelOrders(s, month) {
   }));
 }
 
+async function getGrowthReport(key, s, month) {
+  const [from, to] = monthBounds(month);
+  const g = s.growth;
+  const [sales, shipCount, folderNames] = await Promise.all([
+    query(`
+      SELECT COALESCE(NULLIF(p.base_name, ''), p.product_name, '—') AS model, SUM(p.quantity) AS pcs
+      FROM ms_demand_positions p JOIN ms_demands d ON d.id = p.demand_id
+      WHERE d.moment >= $1 AND d.moment < $2
+      GROUP BY 1 ORDER BY 2 DESC`, [from, to]),
+    query('SELECT COUNT(*)::int AS n FROM ms_demands WHERE moment >= $1 AND moment < $2', [from, to]),
+    folderProductNames(g.folder),
+  ]);
+  const models = sales.rows.map(r => ({
+    model: r.model, pcs: Number(r.pcs) || 0,
+    counted: g.models.some(n => custKey(r.model).includes(n)) || folderNames.has(custKey(r.model)),
+  }));
+  const pcs = models.reduce((a, m) => a + m.pcs, 0);
+  const growthPcs = models.filter(m => m.counted).reduce((a, m) => a + m.pcs, 0);
+  const target = g.baseline * (1 + g.pct / 100);
+  const over = Math.max(growthPcs - target, 0);
+  const rest = pcs - over;
+  const overCommission = over * g.overRub, restCommission = rest * s.rub;
+  return {
+    key, month, employee: s, customers: null, groups: [], payments: [], models,
+    growth: { target, growthPcs, over, rest, overCommission, restCommission },
+    totals: { count: shipCount.rows[0].n, pcs, total: overCommission + restCommission },
+  };
+}
+
 async function getStaffReport(key, month) {
   const s = STAFF[key];
   if (!s) throw new Error('Unknown employee');
+  if (s.basis === 'shipment_growth') return getGrowthReport(key, s, month);
   const rows = s.basis === 'order_payments' ? await fetchOwnerPayments(s, month)
     : s.basis === 'model_pcs' ? await fetchModelOrders(s, month)
     : (await fetchPaymentsIn(month)).filter(p => p.office === s.office);
@@ -541,6 +578,7 @@ async function warmCaches() {
     () => fetchPaymentsIn(ym(new Date(now.getFullYear(), now.getMonth() - 1, 1))),
     ...staff.filter(s => s.networkRates).map(s => () => ownerOrderNetworks(s)),
     ...staff.filter(s => s.perPcs && s.perPcs.folder).map(s => () => folderProductNames(s.perPcs.folder)),
+    ...staff.filter(s => s.growth).map(s => () => folderProductNames(s.growth.folder)),
     () => fetchPurchaseLines(),
   ];
   for (const job of jobs) {   // one at a time, so this never crowds out the sync

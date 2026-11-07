@@ -4,7 +4,7 @@
   <%- include('partials/header', {pageTitle: 'Commission'}) %>
   <div class="page">
     <%
-      var R = report, T = report.totals, E = report.employee, ORD = E.basis === 'order_payments', PCS = E.basis === 'model_pcs', PP = E.perPcs;
+      var R = report, T = report.totals, E = report.employee, ORD = E.basis === 'order_payments', PCS = E.basis === 'model_pcs', GR = E.basis === 'shipment_growth', PP = E.perPcs;
       var pcsFmt = function (n) { return n.toLocaleString('en-US', { maximumFractionDigits: 2 }); };
       var monthName = function (m) { var p = m.split('-'); return new Date(+p[0], +p[1] - 1, 1).toLocaleString('en', { month: 'short', year: 'numeric' }); };
       var plural = function (n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); };
@@ -54,6 +54,42 @@
       <% }) %>
     </div>
 
+    <% if (GR) { var G = R.growth, RULE = E.growth, num = function (n) { return n.toLocaleString('en-US'); }; %>
+    <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:20px">
+      <div class="stat-card"><div class="stat-label">Total pcs shipped</div><div class="stat-value"><%= num(T.pcs) %></div><div class="stat-sub"><%= plural(T.count, 'shipment') %> · <%= monthLabel %></div><i class="fas fa-truck stat-icon"></i></div>
+      <div class="stat-card"><div class="stat-label"><%= RULE.label %> pcs</div><div class="stat-value"><%= num(G.growthPcs) %></div><div class="stat-sub">target <%= num(G.target) %></div><i class="fas fa-bullseye stat-icon"></i></div>
+      <div class="stat-card success"><div class="stat-label"><%= E.name %>'s commission</div><div class="stat-value" style="color:var(--accent2)"><%- rub(T.total, 2) %></div><div class="stat-sub"><%= monthLabel %></div><i class="fas fa-user-tie stat-icon"></i></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="fas fa-calculator"></i> Commission — <%= E.name %>, <%= monthLabel %></div>
+      <div style="overflow-x:auto">
+        <table class="cm-tbl">
+          <thead><tr><th class="l">Pcs</th><th>Quantity</th><th>Rate</th><th>Commission</th></tr></thead>
+          <tbody>
+            <tr><td class="l"><b><%= RULE.label %> above target</b></td><td><%= num(G.over) %></td><td><span class="cm-rate sp">₽<%= RULE.overRub %>/pc</span></td><td style="color:var(--accent2);font-weight:700"><%- rub(G.overCommission, 2) %></td></tr>
+            <tr><td class="l"><b>All other pcs</b></td><td><%= num(G.rest) %></td><td><span class="cm-rate">₽<%= E.rub %>/pc</span></td><td style="color:var(--accent2);font-weight:700"><%- rub(G.restCommission, 2) %></td></tr>
+          </tbody>
+          <tfoot><tr><td class="l">Total</td><td><%= num(T.pcs) %></td><td></td><td style="color:var(--accent2)"><%- rub(T.total, 2) %></td></tr></tfoot>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <div class="card-title"><i class="fas fa-boxes-stacked"></i> Pcs shipped by model — <%= monthLabel %></div>
+      <div style="overflow-x:auto">
+        <table class="cm-tbl">
+          <thead><tr><th class="l">Model</th><th>Pcs</th><th><%= RULE.label %></th></tr></thead>
+          <tbody>
+            <% R.models.forEach(function (m) { %>
+              <tr><td class="l"><%= m.model %></td><td><%= num(m.pcs) %></td><td><% if (m.counted) { %><span class="cm-rate sp">Yes</span><% } else { %>—<% } %></td></tr>
+            <% }) %>
+          </tbody>
+          <tfoot><tr><td class="l">Total</td><td><%= num(T.pcs) %></td><td></td></tr></tfoot>
+        </table>
+      </div>
+    </div>
+    <% } else { %>
     <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:20px">
       <% if (PCS) { %>
         <div class="stat-card"><div class="stat-label"><%= PP.label %> pcs sold</div><div class="stat-value"><%= T.pcs.toLocaleString('en-US') %></div><div class="stat-sub">in <%= plural(T.count, 'sales order') %> (all owners) · <%= monthLabel %></div><i class="fas fa-box stat-icon"></i></div>
@@ -148,6 +184,7 @@
         </table>
       </div>
     </div>
+    <% } %>
   </div>
 </div>
 <%- include('partials/foot') %>
